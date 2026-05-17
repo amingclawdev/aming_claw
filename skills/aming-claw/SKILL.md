@@ -75,6 +75,24 @@ If the worktree is dirty, do not call that a graph bug. Tell the user:
 Graph snapshots are commit-bound. Commit/stash unrelated local changes before reconcile, or use an isolated clean worktree for candidate-only inspection.
 ```
 
+## Branch Graph Policy
+
+Parallel branch/worktree graph state is one-hop candidate evidence from a
+target commit graph. The target ref's active graph snapshot and semantic
+projection are the only graph truth.
+
+Do not chain graph reconcile from a branch candidate. Do not activate or
+persist branch-local graph candidates as target graph truth. During branch
+development, compare the current branch HEAD against the selected target commit
+graph and replace or prune stale branch candidates instead of creating a
+branch-local graph history. If the target ref moves, rebase or recompute the
+branch delta against the new target graph before merge gating.
+
+After an ordered merge lands on the target ref, run target-ref scope reconcile
+and activate the target snapshot/projection. Branch refs, worktree ids,
+snapshot ids, and projection ids may be recorded only as bounded candidate
+evidence, merge-gate inputs, rollback/replay provenance, or audit pointers.
+
 ## Current Workspace Not Registered
 
 If governance is running but `GET /api/projects` does not include the active

@@ -26,6 +26,8 @@ JOB_BATCH_MIGRATION = "batch_migration"
 JOB_WORKFLOW_IMPROVEMENT = "workflow_improvement"
 BRANCH_GRAPH_SCHEMA_VERSION = 1
 BRANCH_GRAPH_CACHE_REL = ".aming-claw/cache/branches"
+BRANCH_GRAPH_POLICY_ONE_HOP = "one_hop_target_graph_candidate"
+BRANCH_GRAPH_CANDIDATE_KIND = "branch_delta"
 GRAPH_JSON_FILENAME = "graph.json"
 
 VALID_JOB_TYPES = {
@@ -265,6 +267,11 @@ def branch_graph_plan(strategy: BranchStrategy, *, status: str = "planned") -> d
         "required": True,
         "status": status,
         "schema_version": BRANCH_GRAPH_SCHEMA_VERSION,
+        "graph_policy": BRANCH_GRAPH_POLICY_ONE_HOP,
+        "candidate_kind": BRANCH_GRAPH_CANDIDATE_KIND,
+        "chain_depth": 1,
+        "active_target_graph_truth": False,
+        "recompute_when_target_moves": True,
         "project_id": strategy.project_id,
         "work_branch": strategy.work_branch,
         "target_branch": strategy.target_branch,
@@ -350,11 +357,21 @@ def initialize_branch_graph(
     if not overlay_path.exists():
         overlay_doc = {
             "schema_version": BRANCH_GRAPH_SCHEMA_VERSION,
+            "graph_policy": BRANCH_GRAPH_POLICY_ONE_HOP,
+            "candidate_kind": BRANCH_GRAPH_CANDIDATE_KIND,
+            "chain_depth": 1,
+            "active_target_graph_truth": False,
+            "recompute_when_target_moves": True,
             "project_id": strategy.project_id,
             "work_branch": strategy.work_branch,
             "target_branch": strategy.target_branch,
             "base_commit": strategy.base_commit,
             "base_graph_sha256": base_graph_sha,
+            "derives_from": {
+                "target_branch": strategy.target_branch,
+                "base_commit": strategy.base_commit,
+                "base_graph_sha256": base_graph_sha,
+            },
             "covered_files": [],
             "file_states": {},
             "graph_delta": {},
@@ -371,6 +388,11 @@ def initialize_branch_graph(
         "source_graph_path": str(source_path or ""),
         "source_graph_exists": source_exists,
         "base_graph_sha256": base_graph_sha,
+        "derives_from": {
+            "target_branch": strategy.target_branch,
+            "base_commit": strategy.base_commit,
+            "base_graph_sha256": base_graph_sha,
+        },
         "created_at": utc_now(),
     }
     Path(plan["manifest_path"]).write_text(

@@ -135,7 +135,7 @@ Task fixture:
 | PB-008 | Old agent resurrection | A stale agent callback tries to complete or merge after lease recovery by another agent. | Reject stale fence token; record ignored callback; do not change task state, queue state, branch head, graph ref, or semantic projection. | Implemented for checkpoint/recovery API and merge-result recording; live merge execution remains gated. | `test_parallel_branch_runtime.py`, `test_graph_governance_api.py` |
 | PB-009 | Cleanup retention | Batch has unresolved merge_failed or rollback_required state. | Block branch/worktree cleanup; cleanup allowed only after batch accepted, abandoned, or explicitly archived with rollback evidence. | Implemented with pure decision oracle and durable SQLite batch replay; live cleanup execution remains gated. | `test_batch_merge_rollback.py` |
 | PB-010 | Dashboard/MCP compact read model | Operator opens dashboard or calls MCP after mixed parallel state. | Return bounded payload: branch lanes, task states, dependency blockers, rollback epoch, graph epoch, and action affordances without full backlog/graph expansion. | Implemented as pure-state read model and read-only governance API over durable stores; dashboard UI wiring remains future work. | `agent/tests/test_parallel_branch_read_model.py`, `agent/tests/test_graph_governance_api.py`, `frontend/dashboard/scripts/e2e-parallel-branches.mjs` |
-| PB-011 | Branch graph artifact isolation | Branch-local graph artifacts are produced before merge. | Store branch artifacts separately; do not mutate active target graph refs until merge queue accepts the branch. | Implemented for graph ref/projection candidate read model. | `test_graph_rollback_epoch.py` |
+| PB-011 | Branch graph artifact isolation | Branch-local graph artifacts are produced before merge. | Store branch artifacts as one-hop candidate evidence from the target graph; do not chain branch candidates or mutate active target graph refs until target scope reconcile after merge. | Implemented for graph ref/projection candidate read model and one-hop artifact policy. | `test_graph_rollback_epoch.py`, `test_batch_jobs.py` |
 | PB-012 | Multi-project and batch isolation | Two projects or batches reuse task IDs and branch slugs. | Runtime keys include project, batch, branch/ref, and attempt identity; no task, queue, pending scope, graph, or semantic row crosses boundaries. | Implemented for branch context and merge queue scope; graph/semantic isolation still depends on I3/I4. | `test_parallel_branch_runtime.py`, `test_merge_queue_runtime.py` |
 
 ## Immediate Test Slice
@@ -248,6 +248,8 @@ Required rollback assertions:
 - Branch/worktree cleanup is not a background garbage-collection concern until
   batch acceptance, abandonment, or explicit archive has happened.
 - Active graph and semantic projections are target-ref facts. Branch-local
-  artifacts are candidates until accepted by the merge queue.
+  artifacts are one-hop candidate deltas from a target graph. They must be
+  recomputed when the target ref moves and must not chain from prior branch
+  candidates.
 - Backlog and dashboard queries must stay compact by default; detailed state
   should be fetched by ID.

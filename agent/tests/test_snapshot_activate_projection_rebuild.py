@@ -120,9 +120,11 @@ def test_activate_non_active_ref_name_skips_rebuild(conn):
     )
     conn.commit()
     assert result["projection_status"] == "skipped"
+    assert result["candidate_ref_update"] is True
     stored = store.get_graph_snapshot(conn, PID, sid)
     assert stored["ref_name"] == "candidate"
     assert stored["branch_ref"] == "candidate"
+    assert stored["status"] == store.SNAPSHOT_STATUS_CANDIDATE
     ref_event = store.list_graph_ref_events(conn, PID, ref_name="candidate")[0]
     assert ref_event["branch_ref"] == "candidate"
 

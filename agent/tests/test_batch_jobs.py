@@ -247,9 +247,22 @@ def test_worktree_create_abandon_and_stale_report(tmp_path):
     assert (repo / ".worktrees" / "batch-batch-007").exists()
     assert out["branch_graph"]["status"] == "ready"
     assert out["branch_graph"]["base_graph_sha256"]
+    assert out["branch_graph"]["graph_policy"] == batch_jobs.BRANCH_GRAPH_POLICY_ONE_HOP
+    assert out["branch_graph"]["candidate_kind"] == batch_jobs.BRANCH_GRAPH_CANDIDATE_KIND
+    assert out["branch_graph"]["chain_depth"] == 1
+    assert out["branch_graph"]["active_target_graph_truth"] is False
+    assert out["branch_graph"]["recompute_when_target_moves"] is True
+    assert out["branch_graph"]["derives_from"]["base_commit"] == strategy.base_commit
     assert batch_jobs.branch_graph_plan(strategy)["overlay_path"] == out["branch_graph"]["overlay_path"]
     assert os.path.exists(out["branch_graph"]["snapshot_path"])
     assert os.path.exists(out["branch_graph"]["overlay_path"])
+    with open(out["branch_graph"]["overlay_path"], encoding="utf-8") as f:
+        overlay = json.load(f)
+    assert overlay["graph_policy"] == batch_jobs.BRANCH_GRAPH_POLICY_ONE_HOP
+    assert overlay["candidate_kind"] == batch_jobs.BRANCH_GRAPH_CANDIDATE_KIND
+    assert overlay["chain_depth"] == 1
+    assert overlay["active_target_graph_truth"] is False
+    assert overlay["derives_from"]["base_commit"] == strategy.base_commit
 
     stale = batch_jobs.report_stale_worktrees(conn, "proj", repo_root_path=repo)
     assert stale["stale_count"] == 0

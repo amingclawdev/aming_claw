@@ -24,7 +24,10 @@ matrix with explicit pending infrastructure flags.
 - Do not encode MF-only assumptions. MF/observer is the first client, but Chain
   must be able to use the same runtime later.
 - Do not treat branch-local graph or semantic evidence as active target-ref
-  truth until the merge queue accepts the branch.
+  truth; merge acceptance only permits target-ref scope reconcile to materialize
+  a target snapshot.
+- Do not chain graph reconcile from a branch graph candidate. Branch graph
+  state must remain a one-hop delta from the selected target commit graph.
 - Do not rely on a shared dirty checkout for concurrent work.
 
 ## Scenario Coverage
@@ -87,8 +90,8 @@ Required identity fields:
 | `base_commit` | Target commit used when branch work began. |
 | `head_commit` | Current branch head. |
 | `target_head_commit` | Current target ref head at validation/merge time. |
-| `snapshot_id` | Branch or target structural graph snapshot. |
-| `projection_id` | Branch or target semantic projection. |
+| `snapshot_id` | Target structural graph snapshot, or a bounded branch candidate evidence pointer. |
+| `projection_id` | Target semantic projection, or a branch candidate/proposal pointer that is not trusted graph truth. |
 | `merge_queue_id` | Queue row identity. |
 | `merge_preview_id` | Git/graph/test preview identity for a merge attempt. |
 | `rollback_epoch` | Epoch used to isolate rollback and replay state. |
@@ -171,6 +174,38 @@ Rules:
 - Crash recovery scans expired leases and classifies tasks as `reclaimable`,
   `dependency_blocked`, `merge_failed`, or `rollback_required`.
 
+## Branch Graph Policy
+
+Parallel branch graph state is intentionally one-hop:
+
+```text
+target active graph @ base_commit
+  -> branch delta/candidate evidence @ branch_head
+```
+
+The runtime must not create this shape:
+
+```text
+branch graph candidate
+  -> next branch graph candidate
+    -> next branch graph candidate
+```
+
+Rules:
+
+- The active target graph/projection is the only graph truth.
+- Branch/worktree graph artifacts are candidate evidence for merge gate,
+  rollback, replay, and dashboard/MCP audit.
+- Branch candidates are recomputed from the selected target commit graph and
+  current branch head; stale candidates are replaced or pruned.
+- If the target ref moves, the branch candidate becomes stale until rebased or
+  recomputed against the new target graph.
+- Only after an ordered merge lands on the target ref may target scope
+  reconcile activate a new target graph snapshot/projection.
+
+This keeps parallel development as target graph plus branch delta, not multiple
+branch-local graph universes.
+
 ## MergeQueueRuntime
 
 Dependency types:
@@ -245,9 +280,9 @@ Merge gate inputs:
 | Git conflict check | Merge preview must be clean or explicitly blocked. |
 | Dirty worktree check | Candidate worktree must not contain unrelated dirty files. |
 | Test evidence | Required tests from backlog or Chain stage pass. |
-| Graph currentness | Branch graph evidence is current for branch head. |
-| Scope reconcile | Scope result exists for branch head or fallback is explicitly labeled. |
-| Semantic projection | Projection state is current, stale, or intentionally deferred. |
+| Graph currentness | Branch one-hop candidate evidence is current for branch head and target base graph. |
+| Scope reconcile | Scope result exists for the target-ref merge path or branch candidate fallback is explicitly labeled. |
+| Semantic projection | Target projection is current, or branch semantic proposal state is stale/deferred candidate evidence. |
 | Backlog acceptance | Acceptance criteria are satisfied or blocked with reason. |
 | Batch rollback state | Batch must not be `rollback_required`. |
 | Chain state | If Chain is client, stage state must permit merge. |

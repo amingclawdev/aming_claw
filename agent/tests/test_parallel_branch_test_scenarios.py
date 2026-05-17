@@ -90,3 +90,10 @@ def test_dry_run_oracle_cannot_mutate_production_state(doc_text: str) -> None:
     assert "must not mutate the production git checkout or production governance DB" in normalized
     assert "isolated temporary repository" in doc_text
     assert "ephemeral SQLite database" in doc_text
+
+
+def test_branch_graph_policy_is_one_hop_candidate_evidence(doc_text: str) -> None:
+    normalized = " ".join(doc_text.split())
+    assert "one-hop candidate deltas from a target graph" in normalized
+    assert "must not chain from prior branch candidates" in normalized
+    assert "do not chain branch candidates" in normalized

@@ -210,6 +210,8 @@ def test_graph_ref_events_record_rollback_epoch_and_branch_ref_isolation(conn):
     )
     active = store.get_active_graph_snapshot(conn, PID, ref_name="active")
     assert active["snapshot_id"] == base["snapshot_id"]
+    branch_snapshot = store.get_graph_snapshot(conn, PID, branch["snapshot_id"])
+    assert branch_snapshot["status"] == store.SNAPSHOT_STATUS_CANDIDATE
 
     result = store.activate_graph_snapshot(
         conn,
@@ -235,6 +237,42 @@ def test_graph_ref_events_record_rollback_epoch_and_branch_ref_isolation(conn):
     assert branch_events[0]["operation_type"] == "merge"
     assert branch_events[0]["branch_ref"] == "refs/heads/codex/feature"
     assert branch_events[0]["merge_epoch"] == "merge-001"
+
+
+def test_branch_candidate_snapshot_cannot_be_promoted_to_active_target(conn):
+    _ensure_schema(conn)
+    active = store.create_graph_snapshot(
+        conn,
+        PID,
+        snapshot_id="full-target-active",
+        commit_sha="target",
+        snapshot_kind="full",
+    )
+    branch = store.create_graph_snapshot(
+        conn,
+        PID,
+        snapshot_id="scope-branch-one-hop-candidate",
+        commit_sha="branch-head",
+        snapshot_kind="scope",
+        ref_name="refs/heads/codex/feature",
+        branch_ref="refs/heads/codex/feature",
+    )
+    store.activate_graph_snapshot(conn, PID, active["snapshot_id"], auto_rebuild_projection=False)
+
+    with pytest.raises(ValueError, match="branch graph candidate cannot be activated"):
+        store.activate_graph_snapshot(
+            conn,
+            PID,
+            branch["snapshot_id"],
+            auto_rebuild_projection=False,
+        )
+
+    current = store.get_active_graph_snapshot(conn, PID)
+    assert current["snapshot_id"] == active["snapshot_id"]
+    stored_branch = store.get_graph_snapshot(conn, PID, branch["snapshot_id"])
+    assert stored_branch["status"] == store.SNAPSHOT_STATUS_CANDIDATE
+    active_events = store.list_graph_ref_events(conn, PID, ref_name="active")
+    assert active_events[-1]["new_snapshot_id"] == active["snapshot_id"]
 
 
 def test_activate_snapshot_rejects_invalid_ref_operation_without_moving_active(conn):

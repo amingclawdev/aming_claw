@@ -1419,6 +1419,17 @@ def activate_graph_snapshot(
     if not row:
         raise KeyError(f"graph snapshot not found: {project_id}/{snapshot_id}")
     snapshot = dict(row)
+    target_ref_activation = ref_name == "active"
+    snapshot_ref_identity = str(snapshot.get("ref_name") or "").strip()
+    snapshot_branch_identity = str(snapshot.get("branch_ref") or "").strip()
+    snapshot_is_branch_candidate = bool(
+        snapshot_branch_identity or (snapshot_ref_identity and snapshot_ref_identity != "active")
+    )
+    if target_ref_activation and snapshot_is_branch_candidate:
+        raise ValueError(
+            "branch graph candidate cannot be activated as active target graph truth; "
+            "merge to the target ref and run target-ref scope reconcile first"
+        )
     old = conn.execute(
         "SELECT snapshot_id, commit_sha FROM graph_snapshot_refs WHERE project_id = ? AND ref_name = ?",
         (project_id, ref_name),
@@ -1464,11 +1475,12 @@ def activate_graph_snapshot(
                 snapshot_id,
             ),
         )
-    conn.execute(
-        "UPDATE graph_snapshots SET status = ? WHERE project_id = ? AND snapshot_id = ?",
-        (SNAPSHOT_STATUS_ACTIVE, project_id, snapshot_id),
-    )
-    if old_id and old_id != snapshot_id:
+    if target_ref_activation:
+        conn.execute(
+            "UPDATE graph_snapshots SET status = ? WHERE project_id = ? AND snapshot_id = ?",
+            (SNAPSHOT_STATUS_ACTIVE, project_id, snapshot_id),
+        )
+    if target_ref_activation and old_id and old_id != snapshot_id:
         conn.execute(
             "UPDATE graph_snapshots SET status = ? WHERE project_id = ? AND snapshot_id = ?",
             (SNAPSHOT_STATUS_SUPERSEDED, project_id, old_id),
@@ -1479,6 +1491,7 @@ def activate_graph_snapshot(
         "commit_sha": snapshot["commit_sha"],
         "previous_snapshot_id": old_id,
         "ref_name": ref_name,
+        "candidate_ref_update": not target_ref_activation,
     }
 
     # MF-2026-05-10-012: dashboard derives feature counters from
@@ -1558,26 +1571,27 @@ def activate_graph_snapshot(
     # so _emit_dashboard_changed never fires for it. Publish here so the
     # dashboard's SSE subscribers refetch when a new snapshot becomes
     # active (reconcile / pending-scope materialize, etc.).
-    try:
-        from . import event_bus
-        event_bus.publish("snapshot.activated", {
-            "project_id": project_id,
-            "snapshot_id": snapshot_id,
-            "previous_snapshot_id": old_id,
-            "commit_sha": snapshot["commit_sha"],
-            "ref_name": ref_name,
-            "projection_status": projection_status,
-            "graph_ref_event_id": result.get("graph_ref_event_id", ""),
-            "source": "activate_graph_snapshot",
-        })
-        event_bus.publish("dashboard.changed", {
-            "project_id": project_id,
-            "path": "/internal/snapshot/activate",
-            "method": "WORKER",
-            "source": "activate_graph_snapshot",
-        })
-    except Exception:  # noqa: BLE001 - advisory
-        pass
+    if target_ref_activation:
+        try:
+            from . import event_bus
+            event_bus.publish("snapshot.activated", {
+                "project_id": project_id,
+                "snapshot_id": snapshot_id,
+                "previous_snapshot_id": old_id,
+                "commit_sha": snapshot["commit_sha"],
+                "ref_name": ref_name,
+                "projection_status": projection_status,
+                "graph_ref_event_id": result.get("graph_ref_event_id", ""),
+                "source": "activate_graph_snapshot",
+            })
+            event_bus.publish("dashboard.changed", {
+                "project_id": project_id,
+                "path": "/internal/snapshot/activate",
+                "method": "WORKER",
+                "source": "activate_graph_snapshot",
+            })
+        except Exception:  # noqa: BLE001 - advisory
+            pass
     return result
 
 
