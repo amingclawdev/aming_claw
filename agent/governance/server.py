@@ -3317,8 +3317,13 @@ def handle_graph_governance_parallel_branch_allocate(ctx: RequestContext):
 def handle_graph_governance_parallel_branch_checkpoint(ctx: RequestContext):
     """Record a checkpoint for a branch runtime context with fence protection."""
     project_id = ctx.get_project_id()
+    from . import batch_jobs
     from .db import sqlite_write_lock
-    from .parallel_branch_runtime import branch_context_to_dict, record_branch_checkpoint
+    from .parallel_branch_runtime import (
+        branch_context_to_dict,
+        get_branch_context,
+        record_branch_checkpoint,
+    )
 
     task_id = str(ctx.body.get("task_id") or "").strip()
     checkpoint_id = str(ctx.body.get("checkpoint_id") or "").strip()
@@ -3334,12 +3339,32 @@ def handle_graph_governance_parallel_branch_checkpoint(ctx: RequestContext):
     try:
         _require_graph_governance_operator(ctx, conn, "graph-governance.parallel-branches.checkpoint")
         with sqlite_write_lock():
+            head_commit = str(ctx.body.get("head_commit") or "").strip()
+            if _query_bool(ctx.body, "refresh_head_from_worktree", False) or _query_bool(
+                ctx.body,
+                "refresh_head",
+                False,
+            ):
+                current = get_branch_context(conn, project_id, task_id)
+                if current is None:
+                    raise KeyError(f"branch runtime context not found: {project_id}/{task_id}")
+                worktree_path = str(current.worktree_path or "")
+                actual_head = ""
+                if worktree_path and os.path.exists(worktree_path):
+                    try:
+                        actual_head = batch_jobs.git_commit(worktree_path)
+                    except batch_jobs.BatchJobError:
+                        actual_head = ""
+                if actual_head and head_commit and actual_head != head_commit:
+                    raise ValidationError("head_commit does not match assigned worktree HEAD")
+                head_commit = actual_head or head_commit
             context = record_branch_checkpoint(
                 conn,
                 project_id=project_id,
                 task_id=task_id,
                 checkpoint_id=checkpoint_id,
                 fence_token=fence_token,
+                head_commit=head_commit,
                 replay_source=str(ctx.body.get("replay_source") or "checkpoint"),
                 now_iso=str(ctx.body.get("now_iso") or ""),
             )

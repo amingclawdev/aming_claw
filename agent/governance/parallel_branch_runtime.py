@@ -1467,6 +1467,7 @@ def record_branch_checkpoint(
     task_id: str,
     checkpoint_id: str,
     fence_token: str,
+    head_commit: str = "",
     replay_source: str = "checkpoint",
     now_iso: str = "",
 ) -> BranchTaskRuntimeContext:
@@ -1476,13 +1477,14 @@ def record_branch_checkpoint(
         raise KeyError(f"branch runtime context not found: {project_id}/{task_id}")
     _require_current_fence(context, fence_token)
     now = now_iso or utc_now()
+    next_head = str(head_commit or context.head_commit or "").strip()
     conn.execute(
         """
         UPDATE parallel_branch_runtime_contexts
-        SET checkpoint_id = ?, replay_source = ?, updated_at = ?
+        SET checkpoint_id = ?, replay_source = ?, head_commit = ?, updated_at = ?
         WHERE project_id = ? AND task_id = ?
         """,
-        (checkpoint_id, replay_source, now, project_id, task_id),
+        (checkpoint_id, replay_source, next_head, now, project_id, task_id),
     )
     found = get_branch_context(conn, project_id, task_id)
     if found is None:

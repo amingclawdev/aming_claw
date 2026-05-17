@@ -566,6 +566,81 @@ def test_parallel_branch_merge_queue_route_enforces_fence_and_returns_decision(c
     assert read["read_model"]["branch_lanes"][0]["merge_queue_id"] == queue_id
 
 
+def test_parallel_branch_checkpoint_refreshes_worktree_head_before_merge_queue(conn, tmp_path):
+    repo = _git_repo(tmp_path)
+    base = subprocess.run(
+        ["git", "rev-parse", "--verify", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    (repo / "README.md").write_text("# worker change\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "worker change"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    head = subprocess.run(
+        ["git", "rev-parse", "--verify", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    queue_id = "mergeq-api-refresh-head"
+    upsert_branch_context(
+        conn,
+        BranchTaskRuntimeContext(
+            project_id=PID,
+            batch_id="PB-api-refresh-head",
+            task_id="refresh-head-task",
+            branch_ref="refs/heads/codex/refresh-head-task",
+            status="worktree_ready",
+            fence_token="fence-refresh-head",
+            worktree_path=str(repo),
+            base_commit=base,
+            head_commit=base,
+            target_head_commit=base,
+        ),
+        now_iso="2026-05-17T07:22:00Z",
+    )
+
+    checkpointed = server.handle_graph_governance_parallel_branch_checkpoint(
+        _ctx(
+            {"project_id": PID},
+            method="POST",
+            body={
+                "task_id": "refresh-head-task",
+                "checkpoint_id": "ckpt-refresh-head",
+                "fence_token": "fence-refresh-head",
+                "refresh_head_from_worktree": True,
+            },
+        )
+    )
+
+    assert checkpointed["context"]["head_commit"] == head
+
+    queued = server.handle_graph_governance_parallel_branch_merge_queue(
+        _ctx(
+            {"project_id": PID},
+            method="POST",
+            body={
+                "task_id": "refresh-head-task",
+                "merge_queue_id": queue_id,
+                "fence_token": "fence-refresh-head",
+            },
+        )
+    )
+
+    assert queued["ok"] is True
+    assert queued["queue_item"]["branch_head"] == head
+
+
 def test_parallel_branch_finish_gate_records_validated_checkpoint(conn):
     upsert_branch_context(
         conn,

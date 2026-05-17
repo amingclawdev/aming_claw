@@ -337,11 +337,13 @@ def test_branch_runtime_rejects_stale_fence_after_reclaim() -> None:
         task_id="T3",
         checkpoint_id="checkpoint-T3-after-reclaim",
         fence_token=current.fence_token,
+        head_commit="head-T3-after-reclaim",
         now_iso=NOW,
     )
 
     assert updated.checkpoint_id == "checkpoint-T3-after-reclaim"
     assert updated.replay_source == "checkpoint"
+    assert updated.head_commit == "head-T3-after-reclaim"
 
 
 def test_pb007_chain_stage_identity_round_trips_without_running_chain() -> None:
