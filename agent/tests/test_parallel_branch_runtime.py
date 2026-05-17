@@ -7,6 +7,7 @@ import subprocess
 
 import pytest
 
+from agent.tests.fixtures.parallel_project import create_parallel_fixture_project
 from agent.governance.db import SCHEMA_VERSION, _ensure_schema
 from agent.governance.parallel_branch_runtime import (
     ACTION_LEAVE_MERGED,
@@ -92,19 +93,6 @@ def _runtime_conn() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     ensure_branch_runtime_schema(conn)
     return conn
-
-
-def _git_repo(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
-    subprocess.run(["git", "checkout", "-b", "main"], cwd=repo, check=True, capture_output=True, text=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
-    (repo / "README.md").write_text("# test\n", encoding="utf-8")
-    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True, text=True)
-    return repo
 
 
 def _pb001_contexts() -> list[BranchTaskRuntimeContext]:
@@ -426,7 +414,8 @@ def test_mf_branch_allocation_planner_sanitizes_worker_attempt_and_persists() ->
 
 
 def test_mf_branch_worktree_materialization_uses_planned_identity(tmp_path) -> None:
-    repo = _git_repo(tmp_path)
+    fixture = create_parallel_fixture_project(tmp_path)
+    repo = fixture.root
     base = subprocess.run(
         ["git", "rev-parse", "--verify", "HEAD"],
         cwd=repo,

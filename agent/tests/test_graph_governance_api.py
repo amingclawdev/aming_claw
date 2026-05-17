@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from agent.tests.fixtures.parallel_project import create_parallel_fixture_project
 from agent.governance import graph_correction_patches
 from agent.governance import graph_events
 from agent.governance import graph_snapshot_store as store
@@ -95,16 +96,7 @@ def _bare_handler():
 
 
 def _git_repo(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
-    subprocess.run(["git", "checkout", "-b", "main"], cwd=repo, check=True, capture_output=True, text=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
-    (repo / "README.md").write_text("# test\n", encoding="utf-8")
-    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True, text=True)
-    return repo
+    return create_parallel_fixture_project(tmp_path).root
 
 
 @pytest.fixture()

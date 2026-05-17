@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import sqlite3
-import subprocess
-
 import pytest
 
+from agent.tests.fixtures.parallel_project import create_merge_preview_fixture_project
 from agent.governance.parallel_branch_runtime import (
     ACTION_ALLOW_MERGE,
     ACTION_BLOCKED_BY_DEPENDENCY,
@@ -50,38 +49,6 @@ def _runtime_conn(path: str = ":memory:") -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     return conn
-
-
-def _git(args, *, cwd):
-    return subprocess.run(args, cwd=cwd, check=True, capture_output=True, text=True)
-
-
-def _merge_preview_repo(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _git(["git", "init"], cwd=repo)
-    _git(["git", "checkout", "-b", "main"], cwd=repo)
-    _git(["git", "config", "user.email", "test@example.com"], cwd=repo)
-    _git(["git", "config", "user.name", "Test User"], cwd=repo)
-    (repo / "shared.txt").write_text("base\n", encoding="utf-8")
-    _git(["git", "add", "shared.txt"], cwd=repo)
-    _git(["git", "commit", "-m", "base"], cwd=repo)
-
-    _git(["git", "checkout", "-b", "feature-clean"], cwd=repo)
-    (repo / "clean.txt").write_text("clean\n", encoding="utf-8")
-    _git(["git", "add", "clean.txt"], cwd=repo)
-    _git(["git", "commit", "-m", "clean branch"], cwd=repo)
-
-    _git(["git", "checkout", "main"], cwd=repo)
-    _git(["git", "checkout", "-b", "feature-conflict"], cwd=repo)
-    (repo / "shared.txt").write_text("branch\n", encoding="utf-8")
-    _git(["git", "commit", "-am", "conflict branch"], cwd=repo)
-
-    _git(["git", "checkout", "main"], cwd=repo)
-    (repo / "shared.txt").write_text("main\n", encoding="utf-8")
-    _git(["git", "commit", "-am", "main change"], cwd=repo)
-    main_head = _git(["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()
-    return repo, main_head
 
 
 def _passing_merge_evidence() -> dict[str, dict[str, str]]:
@@ -704,33 +671,33 @@ def test_persisted_merge_gate_replays_after_restart(tmp_path) -> None:
 
 
 def test_git_merge_preview_evidence_reports_clean_conflict_and_stale(tmp_path) -> None:
-    repo, main_head = _merge_preview_repo(tmp_path)
+    fixture = create_merge_preview_fixture_project(tmp_path)
 
     clean = git_merge_preview_evidence(
-        repo_root_path=repo,
+        repo_root_path=fixture.root,
         target_ref="main",
-        branch_ref="feature-clean",
-        expected_target_head=main_head,
+        branch_ref=fixture.clean_branch,
+        expected_target_head=fixture.main_head,
     )
     assert clean["status"] == "pass"
     assert clean["passed"] is True
     assert clean["preview_tree"]
-    assert clean["target_commit"] == main_head
+    assert clean["target_commit"] == fixture.main_head
 
     conflict = git_merge_preview_evidence(
-        repo_root_path=repo,
+        repo_root_path=fixture.root,
         target_ref="main",
-        branch_ref="feature-conflict",
-        expected_target_head=main_head,
+        branch_ref=fixture.conflict_branch,
+        expected_target_head=fixture.main_head,
     )
     assert conflict["status"] == "fail"
     assert conflict["passed"] is False
     assert "CONFLICT" in conflict["stdout"]
 
     stale = git_merge_preview_evidence(
-        repo_root_path=repo,
+        repo_root_path=fixture.root,
         target_ref="main",
-        branch_ref="feature-clean",
+        branch_ref=fixture.clean_branch,
         expected_target_head="not-the-current-head",
     )
     assert stale["status"] == "stale"

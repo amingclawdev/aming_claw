@@ -102,6 +102,10 @@ Example dry-run oracle:
 ## Fixture Topology
 
 The canonical fixture is a five-task batch against a temporary target repo.
+Generated git-backed target repos are created through
+`agent/tests/fixtures/parallel_project.py` so branch/worktree and merge-preview
+tests share the same isolated project shape instead of relying on the Aming
+Claw source checkout.
 
 | Fixture item | Value |
 | --- | --- |
