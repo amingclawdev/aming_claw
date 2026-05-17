@@ -1582,6 +1582,7 @@ def plan_branch_runtime_context(
     base_commit: str = "",
     target_head_commit: str = "",
     merge_queue_id: str = "",
+    fence_token: str = "",
     status: str = STATE_ALLOCATED,
 ) -> BranchTaskRuntimeContext:
     """Plan deterministic branch/worktree identity without invoking git."""
@@ -1612,6 +1613,7 @@ def plan_branch_runtime_context(
         base_commit=base_commit,
         target_head_commit=target_head_commit,
         merge_queue_id=merge_queue_id,
+        fence_token=fence_token,
         status=status,
     )
 

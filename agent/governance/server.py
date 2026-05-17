@@ -3194,6 +3194,7 @@ def handle_graph_governance_parallel_branch_allocate(ctx: RequestContext):
     if not target_head_commit:
         target_head_commit = base_commit
 
+    allocation_fence_token = str(ctx.body.get("fence_token") or f"fence-{uuid.uuid4().hex[:12]}")
     context = plan_branch_runtime_context(
         project_id=project_id,
         task_id=task_id,
@@ -3209,6 +3210,7 @@ def handle_graph_governance_parallel_branch_allocate(ctx: RequestContext):
         base_commit=base_commit,
         target_head_commit=target_head_commit,
         merge_queue_id=str(ctx.body.get("merge_queue_id") or ""),
+        fence_token=allocation_fence_token,
     )
 
     conn = get_connection(project_id)
@@ -3229,7 +3231,7 @@ def handle_graph_governance_parallel_branch_allocate(ctx: RequestContext):
                 project_id=project_id,
                 task_id=task_id,
                 repo_root_path=workspace_root,
-                fence_token=str(ctx.body.get("fence_token") or ""),
+                fence_token=allocation_fence_token,
                 now_iso=str(ctx.body.get("now_iso") or ""),
             )
             conn.commit()

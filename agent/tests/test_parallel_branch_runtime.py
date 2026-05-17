@@ -403,12 +403,14 @@ def test_mf_branch_allocation_planner_sanitizes_worker_attempt_and_persists() ->
         base_commit="B0",
         target_head_commit="M0",
         merge_queue_id="mergeq-PB009",
+        fence_token="fence-planned",
     )
 
     assert context.status == STATE_ALLOCATED
     assert context.branch_ref == "refs/heads/codex/task-123-attempt-2"
     assert context.worktree_id == "wt-task-123-attempt-2"
     assert context.worktree_path == "/repo/.worktrees/worker-0-x/task-123-attempt-2"
+    assert context.fence_token == "fence-planned"
     assert ".." not in context.branch_ref
     assert ".." not in context.worktree_path
 

@@ -269,9 +269,24 @@ def test_parallel_branch_allocate_route_materializes_worktree_and_updates_read_m
     context = created["context"]
     assert context["status"] == "worktree_ready"
     assert context["branch_ref"] == "refs/heads/codex/api-branch-task"
+    assert context["fence_token"].startswith("fence-")
     assert context["worktree_path"] == str(repo / ".worktrees" / "worker-api" / "api-branch-task")
     assert created["worktree"]["created"] is True
     assert created["worktree"]["branch_graph"]["status"] == "ready"
+
+    checkpoint = server.handle_graph_governance_parallel_branch_checkpoint(
+        _ctx(
+            {"project_id": PID},
+            method="POST",
+            body={
+                "task_id": "API Branch Task",
+                "checkpoint_id": "checkpoint-api-alloc",
+                "fence_token": context["fence_token"],
+                "now_iso": "2026-05-17T07:11:00Z",
+            },
+        )
+    )
+    assert checkpoint["context"]["checkpoint_id"] == "checkpoint-api-alloc"
 
     read = server.handle_graph_governance_parallel_branches(
         _ctx(
