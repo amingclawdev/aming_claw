@@ -1,20 +1,11 @@
 """Executable scenario contracts for source-hint graph projection.
 
-These tests intentionally start as strict xfail dry-runs. They define the
-behavior before the hint scanner/projection service exists so implementation
-stays constrained by user-reviewed scenarios.
+They define the first implementation slice for source hints as graph structure
+truth: scan hint blocks, project them onto derived graph structure, and track
+withdrawn hints without introducing a user-facing patch state machine.
 """
 
 from __future__ import annotations
-
-import pytest
-
-
-pytestmark = pytest.mark.xfail(
-    reason="ARCH-GRAPH-HINT-PROJECTION-SERVICE scenario-first dry run",
-    strict=True,
-)
-
 
 def _future_api():
     from agent.governance.graph_hint_projection import (  # type: ignore[attr-defined]
