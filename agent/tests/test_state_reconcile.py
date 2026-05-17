@@ -378,6 +378,95 @@ def test_state_only_full_reconcile_materializes_source_graph_hints_in_generated_
     assert after[str(project / "README.md")] == before[str(project / "README.md")]
 
 
+def test_state_only_full_reconcile_withdraws_deleted_source_graph_hint(conn, tmp_path):
+    project = tmp_path / "project"
+    _write_project(project)
+
+    base = run_state_only_full_reconcile(
+        conn,
+        PID,
+        project,
+        run_id="full-hint-withdraw-base",
+        commit_sha="hintwithdrawbase",
+        snapshot_id="full-hint-withdraw-base",
+        created_by="test",
+    )
+    assert base["ok"] is True
+
+    base_graph = state_reconcile._read_snapshot_graph(PID, "full-hint-withdraw-base")
+    service_node = next(
+        node for node in state_reconcile._deps_graph_nodes(base_graph)
+        if "agent/service.py" in (node.get("primary") or [])
+    )
+    service_id = state_reconcile._node_id(service_node)
+    test_path = project / "agent" / "tests" / "test_service.py"
+    plain_test = (
+        "from agent.service import service_entry\n\n"
+        "def test_service_entry():\n"
+        "    assert service_entry() == 'ok'\n"
+    )
+    hinted_test = (
+        "from agent.service import service_entry\n\n"
+        "def test_service_entry():\n"
+        "    # aming-claw-hint:start id=state-reconcile-withdraw-edge op=add_edge edge=tests "
+        f"target={service_id}\n"
+        "    # reason: temporary source truth for withdrawal scenario\n"
+        "    # aming-claw-hint:end\n"
+        "    assert service_entry() == 'ok'\n"
+    )
+    _write(test_path, hinted_test)
+
+    with_hint = run_state_only_full_reconcile(
+        conn,
+        PID,
+        project,
+        run_id="full-hint-withdraw-materialized",
+        commit_sha="hintwithdrawmaterialized",
+        snapshot_id="full-hint-withdraw-materialized",
+        created_by="test",
+    )
+    assert with_hint["ok"] is True
+    materialized_graph = state_reconcile._read_snapshot_graph(PID, "full-hint-withdraw-materialized")
+    assert any(
+        edge.get("src") == "agent/tests/test_service.py"
+        and edge.get("dst") == service_id
+        and edge.get("edge_type") == "tests"
+        and edge.get("direction") == "source_hint"
+        for edge in state_reconcile._deps_graph_edges(materialized_graph)
+    )
+
+    _write(test_path, plain_test)
+    withdrawn = run_state_only_full_reconcile(
+        conn,
+        PID,
+        project,
+        run_id="full-hint-withdraw-removed",
+        commit_sha="hintwithdrawremoved",
+        snapshot_id="full-hint-withdraw-removed",
+        created_by="test",
+    )
+
+    assert withdrawn["ok"] is True
+    withdrawn_graph = state_reconcile._read_snapshot_graph(PID, "full-hint-withdraw-removed")
+    assert not any(
+        edge.get("src") == "agent/tests/test_service.py"
+        and edge.get("dst") == service_id
+        and edge.get("edge_type") == "tests"
+        and edge.get("direction") == "source_hint"
+        for edge in state_reconcile._deps_graph_edges(withdrawn_graph)
+    )
+    notes_row = conn.execute(
+        "SELECT notes FROM graph_snapshots WHERE project_id = ? AND snapshot_id = ?",
+        (PID, "full-hint-withdraw-removed"),
+    ).fetchone()
+    projection = json.loads(notes_row["notes"])["graph_structure_hint_projection"]
+    assert projection["status"] == "ok"
+    assert projection["hint_count"] == 0
+    assert projection["materialized_count"] == 0
+    assert projection["conflict_count"] == 0
+    assert projection["hint_states"] == {}
+
+
 def test_state_only_full_reconcile_can_activate_with_explicit_signoff(conn, tmp_path):
     project = tmp_path / "project"
     _write_project(project)
