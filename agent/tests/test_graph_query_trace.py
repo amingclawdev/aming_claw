@@ -309,6 +309,28 @@ def test_graph_native_discovery_queries_cover_paths_functions_and_degrees(conn, 
     assert path_result["result"]["matches"][0]["node"]["node_id"] == "L7.1"
     assert path_result["result"]["matches"][0]["matched_files"][0]["role"] == "primary"
 
+    subtree_result = graph_query_trace.traced_query(
+        conn,
+        PID,
+        snapshot_id,
+        actor="observer",
+        query_source="observer",
+        query_purpose="prompt_context_build",
+        tool="find_node_by_path",
+        args={"path": "agent/governance", "directory": True},
+        project_root=project_root,
+    )
+    assert subtree_result["ok"] is True
+    assert subtree_result["result"]["match"] == "directory"
+    assert [match["node"]["node_id"] for match in subtree_result["result"]["matches"]] == [
+        "L7.1",
+        "L7.2",
+    ]
+    assert (
+        subtree_result["result"]["matches"][0]["matched_files"][0]["path"]
+        == "agent/governance/server.py"
+    )
+
     structure = graph_query_trace.traced_query(
         conn,
         PID,
@@ -581,6 +603,14 @@ def test_query_schema_exposes_tools_and_enums(conn, tmp_path):
 
     assert result["ok"] is True
     assert "find_node_by_path" in result["result"]["tool_names"]
+    find_by_path = result["result"]["tools"]["find_node_by_path"]
+    assert "directory" in find_by_path["optional_args"]
+    assert "subtree" in find_by_path["args"]["match"]["enum"]
+    assert find_by_path["examples"][0]["args"] == {
+        "path": "frontend/dashboard/src",
+        "directory": True,
+        "limit": 25,
+    }
     assert "observer" in result["result"]["query_sources"]
     assert "prompt_context_build" in result["result"]["query_purposes"]
     assert result["result"]["tools"]["high_function_degree"]["args"]["metric"]["enum"] == [

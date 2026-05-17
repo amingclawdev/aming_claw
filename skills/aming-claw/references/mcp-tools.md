@@ -118,7 +118,9 @@ backlog of record (and `docs/dev/` is gitignored, so they're not committed).
 - `graph_status`: active snapshot, graph stale state, pending scope reconcile.
 - `graph_operations_queue`: dashboard-ready operation rows and semantic queue status.
 - `graph_query`: audited graph discovery. Start with `query_schema`, then use graph-native tools before filesystem scans:
-  - `find_node_by_path`: resolve a path to owning nodes.
+  - `find_node_by_path`: resolve a file path to owning nodes. For a directory
+    subtree, pass `args: {"path": "frontend/dashboard/src", "directory": true,
+    "limit": 25}` to return nodes with files under that path without broad grep.
   - `search_structure`: search node id/title/kind/files/metadata/functions.
   - `function_index`: search `metadata.functions` and `metadata.function_lines`.
   - `function_callers`, `function_callees`, `high_function_degree`: inspect persisted function-level call facts when the active graph was built with function call metadata.
