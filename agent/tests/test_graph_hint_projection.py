@@ -82,6 +82,22 @@ def test_hint_scanner_indexes_line_anchored_relation_blocks() -> None:
     assert hint["status"] == "indexed"
 
 
+def test_hint_scanner_ignores_quoted_hint_examples() -> None:
+    scan_graph_structure_hints, _, _ = _future_api()
+
+    index = scan_graph_structure_hints(
+        {
+            "agent/tests/test_graph_hint_projection.py": (
+                "def test_example():\n"
+                "    text = \"# aming-claw-hint:start id=example op=add_edge target=L7.fake\\n\"\n"
+                "    assert text\n"
+            )
+        }
+    )
+
+    assert index["hint_count"] == 0
+
+
 def test_projection_materializes_add_edge_hint_as_graph_truth() -> None:
     scan_graph_structure_hints, build_hint_projection, _ = _future_api()
     files = {

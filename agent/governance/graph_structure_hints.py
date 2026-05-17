@@ -104,7 +104,7 @@ def _scan_one_file(source_path: str, text: str) -> list[GraphStructureHint]:
         symbol_match = _DEF_RE.match(line)
         if symbol_match:
             current_symbol = symbol_match.group(1)
-        start_match = _START_RE.search(line)
+        start_match = _START_RE.search(_comment_text(line))
         if not start_match:
             index += 1
             continue
@@ -116,7 +116,7 @@ def _scan_one_file(source_path: str, text: str) -> list[GraphStructureHint]:
         index += 1
         while index < len(lines):
             line_end = index + 1
-            if _END_RE.search(lines[index]):
+            if _END_RE.search(_comment_text(lines[index])):
                 break
             body.append(lines[index])
             index += 1
@@ -137,6 +137,17 @@ def _scan_one_file(source_path: str, text: str) -> list[GraphStructureHint]:
         )
         index += 1
     return hints
+
+
+def _comment_text(raw: str) -> str:
+    text = str(raw or "").lstrip()
+    for marker in ("#", "//", "<!--"):
+        if text.startswith(marker):
+            text = text[len(marker):].strip()
+            if marker == "<!--" and text.endswith("-->"):
+                text = text[:-3].strip()
+            return text
+    return ""
 
 
 def _parse_attrs(raw: str) -> dict[str, str]:
