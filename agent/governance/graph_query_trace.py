@@ -103,7 +103,28 @@ GRAPH_QUERY_TOOLS: dict[str, dict[str, Any]] = {
         "optional_args": ["direction", "limit", "include_edge_semantic", "include_semantic_edges"],
         "args": {"direction": {"enum": ["in", "out", "both"], "default": "both"}},
     },
-    "find_node_by_path": {"required_args": ["path"], "summary": "Resolve a file path to graph node ids."},
+    "find_node_by_path": {
+        "required_args": ["path"],
+        "summary": "Resolve a file path, or a directory subtree with directory=true, to graph node ids.",
+        "optional_args": ["match", "directory", "limit", "compact"],
+        "args": {
+            "match": {
+                "enum": ["exact", "contains", "directory", "prefix", "subtree"],
+                "default": "exact",
+                "description": "Use directory/subtree/prefix to match files under a directory path.",
+            },
+            "directory": {
+                "default": False,
+                "description": "When true, match node files equal to the path or below path/.",
+            },
+        },
+        "examples": [
+            {
+                "description": "Find graph nodes with files under a directory without broad grep.",
+                "args": {"path": "frontend/dashboard/src", "directory": True, "limit": 25},
+            }
+        ],
+    },
     "search_structure": {"required_args": ["query"], "summary": "Search structural node metadata, files, and functions."},
     "degree_summary": {"required_args": ["node_id"], "summary": "Return fan-in/fan-out counts independent of neighbor limit."},
     "high_degree_nodes": {"required_args": [], "summary": "Rank nodes by fan_in, fan_out, or total degree."},
@@ -860,6 +881,7 @@ def _query_find_node_by_path(conn: sqlite3.Connection, project_id: str, snapshot
     if not path:
         raise ValueError("path is required")
     match_mode = str(args.get("match") or "exact").strip().lower()
+    directory_mode = _bool_arg(args, "directory") or match_mode in {"directory", "prefix", "subtree"}
     limit = max(1, min(int(args.get("limit") or 50), 200))
     compact = bool(args.get("compact", True))
     rows = conn.execute(
@@ -878,7 +900,12 @@ def _query_find_node_by_path(conn: sqlite3.Connection, project_id: str, snapshot
         matched = []
         for item in _node_files_with_roles(node):
             item_path = _norm_path(item.get("path"))
-            ok = item_path == path if match_mode == "exact" else path in item_path
+            if directory_mode:
+                ok = item_path == path or item_path.startswith(f"{path}/")
+            elif match_mode == "exact":
+                ok = item_path == path
+            else:
+                ok = path in item_path
             if ok:
                 matched.append(item)
         if not matched:
@@ -889,7 +916,13 @@ def _query_find_node_by_path(conn: sqlite3.Connection, project_id: str, snapshot
         })
         if len(matches) >= limit:
             break
-    return {"ok": True, "path": path, "matches": matches, "count": len(matches)}
+    return {
+        "ok": True,
+        "path": path,
+        "match": "directory" if directory_mode else match_mode,
+        "matches": matches,
+        "count": len(matches),
+    }
 
 
 def _query_search_structure(conn: sqlite3.Connection, project_id: str, snapshot_id: str, args: dict[str, Any]) -> dict[str, Any]:
