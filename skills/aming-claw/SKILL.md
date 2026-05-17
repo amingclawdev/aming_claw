@@ -187,6 +187,13 @@ not enough: the worker result must pass the finish gate, which validates the
 current fence and, when the assigned worktree exists, recomputes the
 `base_commit..HEAD` changed-file set from that worktree before checkpoint or
 merge-queue entry.
+Use role/capability boundaries for parallel workers: `mf_sub` sessions may use
+the finish gate and task-scoped audited graph queries with
+`query_source=mf_subagent`, `parent_task_id`/`task_id`, and `fence_token`.
+Observer/coordinator remains required for merge queue writes, merge execution,
+graph reconcile/activation, backlog close, ServiceManager/governance restarts,
+worktree cleanup, and other privileged state changes. Do not tell a subagent to
+identify as observer to get graph access.
 
 Before editing:
 

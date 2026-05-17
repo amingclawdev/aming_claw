@@ -62,6 +62,8 @@ class TestRole(unittest.TestCase):
     def test_from_str(self):
         self.assertEqual(Role.from_str("dev"), Role.DEV)
         self.assertEqual(Role.from_str("TESTER"), Role.TESTER)
+        self.assertEqual(Role.from_str("mf_sub"), Role.MF_SUB)
+        self.assertEqual(Role.from_str("MF_SUB"), Role.MF_SUB)
         self.assertEqual(Role.from_str("coordinator"), Role.COORDINATOR)
 
     def test_from_str_invalid(self):

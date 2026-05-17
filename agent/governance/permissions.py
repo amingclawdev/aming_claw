@@ -13,6 +13,42 @@ from .errors import (
 )
 
 
+# --- Capability Classes ---
+
+OPERATOR_ROLES = {Role.OBSERVER.value, Role.COORDINATOR.value}
+MF_SUBAGENT_ROLES = {Role.MF_SUB.value}
+
+
+def session_role(session: dict | None) -> str:
+    """Return the normalized role string from an authenticated session."""
+    if not isinstance(session, dict):
+        return ""
+    return str(session.get("role") or "").strip().lower()
+
+
+def require_operator_capability(session: dict | None, action: str) -> None:
+    """Allow only observer/coordinator sessions to mutate governance state."""
+    role = session_role(session)
+    if role not in OPERATOR_ROLES:
+        raise PermissionDeniedError(
+            role,
+            action,
+            {"detail": "Graph governance state operations are observer/coordinator only"},
+        )
+
+
+def require_mf_subagent_capability(session: dict | None, action: str) -> None:
+    """Allow a bounded MF subagent operation or an operator override."""
+    role = session_role(session)
+    if role in OPERATOR_ROLES or role in MF_SUBAGENT_ROLES:
+        return
+    raise PermissionDeniedError(
+        role,
+        action,
+        {"detail": "MF subagent operations require mf_sub, observer, or coordinator role"},
+    )
+
+
 # --- State Machine Table ---
 
 # (from_status, to_status) -> set of allowed roles

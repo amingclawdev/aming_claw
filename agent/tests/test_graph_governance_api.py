@@ -15,7 +15,7 @@ from agent.governance import reconcile_feedback
 from agent.governance import reconcile_semantic_enrichment as semantic_enrichment
 from agent.governance import server
 from agent.governance.db import _ensure_schema
-from agent.governance.errors import ValidationError
+from agent.governance.errors import PermissionDeniedError, ValidationError
 from agent.governance.governance_index import merge_feature_hashes_into_graph_nodes
 from agent.governance.mf_subagent_contract import MfSubagentContractError
 from agent.governance.parallel_branch_runtime import (
@@ -56,6 +56,25 @@ def _ctx(path_params: dict, *, method: str = "GET", query: dict | None = None, b
         "",
         "",
     )
+
+
+def _ctx_with_role(
+    path_params: dict,
+    role: str,
+    *,
+    method: str = "GET",
+    query: dict | None = None,
+    body: dict | None = None,
+):
+    ctx = _ctx(path_params, method=method, query=query, body=body)
+    ctx._session = {
+        "session_id": f"ses-{role}",
+        "principal_id": f"{role}-principal",
+        "project_id": path_params.get("project_id", PID),
+        "role": role,
+        "scope": [],
+    }
+    return ctx
 
 
 def _bare_handler():
@@ -495,6 +514,49 @@ def test_parallel_branch_finish_gate_records_validated_checkpoint(conn):
     assert finished["context"]["head_commit"] == "head-finish"
 
 
+def test_parallel_branch_finish_gate_accepts_mf_sub_session(conn):
+    upsert_branch_context(
+        conn,
+        BranchTaskRuntimeContext(
+            project_id=PID,
+            batch_id="PB-api-finish-mf-sub",
+            task_id="finish-mf-sub-task",
+            backlog_id="FEAT-FINISH-GATE",
+            branch_ref="refs/heads/codex/finish-mf-sub-task",
+            status="worktree_ready",
+            fence_token="fence-finish-mf-sub",
+            worktree_path="/tmp/nonexistent-finish-mf-sub-task",
+            base_commit="base-finish",
+            head_commit="base-finish",
+            target_head_commit="target-finish",
+        ),
+        now_iso="2026-05-17T07:30:00Z",
+    )
+
+    finished = server.handle_graph_governance_parallel_branch_finish_gate(
+        _ctx_with_role(
+            {"project_id": PID},
+            "mf_sub",
+            method="POST",
+            body={
+                "project_id": PID,
+                "task_id": "finish-mf-sub-task",
+                "status": "succeeded",
+                "changed_files": ["agent/governance/server.py"],
+                "test_results": {"status": "passed"},
+                "checkpoint_id": "ckpt-finish-mf-sub",
+                "fence_token": "fence-finish-mf-sub",
+                "head_commit": "head-finish-mf-sub",
+                "agent_id": "codex-subagent-mf-sub",
+            },
+        )
+    )
+
+    assert finished["ok"] is True
+    assert finished["context"]["checkpoint_id"] == "ckpt-finish-mf-sub"
+    assert finished["context"]["replay_source"] == "mf_sub_finish_gate"
+
+
 def test_parallel_branch_finish_gate_rejects_stale_fence(conn):
     upsert_branch_context(
         conn,
@@ -671,6 +733,60 @@ def test_mf_sub_merge_queue_requires_finish_gate_checkpoint(conn):
     assert queued["ok"] is True
     assert queued["context"]["status"] == "queued_for_merge"
     assert queued["context"]["checkpoint_id"] == "ckpt-mf-sub"
+
+
+def test_mf_sub_session_cannot_enqueue_or_execute_merge(conn):
+    queue_id = "mergeq-api-mf-sub-denied"
+    upsert_branch_context(
+        conn,
+        BranchTaskRuntimeContext(
+            project_id=PID,
+            task_id="mf-sub-denied-task",
+            backlog_id="FEAT-FINISH-GATE",
+            branch_ref="refs/heads/codex/mf-sub-denied-task",
+            status="validated",
+            fence_token="fence-mf-sub-denied",
+            worktree_path="/tmp/nonexistent-mf-sub-denied-task",
+            base_commit="base",
+            head_commit="head",
+            target_head_commit="target",
+            checkpoint_id="ckpt-mf-sub-denied",
+            replay_source="mf_sub_finish_gate",
+        ),
+        now_iso="2026-05-17T07:32:00Z",
+    )
+
+    with pytest.raises(PermissionDeniedError, match="merge-queue"):
+        server.handle_graph_governance_parallel_branch_merge_queue(
+            _ctx_with_role(
+                {"project_id": PID},
+                "mf_sub",
+                method="POST",
+                body={
+                    "task_id": "mf-sub-denied-task",
+                    "merge_queue_id": queue_id,
+                    "worker_role": "mf_sub",
+                    "checkpoint_id": "ckpt-mf-sub-denied",
+                    "fence_token": "fence-mf-sub-denied",
+                },
+            )
+        )
+
+    with pytest.raises(PermissionDeniedError, match="merge-execute"):
+        server.handle_graph_governance_parallel_branch_merge_execute(
+            _ctx_with_role(
+                {"project_id": PID},
+                "mf_sub",
+                method="POST",
+                body={
+                    "merge_queue_id": queue_id,
+                    "target_ref": "main",
+                    "task_id": "mf-sub-denied-task",
+                    "evidence": {},
+                    "dry_run": True,
+                },
+            )
+        )
 
 
 def test_parallel_branch_merge_gate_route_returns_dry_run_plan(conn):
@@ -4139,6 +4255,68 @@ def test_graph_governance_query_trace_api_records_source_and_events(conn):
         )
     )
     assert finished["trace"]["status"] == "complete"
+
+
+def test_mf_sub_graph_query_requires_task_scope_and_uses_bounded_source(conn):
+    snapshot = store.create_graph_snapshot(
+        conn,
+        PID,
+        snapshot_id="full-query-mf-sub",
+        commit_sha="head",
+        snapshot_kind="full",
+        graph_json=_graph(),
+    )
+    store.index_graph_snapshot(
+        conn,
+        PID,
+        snapshot["snapshot_id"],
+        nodes=_graph()["deps_graph"]["nodes"],
+        edges=_graph()["deps_graph"]["edges"],
+    )
+    store.activate_graph_snapshot(conn, PID, snapshot["snapshot_id"])
+    conn.commit()
+
+    with pytest.raises(ValidationError, match="fence_token is required"):
+        server.handle_graph_governance_query(
+            _ctx_with_role(
+                {"project_id": PID},
+                "mf_sub",
+                method="POST",
+                body={
+                    "snapshot_id": "active",
+                    "tool": "query_schema",
+                    "query_source": "mf_subagent",
+                    "parent_task_id": "subtask-1",
+                },
+            )
+        )
+
+    queried = server.handle_graph_governance_query(
+        _ctx_with_role(
+            {"project_id": PID},
+            "mf_sub",
+            method="POST",
+            body={
+                "snapshot_id": "active",
+                "tool": "query_schema",
+                "query_source": "mf_subagent",
+                "query_purpose": "subagent_context_build",
+                "parent_task_id": "subtask-1",
+                "fence_token": "fence-subtask-1",
+            },
+        )
+    )
+
+    assert queried["ok"] is True
+    assert "mf_subagent" in queried["result"]["query_sources"]
+    fetched = server.handle_graph_governance_query_trace_get(
+        _ctx_with_role(
+            {"project_id": PID, "trace_id": queried["trace_id"]},
+            "mf_sub",
+        )
+    )
+    assert fetched["trace"]["query_source"] == "mf_subagent"
+    assert fetched["trace"]["parent_task_id"] == "subtask-1"
 
 
 def test_graph_governance_query_api_exposes_graph_native_discovery(conn):

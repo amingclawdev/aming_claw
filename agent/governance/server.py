@@ -2953,10 +2953,47 @@ def _managed_ref_bootstrap_refs_from_body(project_id: str, body: dict) -> tuple[
 
 def _require_graph_governance_operator(ctx: RequestContext, conn, action: str) -> dict:
     session = ctx.require_auth(conn)
-    role = session.get("role", "")
-    if role not in ("observer", "coordinator"):
-        from .errors import PermissionDeniedError
-        raise PermissionDeniedError(role, action, {"detail": "Graph governance state operations are observer/coordinator only"})
+    from .permissions import require_operator_capability
+    require_operator_capability(session, action)
+    return session
+
+
+def _require_graph_governance_mf_subagent(ctx: RequestContext, conn, action: str) -> dict:
+    session = ctx.require_auth(conn)
+    from .permissions import require_mf_subagent_capability
+    require_mf_subagent_capability(session, action)
+    return session
+
+
+def _require_graph_query_capability(ctx: RequestContext, conn, body: dict, action: str) -> dict:
+    query_source = str(body.get("query_source") or "api_debug").strip().lower().replace("-", "_")
+    if query_source != "mf_subagent":
+        return _require_graph_governance_operator(ctx, conn, action)
+
+    session = _require_graph_governance_mf_subagent(ctx, conn, action)
+    parent_task_id = str(body.get("parent_task_id") or body.get("task_id") or "").strip()
+    fence_token = str(body.get("fence_token") or "").strip()
+    if not parent_task_id:
+        raise ValidationError("parent_task_id or task_id is required for mf_subagent graph query")
+    if not fence_token:
+        raise ValidationError("fence_token is required for mf_subagent graph query")
+    body["parent_task_id"] = parent_task_id
+    body["query_source"] = "mf_subagent"
+    return session
+
+
+def _require_graph_query_trace_capability(ctx: RequestContext, conn, trace: dict, action: str) -> dict:
+    session = ctx.require_auth(conn)
+    from .permissions import require_mf_subagent_capability, require_operator_capability, session_role
+    role = session_role(session)
+    if str(trace.get("query_source") or "") == "mf_subagent":
+        require_mf_subagent_capability(session, action)
+    else:
+        require_operator_capability(session, action)
+    if role == "mf_sub":
+        parent_task_id = str(trace.get("parent_task_id") or "").strip()
+        if not parent_task_id:
+            raise ValidationError("mf_subagent graph query trace must be task-scoped")
     return session
 
 
@@ -3306,7 +3343,7 @@ def handle_graph_governance_parallel_branch_finish_gate(ctx: RequestContext):
 
     conn = get_connection(project_id)
     try:
-        _require_graph_governance_operator(ctx, conn, "graph-governance.parallel-branches.finish-gate")
+        _require_graph_governance_mf_subagent(ctx, conn, "graph-governance.parallel-branches.finish-gate")
         with sqlite_write_lock():
             context = get_branch_context(conn, project_id, task_id)
             if context is None:
@@ -6075,7 +6112,7 @@ def handle_graph_governance_query_trace_start(ctx: RequestContext):
 
     conn = get_connection(project_id)
     try:
-        _require_graph_governance_operator(ctx, conn, "graph-governance.query-trace.start")
+        _require_graph_query_capability(ctx, conn, body, "graph-governance.query-trace.start")
         snapshot_id = _resolve_graph_snapshot_id(conn, project_id, str(body.get("snapshot_id") or "active"))
         try:
             with sqlite_write_lock():
@@ -6118,7 +6155,7 @@ def handle_graph_governance_query(ctx: RequestContext):
         root = _graph_governance_project_root(project_id, body)
     conn = get_connection(project_id)
     try:
-        _require_graph_governance_operator(ctx, conn, "graph-governance.query")
+        _require_graph_query_capability(ctx, conn, body, "graph-governance.query")
         snapshot_id = _resolve_graph_snapshot_id(conn, project_id, str(body.get("snapshot_id") or "active"))
         try:
             with sqlite_write_lock():
@@ -6156,9 +6193,15 @@ def handle_graph_governance_query_trace_finish(ctx: RequestContext):
 
     conn = get_connection(project_id)
     try:
-        _require_graph_governance_operator(ctx, conn, "graph-governance.query-trace.finish")
         try:
             with sqlite_write_lock():
+                existing = graph_query_trace.get_trace(conn, project_id, trace_id)["trace"]
+                _require_graph_query_trace_capability(
+                    ctx,
+                    conn,
+                    existing,
+                    "graph-governance.query-trace.finish",
+                )
                 result = graph_query_trace.finish_trace(
                     conn,
                     project_id,
@@ -6183,9 +6226,15 @@ def handle_graph_governance_query_trace_get(ctx: RequestContext):
 
     conn = get_connection(project_id)
     try:
-        _require_graph_governance_operator(ctx, conn, "graph-governance.query-trace.get")
         try:
-            return graph_query_trace.get_trace(conn, project_id, trace_id)
+            result = graph_query_trace.get_trace(conn, project_id, trace_id)
+            _require_graph_query_trace_capability(
+                ctx,
+                conn,
+                result["trace"],
+                "graph-governance.query-trace.get",
+            )
+            return result
         except KeyError as exc:
             _raise_graph_api_validation(exc)
     finally:

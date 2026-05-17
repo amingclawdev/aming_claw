@@ -567,6 +567,15 @@ before recording a `mf_sub_finish_gate` checkpoint. Merge queue requests with
 `worker_role=mf_sub` or `require_finish_gate=true` must reference that validated
 checkpoint before they can enter the durable queue.
 
+Implemented lightweight MF subagent capability gate: `mf_sub` is now a
+first-class authenticated role, but it only has bounded worker capabilities.
+An `mf_sub` session may call the finish gate and audited graph query endpoints
+with `query_source=mf_subagent`, `parent_task_id`/`task_id`, and `fence_token`.
+Observer/coordinator authority is still required for merge queue writes,
+merge execution, graph reconcile/activation, backlog close, ServiceManager or
+governance restarts, worktree cleanup, and other privileged state changes. This
+is an MVP capability boundary, not enterprise RBAC.
+
 Implemented fenced merge-queue API slice:
 `POST /api/graph-governance/{project_id}/parallel-branches/merge-queue` lets a
 branch runtime context enter the durable merge queue without direct client DB

@@ -102,6 +102,7 @@ class Role(Enum):
     TESTER      = "tester"
     QA          = "qa"
     GATEKEEPER  = "gatekeeper"
+    MF_SUB      = "mf_sub"
     OBSERVER    = "observer"
     COORDINATOR = "coordinator"
 

@@ -43,6 +43,14 @@ class TestRoleService(unittest.TestCase):
         self.conn.commit()
         self.assertEqual(result["role"], "coordinator")
 
+    def test_register_mf_sub(self):
+        result = role_service.register(
+            self.conn, "mf-sub-001", self.project_id, "mf_sub", scope=["L7.*"],
+        )
+        self.conn.commit()
+        self.assertEqual(result["role"], "mf_sub")
+        self.assertTrue(result["token"].startswith("gov-"))
+
     def test_authenticate_valid_token(self):
         result = role_service.register(
             self.conn, "tester-001", self.project_id, "tester",
