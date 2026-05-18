@@ -14,10 +14,16 @@ from agent.governance.reconcile_semantic_config import PROJECT_OVERRIDE_PATH
 
 SCHEMA_VERSION = "graph_enrich_config_ops.v1"
 ANALYZER_ROLE = "reconcile_graph_enrich_config_analyzer"
-SUPPORTED_OPS = {
+CONFIG_RULE_OPS = {
     "add_rule",
+    "downgrade_relation_confidence",
+    "downgrade_rule",
     "promote_rule",
     "review_rule",
+    "tighten_rule",
+}
+SUPPORTED_OPS = {
+    *CONFIG_RULE_OPS,
     "upsert_edge_evidence_policy",
 }
 CONFIG_EDGE_ALLOWLIST = set(EDGE_ALLOWLIST) | {
@@ -29,37 +35,40 @@ CONFIG_EDGE_ALLOWLIST = set(EDGE_ALLOWLIST) | {
     "configures_model_routing",
     "configures_role",
     "configures_runtime",
+    "references_schema",
+}
+CONFIG_DOWNGRADE_TARGETS = CONFIG_EDGE_ALLOWLIST | {
+    "drop",
+    "ignore",
+    "ignored",
+    "weak",
+    "weak_tests",
 }
 SUPPORTED_SOURCE_EVIDENCE = {
     "event_bus_subscribe",
     "function_calls",
     "import_only",
     "semantic_feedback",
+    "string_literal",
+    "test_import_fanin",
     "weak_call_resolver_ambiguous_add",
+    "weak_call_resolver_ambiguous_short_name",
 }
-SUPPORTED_ACTIONS = {"add", "allow", "downgrade", "ignore", "promote", "reject"}
+SUPPORTED_ACTIONS = {
+    "add",
+    "allow",
+    "downgrade",
+    "drop",
+    "ignore",
+    "promote",
+    "reject",
+    "require_direct_symbol_import",
+}
 _REQUIRED_OPERATION_FIELDS = {
-    "add_rule": [
-        "op",
-        "rule_id",
-        "edge",
-        "source_evidence",
-        "action",
-    ],
-    "promote_rule": [
-        "op",
-        "rule_id",
-        "edge",
-        "source_evidence",
-        "action",
-    ],
-    "review_rule": [
-        "op",
-        "rule_id",
-        "edge",
-        "source_evidence",
-        "action",
-    ],
+    name: ["op", "rule_id", "edge", "source_evidence", "action"]
+    for name in sorted(CONFIG_RULE_OPS)
+}
+_REQUIRED_OPERATION_FIELDS.update({
     "upsert_edge_evidence_policy": [
         "op",
         "rule_id",
@@ -67,7 +76,7 @@ _REQUIRED_OPERATION_FIELDS = {
         "source_evidence",
         "action",
     ],
-}
+})
 
 
 def graph_enrich_config_ops_output_contract() -> dict[str, Any]:
@@ -76,8 +85,14 @@ def graph_enrich_config_ops_output_contract() -> dict[str, Any]:
         "return_exactly_one_json_object": True,
         "supported_operations": sorted(SUPPORTED_OPS),
         "supported_edges": sorted(CONFIG_EDGE_ALLOWLIST),
+        "supported_downgrade_targets": sorted(CONFIG_DOWNGRADE_TARGETS),
         "supported_source_evidence": sorted(SUPPORTED_SOURCE_EVIDENCE),
         "supported_actions": sorted(SUPPORTED_ACTIONS),
+        "custom_rule_tokens": {
+            "source_evidence": "Rule ops accept non-empty custom evidence tokens; policy ops remain strict.",
+            "action": "Rule ops accept non-empty custom actions for observer-reviewed config proposals.",
+            "downgrade_to": "Rule ops accept non-empty custom downgrade targets.",
+        },
         "required_top_level_fields": ["schema_version", "source", "operations", "self_check"],
         "required_operation_fields": {
             name: list(fields)
@@ -267,6 +282,8 @@ def _validate_operation(
         action = "ignore"
         downgrade_to = ""
         normalizations.append("downgrade_ignored_normalized_to_ignore")
+    is_rule_op = op_name in CONFIG_RULE_OPS
+    is_policy_op = op_name == "upsert_edge_evidence_policy"
     if op_name not in SUPPORTED_OPS:
         errors.append("unsupported_config_op")
     if not rule_id:
@@ -276,15 +293,25 @@ def _validate_operation(
     seen_rule_ids.add(rule_id)
     if edge not in CONFIG_EDGE_ALLOWLIST:
         errors.append("edge_unsupported")
-    if source_evidence not in SUPPORTED_SOURCE_EVIDENCE:
+    if not source_evidence:
+        errors.append("source_evidence_missing")
+    elif source_evidence not in SUPPORTED_SOURCE_EVIDENCE and not is_rule_op:
         errors.append("source_evidence_unsupported")
-    if action not in SUPPORTED_ACTIONS:
+    elif source_evidence not in SUPPORTED_SOURCE_EVIDENCE and is_rule_op:
+        normalizations.append("custom_source_evidence")
+    if not action:
+        errors.append("action_missing")
+    elif action not in SUPPORTED_ACTIONS and not is_rule_op:
         errors.append("action_unsupported")
-    if action == "downgrade" and downgrade_to not in CONFIG_EDGE_ALLOWLIST:
+    elif action not in SUPPORTED_ACTIONS and is_rule_op:
+        normalizations.append("custom_action")
+    if action == "downgrade" and downgrade_to not in CONFIG_DOWNGRADE_TARGETS and not is_rule_op:
         errors.append("downgrade_to_unsupported")
-    if op_name == "upsert_edge_evidence_policy" and action not in {"allow", "downgrade", "reject"}:
+    elif action == "downgrade" and downgrade_to not in CONFIG_DOWNGRADE_TARGETS and is_rule_op:
+        normalizations.append("custom_downgrade_target")
+    if is_policy_op and action not in {"allow", "downgrade", "reject"}:
         errors.append("action_unsupported_for_policy")
-    if op_name == "upsert_edge_evidence_policy" and source_evidence != "import_only":
+    if is_policy_op and source_evidence != "import_only":
         errors.append("source_evidence_unsupported_for_policy")
     confidence = op.get("confidence")
     if confidence is not None:

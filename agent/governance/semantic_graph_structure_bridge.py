@@ -19,7 +19,9 @@ from .graph_structure_ops import (
 )
 from .graph_enrich_config_ops import (
     ANALYZER_ROLE as CONFIG_ANALYZER_ROLE,
+    CONFIG_DOWNGRADE_TARGETS,
     CONFIG_EDGE_ALLOWLIST,
+    CONFIG_RULE_OPS,
     SCHEMA_VERSION as CONFIG_SCHEMA_VERSION,
     SUPPORTED_ACTIONS as CONFIG_SUPPORTED_ACTIONS,
     SUPPORTED_OPS as CONFIG_SUPPORTED_OPS,
@@ -560,6 +562,8 @@ def _extract_suggestions(semantic_payload: Mapping[str, Any]) -> list[dict[str, 
             raw_ops = raw.get("operations")
             if isinstance(raw_ops, list):
                 raw = raw_ops
+            else:
+                continue
         for item in _coerce_suggestion_list(raw):
             if isinstance(item, dict):
                 item = dict(item)
@@ -576,6 +580,8 @@ def _extract_config_suggestions(semantic_payload: Mapping[str, Any]) -> list[dic
             raw_ops = raw.get("operations")
             if isinstance(raw_ops, list):
                 raw = raw_ops
+            else:
+                continue
         for item in _coerce_suggestion_list(raw):
             if isinstance(item, dict):
                 item = dict(item)
@@ -691,6 +697,7 @@ def _convert_config_suggestion(
     ).strip()
     if op not in CONFIG_SUPPORTED_OPS:
         return {"reason": "unsupported_config_op", "suggestion": raw}
+    is_rule_op = op in CONFIG_RULE_OPS
     edge = _normalize_config_token(raw.get("edge") or raw.get("edge_type"))
     source_evidence = str(
         raw.get("source_evidence")
@@ -705,10 +712,16 @@ def _convert_config_suggestion(
         downgrade_to = ""
     if edge not in CONFIG_EDGE_ALLOWLIST:
         return {"reason": "edge_unsupported", "suggestion": raw}
-    if source_evidence not in CONFIG_SUPPORTED_SOURCE_EVIDENCE:
+    if not source_evidence:
+        return {"reason": "source_evidence_missing", "suggestion": raw}
+    if source_evidence not in CONFIG_SUPPORTED_SOURCE_EVIDENCE and not is_rule_op:
         return {"reason": "source_evidence_unsupported", "suggestion": raw}
-    if action not in CONFIG_SUPPORTED_ACTIONS:
+    if not action:
+        return {"reason": "action_missing", "suggestion": raw}
+    if action not in CONFIG_SUPPORTED_ACTIONS and not is_rule_op:
         return {"reason": "action_unsupported", "suggestion": raw}
+    if action == "downgrade" and downgrade_to not in CONFIG_DOWNGRADE_TARGETS and not is_rule_op:
+        return {"reason": "downgrade_to_unsupported", "suggestion": raw}
     operation = {
         "op": op,
         "rule_id": str(raw.get("rule_id") or _hint_id(semantic_event, index, raw)).strip(),

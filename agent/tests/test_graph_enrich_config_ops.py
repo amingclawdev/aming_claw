@@ -138,6 +138,58 @@ def _rule_payload() -> dict:
     }
 
 
+def _flexible_rule_payload() -> dict:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "source": {
+            "analyzer_role": "reconcile_graph_enrich_config_analyzer",
+        },
+        "operations": [
+            {
+                "op": "downgrade_relation_confidence",
+                "rule_id": "emits_event.string_literal",
+                "edge": "emits_event",
+                "source_evidence": "string literal",
+                "action": "downgrade",
+                "downgrade_to": "references_schema",
+                "confidence": 0.77,
+                "evidence": {
+                    "reason": "Prompt-template schema literals should not become runtime event emits.",
+                },
+            },
+            {
+                "op": "tighten_rule",
+                "rule_id": "tests_edge_from_filename_match",
+                "edge": "tests",
+                "source_evidence": "test_import_fanin",
+                "action": "require_direct_symbol_import",
+                "downgrade_to": "weak_tests",
+                "confidence": 0.73,
+                "evidence": {
+                    "reason": "Filename-only matches should not be strong tests edges.",
+                },
+            },
+            {
+                "op": "downgrade_rule",
+                "rule_id": "weak_call_resolver.ambiguous_short_name",
+                "edge": "calls",
+                "source_evidence": "function_weak_calls ambiguous add candidates",
+                "action": "downgrade",
+                "downgrade_to": "drop",
+                "confidence": 0.7,
+                "evidence": {
+                    "reason": "Bare collection method names should not create cross-module calls.",
+                },
+            },
+        ],
+        "self_check": {
+            "valid": True,
+            "checked_rules": ["op_supported", "edge_supported", "config_patch_previewed"],
+            "known_risks": [],
+        },
+    }
+
+
 def test_graph_enrich_config_ops_dry_run_is_non_mutating_generated_project(tmp_path):
     project = tmp_path / "generated-project"
     project.mkdir()
@@ -206,6 +258,29 @@ def test_graph_enrich_config_rule_ops_dry_run_previews_project_override(tmp_path
     assert rules["function_calls.strong_resolved_to_depends_on"]["action"] == "promote"
     assert rules["event_bus.subscribe_to_consumes_event"]["edge"] == "consumes_event"
     assert not (project / PROJECT_OVERRIDE_PATH).exists()
+
+
+def test_graph_enrich_config_flexible_rule_ops_capture_observer_review_rules(tmp_path):
+    project = tmp_path / "generated-project"
+    project.mkdir()
+
+    result = run_graph_enrich_config_ai_output_pipeline(
+        raw_output=json.dumps(_flexible_rule_payload()),
+        mode="dry_run",
+        project_root=project,
+    )
+
+    assert result["ok"] is True
+    assert result["gate"]["accepted_count"] == 3
+    rules = result["preview"]["graph_enrich_config_ops"]["rules"]
+    assert rules["emits_event.string_literal"]["downgrade_to"] == "references_schema"
+    assert rules["tests_edge_from_filename_match"]["action"] == "require_direct_symbol_import"
+    assert rules["weak_call_resolver.ambiguous_short_name"]["downgrade_to"] == "drop"
+    weak_call = next(
+        op for op in result["gate"]["operations"]
+        if op["rule_id"] == "weak_call_resolver.ambiguous_short_name"
+    )
+    assert weak_call["normalizations"] == ["custom_source_evidence"]
 
 
 def test_graph_enrich_config_ops_api_accepts_ai_output_and_writes_project_override(

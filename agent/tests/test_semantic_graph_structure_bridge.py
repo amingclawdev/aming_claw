@@ -699,6 +699,93 @@ def test_bridge_converts_semantic_rule_config_suggestions_to_dry_run_job(
     assert rules["event_bus.subscribe_to_consumes_event"]["edge"] == "consumes_event"
 
 
+def test_bridge_converts_flexible_config_rule_ops_and_ignores_empty_ops_object(
+    conn,
+    tmp_path,
+):
+    project = tmp_path / "generated-project"
+    _write_generated_project(project)
+    snapshot_id = _create_snapshot(conn, project, "semantic-bridge-config-flex")
+    service_id = _node_id_for_primary(snapshot_id, "agent/service.py")
+    event = _semantic_event(
+        conn,
+        snapshot_id,
+        service_id,
+        {
+            "graph_structure_ops": {},
+            "graph_enrich_config_ops": {},
+            "graph_enrich_config_suggestions": [
+                {
+                    "op": "downgrade_relation_confidence",
+                    "rule_id": "emits_event.string_literal",
+                    "edge": "emits_event",
+                    "source_evidence": "string literal",
+                    "action": "downgrade",
+                    "downgrade_to": "references_schema",
+                    "confidence": 0.76,
+                    "evidence": {
+                        "reason": "Prompt contract literals are schema references, not runtime emits.",
+                    },
+                },
+                {
+                    "op": "tighten_rule",
+                    "rule_id": "tests_edge_from_filename_match",
+                    "edge": "tests",
+                    "source_evidence": "test_import_fanin",
+                    "action": "require_direct_symbol_import",
+                    "downgrade_to": "weak_tests",
+                    "confidence": 0.72,
+                    "evidence": {
+                        "reason": "Filename matches should remain weak until symbol imports prove coverage.",
+                    },
+                },
+            ],
+        },
+        event_id="sem-bridge-config-flex",
+    )
+
+    structure = bridge.bridge_semantic_events_to_graph_structure_jobs(
+        conn,
+        PID,
+        snapshot_id,
+        event_ids=[event["event_id"]],
+        actor="test",
+    )
+    config = bridge.bridge_semantic_events_to_graph_enrich_config_jobs(
+        conn,
+        PID,
+        snapshot_id,
+        event_ids=[event["event_id"]],
+        actor="test",
+        project_root=str(project),
+    )
+    conn.commit()
+
+    assert structure["queued_count"] == 0
+    assert structure["skipped_count"] == 0
+    assert config["queued_count"] == 1
+    assert config["skipped_count"] == 0
+    operations = config["events"][0]["payload"]["ai_output"]["operations"]
+    assert [operation["op"] for operation in operations] == [
+        "downgrade_relation_confidence",
+        "tighten_rule",
+    ]
+
+    semantic_worker._drain_graph_enrich_config(PID, snapshot_id)
+
+    completed = graph_events.list_events(
+        conn,
+        PID,
+        snapshot_id,
+        event_types=["graph_enrich_config_completed"],
+    )
+    gate_result = completed[0]["payload"]["result"]
+    assert gate_result["ok"] is True
+    rules = gate_result["preview"]["graph_enrich_config_ops"]["rules"]
+    assert rules["emits_event.string_literal"]["downgrade_to"] == "references_schema"
+    assert rules["tests_edge_from_filename_match"]["action"] == "require_direct_symbol_import"
+
+
 def test_semantic_worker_drains_graph_enrich_config_accept_job_generated_project(
     conn,
     tmp_path,
