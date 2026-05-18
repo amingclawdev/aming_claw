@@ -2936,8 +2936,12 @@ def list_pending_scope_reconcile(
 
 
 def graph_governance_status(conn: sqlite3.Connection, project_id: str) -> dict[str, Any]:
+    from .graph_rule_fingerprint import compact_rule_fingerprint, snapshot_rule_fingerprint
+
     active = get_active_graph_snapshot(conn, project_id)
     materialization = snapshot_materialization_provenance(active)
+    raw_rule_fingerprint = snapshot_rule_fingerprint(active)
+    rule_fingerprint = compact_rule_fingerprint(raw_rule_fingerprint) if raw_rule_fingerprint else {}
     scan = get_latest_scan_baseline(conn, project_id)
     pending = list_pending_scope_reconcile(
         conn,
@@ -2955,6 +2959,8 @@ def graph_governance_status(conn: sqlite3.Connection, project_id: str) -> dict[s
         "materialized_graph_baseline_commit": active.get("commit_sha") if active else "",
         "active_snapshot_materialization": materialization,
         "active_snapshot_warnings": materialization.get("warnings") or [],
+        "active_snapshot_rule_fingerprint": rule_fingerprint,
+        "active_snapshot_rule_fingerprint_id": rule_fingerprint.get("fingerprint", ""),
         "scan_baseline_commit": scan.get("chain_version") if scan else "",
         "scan_baseline_id": scan.get("baseline_id") if scan else None,
         "pending_scope_reconcile_count": len(pending),

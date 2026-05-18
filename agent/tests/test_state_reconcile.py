@@ -306,6 +306,15 @@ def test_state_only_full_reconcile_creates_candidate_snapshot_without_project_mu
     assert Path(notes["trace"]["summary_path"]).exists()
     assert notes["governance_index"]["feature_count"] == result["governance_index"]["feature_count"]
     assert notes["semantic_enrichment"]["feature_count"] == result["semantic_enrichment"]["feature_count"]
+    rule_fingerprint = notes["graph_rule_fingerprint"]
+    assert rule_fingerprint["fingerprint"].startswith("sha256:")
+    assert rule_fingerprint["components"]["algorithm"]["fingerprint"].startswith("sha256:")
+    assert rule_fingerprint["components"]["semantic_enrichment_config"]["fingerprint"].startswith("sha256:")
+    anchor = notes["full_reconcile_anchor"]
+    assert anchor["anchor_commit"] == "abc1234"
+    assert anchor["snapshot_id"] == "full-abc1234-test"
+    assert anchor["structure_rule_fingerprint"] == rule_fingerprint["fingerprint"]
+    assert anchor["reconcile_mode"] == "full"
 
 
 def test_state_only_full_reconcile_materializes_source_graph_hints_in_generated_project(conn, tmp_path):

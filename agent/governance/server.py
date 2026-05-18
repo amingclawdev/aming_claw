@@ -4765,6 +4765,39 @@ def _git_commit_range(project_root: Path, base_commit: str, target_commit: str) 
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
+def _current_graph_rule_fingerprint(project_root: Path) -> dict[str, Any]:
+    from .graph_rule_fingerprint import build_graph_rule_fingerprint
+
+    return build_graph_rule_fingerprint(project_root, include_source_hints=False)
+
+
+def _graph_rule_fingerprint_status(
+    project_root: Path,
+    status: dict[str, Any],
+) -> dict[str, Any]:
+    from .graph_rule_fingerprint import compare_rule_fingerprint
+
+    snapshot_fingerprint = status.get("active_snapshot_rule_fingerprint")
+    if not isinstance(snapshot_fingerprint, dict) or not snapshot_fingerprint.get("fingerprint"):
+        return {
+            "available": False,
+            "mismatch": False,
+            "snapshot_fingerprint": "",
+            "current_fingerprint": "",
+        }
+    try:
+        current_fingerprint = _current_graph_rule_fingerprint(project_root)
+    except Exception as exc:
+        return {
+            "available": False,
+            "mismatch": False,
+            "snapshot_fingerprint": str(snapshot_fingerprint.get("fingerprint") or ""),
+            "current_fingerprint": "",
+            "error": type(exc).__name__,
+        }
+    return compare_rule_fingerprint(snapshot_fingerprint, current_fingerprint)
+
+
 def _graph_stale_scope_operation(
     project_id: str,
     *,
@@ -4792,7 +4825,42 @@ def _graph_stale_scope_operation(
     stale_summary["head_commit"] = head_commit
     if not head_commit or not graph_commit:
         return None, stale_summary
+    rule_fingerprint = _graph_rule_fingerprint_status(root, status)
+    if rule_fingerprint.get("snapshot_fingerprint") or rule_fingerprint.get("current_fingerprint"):
+        stale_summary["rule_fingerprint"] = rule_fingerprint
+    rule_fingerprint_mismatch = bool(rule_fingerprint.get("mismatch"))
     if head_commit == graph_commit:
+        if rule_fingerprint_mismatch:
+            stale_summary.update({
+                "is_stale": True,
+                "stale_reason": "rule_fingerprint_mismatch",
+                "recommended_action": "run_full_reconcile",
+                "requires_reconcile": True,
+            })
+            operation = {
+                "operation_id": f"scope-reconcile:rule-fingerprint:{head_commit[:12]}",
+                "operation_type": "scope_reconcile",
+                "target_scope": "snapshot",
+                "target_id": head_commit,
+                "target_label": head_commit[:12],
+                "status": "not_queued",
+                "progress": {"done": 0, "total": 1},
+                "created_at": "",
+                "updated_at": "",
+                "claimed_by": "",
+                "worker_id": "",
+                "lease_expires_at": "",
+                "last_error": "",
+                "last_result": "graph rule fingerprint changed; run full reconcile before trusting active graph",
+                "supported_actions": ["run_full_reconcile", "view_trace", "file_backlog"],
+                "active_graph_commit": graph_commit,
+                "head_commit": head_commit,
+                "changed_files": [],
+                "warnings": active_warnings,
+                "rule_fingerprint": rule_fingerprint,
+                "recommended_action": "run_full_reconcile",
+            }
+            return operation, stale_summary
         if not active_warnings:
             return None, stale_summary
         operation = {
@@ -4826,6 +4894,12 @@ def _graph_stale_scope_operation(
         "changed_files": changed_files,
         "changed_file_count": len(all_changed_files),
     })
+    if rule_fingerprint_mismatch:
+        stale_summary.update({
+            "stale_reason": "commit_and_rule_fingerprint_mismatch",
+            "recommended_action": "run_full_reconcile",
+            "requires_reconcile": True,
+        })
     pending_for_head = any(
         str(row.get("commit_sha") or row.get("target_commit") or "") == head_commit
         and str(row.get("ref_name") or "active") == "active"

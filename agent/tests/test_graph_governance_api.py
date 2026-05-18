@@ -7007,6 +7007,84 @@ def test_operations_queue_synthesizes_stale_scope_reconcile(conn, monkeypatch, t
     assert queue["summary"]["graph_stale"]["changed_file_count"] == 30
 
 
+def test_operations_queue_surfaces_rule_fingerprint_rebuild_action(conn, monkeypatch, tmp_path):
+    project = tmp_path / "generated-rule-rollback-project"
+    project.mkdir()
+    subprocess.run(["git", "init"], cwd=project, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=project, check=True)
+    (project / "agent").mkdir()
+    (project / "agent" / "service.py").write_text("def run():\n    return 'ok'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=project, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=project, check=True, capture_output=True, text=True)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=project,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    monkeypatch.setattr(
+        server,
+        "_require_graph_governance_operator",
+        lambda *_args, **_kwargs: {"role": "observer"},
+    )
+    monkeypatch.setattr(server, "_graph_governance_project_root", lambda *_args, **_kwargs: project)
+    monkeypatch.setattr(server, "_current_graph_rule_fingerprint", lambda _root: {
+        "fingerprint": "sha256:current-after-rollback",
+        "components": {"algorithm": {"fingerprint": "sha256:algo-v2"}},
+    })
+    monkeypatch.setattr(server, "_git_changed_paths_between", lambda *_args, **_kwargs: [])
+
+    old_rule = {
+        "fingerprint": "sha256:anchor-before-rollback",
+        "components": {"algorithm": {"fingerprint": "sha256:algo-v1"}},
+    }
+    snapshot = store.create_graph_snapshot(
+        conn,
+        PID,
+        snapshot_id="full-rule-anchor",
+        commit_sha=head,
+        snapshot_kind="full",
+        graph_json=_graph(),
+        notes=json.dumps({
+            "graph_rule_fingerprint": old_rule,
+            "full_reconcile_anchor": {
+                "anchor_commit": head,
+                "snapshot_id": "full-rule-anchor",
+                "structure_rule_fingerprint": old_rule["fingerprint"],
+                "reconcile_mode": "full",
+            },
+        }),
+    )
+    store.index_graph_snapshot(
+        conn,
+        PID,
+        snapshot["snapshot_id"],
+        nodes=_graph()["deps_graph"]["nodes"],
+        edges=_graph()["deps_graph"]["edges"],
+    )
+    store.activate_graph_snapshot(conn, PID, snapshot["snapshot_id"])
+    conn.commit()
+
+    status = server.handle_graph_governance_status(_ctx({"project_id": PID}))
+    graph_stale = status["current_state"]["graph_stale"]
+    assert graph_stale["is_stale"] is True
+    assert graph_stale["stale_reason"] == "rule_fingerprint_mismatch"
+    assert graph_stale["recommended_action"] == "run_full_reconcile"
+    assert graph_stale["rule_fingerprint"]["snapshot_fingerprint"] == "sha256:anchor-before-rollback"
+    assert graph_stale["rule_fingerprint"]["current_fingerprint"] == "sha256:current-after-rollback"
+
+    queue = server.handle_graph_governance_operations_queue(_ctx({"project_id": PID}))
+    row = next(item for item in queue["operations"] if item["operation_id"].startswith("scope-reconcile:rule-fingerprint:"))
+    assert row["operation_type"] == "scope_reconcile"
+    assert row["status"] == "not_queued"
+    assert row["target_id"] == head
+    assert row["last_result"] == "graph rule fingerprint changed; run full reconcile before trusting active graph"
+    assert row["supported_actions"] == ["run_full_reconcile", "view_trace", "file_backlog"]
+
+
 def test_operations_queue_surfaces_suspect_snapshot_root_warning(conn, monkeypatch, tmp_path):
     monkeypatch.setattr(
         server,

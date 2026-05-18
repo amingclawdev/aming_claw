@@ -50,6 +50,10 @@ from agent.governance.graph_correction_patches import (
     record_patch_apply_report,
 )
 from agent.governance.graph_hint_projection import build_hint_projection
+from agent.governance.graph_rule_fingerprint import (
+    build_full_reconcile_anchor,
+    build_graph_rule_fingerprint,
+)
 from agent.governance.graph_structure_hints import load_graph_structure_hints
 from agent.governance.db import sqlite_write_lock
 from agent.governance.dirty_worktree import filter_dirty_files, parse_git_porcelain_paths
@@ -2225,6 +2229,12 @@ def run_state_only_full_reconcile(
     )
     nodes = _deps_graph_nodes(candidate_graph)
     edges = _deps_graph_edges(candidate_graph)
+    rule_fingerprint = build_graph_rule_fingerprint(
+        root,
+        commit_sha=commit,
+        hint_index=hint_index,
+        semantic_config_path=semantic_config_path,
+    )
     notes = {
         "state_only": True,
         "run_id": rid,
@@ -2237,9 +2247,18 @@ def run_state_only_full_reconcile(
         "relationship_metrics": relationship_metrics["report"],
         "graph_correction_patch_report": patch_application["report"],
         "graph_structure_hint_projection": graph_structure_hint_report,
+        "graph_rule_fingerprint": rule_fingerprint,
         "checkout_provenance": checkout_provenance,
         **(notes_extra or {}),
     }
+    if snapshot_kind == "full":
+        notes["full_reconcile_anchor"] = build_full_reconcile_anchor(
+            project_id=project_id,
+            snapshot_id=sid,
+            anchor_commit=commit,
+            rule_fingerprint=rule_fingerprint,
+            reconcile_mode="full",
+        )
     notes["trace"] = {
         "trace_dir": str(trace.trace_dir),
         "summary_path": str(trace.trace_dir / "summary.json"),
@@ -2992,6 +3011,7 @@ def _run_incremental_metadata_scope_reconcile_candidate(
         strategy="incremental_graph_delta",
         mode=graph_delta_mode,
     )
+    rule_fingerprint = build_graph_rule_fingerprint(root, commit_sha=target)
     notes = {
         "state_only": True,
         "run_id": rid,
@@ -3010,6 +3030,7 @@ def _run_incremental_metadata_scope_reconcile_candidate(
         "file_inventory_summary": governance_index.get("file_inventory_summary") or {},
         "governance_hint_bindings": governance_index.get("governance_hint_bindings") or {},
         "governance_index_hash_metadata": hash_metadata_merge,
+        "graph_rule_fingerprint": rule_fingerprint,
         "checkout_provenance": checkout_provenance,
     }
     notes["trace"] = {
