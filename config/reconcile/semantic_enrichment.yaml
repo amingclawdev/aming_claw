@@ -135,13 +135,20 @@ job_profiles:
           "valid": true,
           "checked_rules": [
             "schema_version",
+            "semantic_bridge_normalized",
             "op_supported",
+            "required_fields_present",
             "target_node_exists",
             "source_path_exists",
             "role_allowed",
             "edge_allowed",
+            "calls_require_concrete_evidence",
+            "calls_self_edge_rejected",
             "conflict_check"
           ],
+          "precheck_status": "passed",
+          "repair_attempts": 0,
+          "max_repair_attempts": 1,
           "known_risks": []
         }
       }
@@ -149,6 +156,11 @@ job_profiles:
       Only emit operations supported by source hint projection in the current
       gate: move_file, add_edge, and suppress_edge. Do not emit merge_nodes,
       split_node, reparent_node, or direct DB patches.
+      Before returning JSON, run your own self-precheck against
+      payload.output_contract.self_precheck.checked_rules_required. If a
+      relation needs a calls edge but you do not have concrete call evidence,
+      emit imports/depends_on or a graph_enrich_config suggestion instead of
+      marking the calls proposal valid.
   graph_enrich_config:
     analyzer_role: reconcile_graph_enrich_config_analyzer
     prompt_template: |-
@@ -182,15 +194,27 @@ job_profiles:
           "valid": true,
           "checked_rules": [
             "schema_version",
+            "semantic_bridge_normalized",
             "op_supported",
-            "edge_supported",
-            "source_evidence_supported",
-            "action_supported",
-            "config_patch_previewed"
+            "required_fields_present",
+            "edge_supported_or_canonical_alias",
+            "source_evidence_present",
+            "action_present",
+            "config_patch_previewed",
+            "observer_approval_required"
           ],
+          "precheck_status": "passed",
+          "repair_attempts": 0,
+          "max_repair_attempts": 1,
           "known_risks": []
         }
       }
+
+      Before returning JSON, run your own self-precheck against
+      payload.output_contract.self_precheck.checked_rules_required. Prefer
+      canonical edge names from payload.output_contract.supported_edges; when
+      using an alias, normalize it in your output or explain the alias risk in
+      self_check.known_risks.
   retry:
     analyzer_role: reconcile_semantic_retry_reviewer
   dry_run:
@@ -239,11 +263,17 @@ prompt_template: |-
   fields: op, source_path, target_node_id or target, edge, confidence, and
   evidence. These suggestions are never applied directly; the worker converts
   them into graph-structure dry-run jobs that must pass the gate and observer
-  approval before source hints are written.
+  approval before source hints are written. Self-precheck these suggestions
+  before emitting them: do not propose calls without concrete call evidence,
+  do not point to missing files/nodes, and keep unsafe/uncertain corrections in
+  known risks or graph_enrich_config_suggestions.
 
   When a correction requires changing graph-enrichment rules instead of writing
   a source hint, emit it in graph_enrich_config_suggestions using only
   graph_enrich_config_ops.v1-compatible fields: op, rule_id, edge,
   source_evidence, action, downgrade_to, confidence, and evidence. These
   suggestions are never applied directly; they must pass the config gate and
-  observer approval before project override config is written.
+  observer approval before project override config is written. Self-precheck
+  these suggestions against the configured operation/edge/action contract and
+  prefer config-rule proposals when the bottom-up algorithm needs to change
+  rather than a one-off source hint.

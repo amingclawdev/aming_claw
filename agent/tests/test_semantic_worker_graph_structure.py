@@ -122,6 +122,7 @@ def test_semantic_worker_graph_structure_bridge_accepts_generated_project_output
     )
     assert preview["ok"] is True
     assert preview["mutated"] is False
+    assert preview["precheck"]["status"] == "passed"
     assert preview["projection"]["effect_counts"]["edges_added"] == 1
 
     accepted = semantic_worker.handle_graph_structure_ai_output(
@@ -309,6 +310,8 @@ def test_semantic_worker_drains_graph_structure_invalid_job_as_failed(conn, tmp_
     )
     assert len(failed) == 1
     assert failed[0]["evidence"]["errors"] == ["ai_output_json_invalid"]
+    assert failed[0]["evidence"]["precheck"]["classification"] == "model_repairable"
+    assert failed[0]["evidence"]["precheck"]["retryable"] is True
 
 
 def test_semantic_worker_graph_structure_job_invokes_ai_when_output_missing(
@@ -435,6 +438,112 @@ def test_semantic_worker_graph_structure_job_invokes_ai_when_output_missing(
         and edge.get("direction") == "source_hint"
         for edge in state_reconcile._deps_graph_edges(graph)
     )
+
+
+def test_semantic_worker_graph_structure_ai_repair_retries_model_repairable_output(
+    conn,
+    tmp_path,
+    monkeypatch,
+):
+    project = tmp_path / "generated-project"
+    _write_generated_project(project)
+    base = run_state_only_full_reconcile(
+        conn,
+        PID,
+        project,
+        run_id="worker-graph-structure-ai-repair-base",
+        commit_sha="workerai_repair_base",
+        snapshot_id="worker-graph-structure-ai-repair-base",
+        created_by="test",
+    )
+    assert base["ok"] is True
+    service_id = _service_node_id("worker-graph-structure-ai-repair-base")
+    calls: list[tuple[str, dict]] = []
+
+    def _stub_build_ai_call(*, semantic_config, project_id, snapshot_id, project_root):
+        def _ai_call(stage: str, payload: dict):
+            calls.append((stage, payload))
+            assert stage == "graph_structure"
+            if len(calls) == 1:
+                assert "repair_request" not in payload
+                return {
+                    "schema_version": "graph_structure_ops.v1",
+                    "source": {
+                        "snapshot_id": "worker-graph-structure-ai-repair-base",
+                        "base_commit": "workerai_repair_base",
+                        "analyzer_role": "reconcile_graph_structure_analyzer",
+                    },
+                    "operations": [
+                        {
+                            "op": "merge_nodes",
+                            "hint_id": "bad-merge",
+                            "target_node_id": service_id,
+                        }
+                    ],
+                    "self_check": {
+                        "valid": True,
+                        "checked_rules": ["op_supported"],
+                        "known_risks": [],
+                    },
+                }
+            assert payload["repair_request"]["attempt"] == 1
+            assert "unsupported_op_for_hint_materialization" in (
+                payload["repair_request"]["gate_errors"]
+            )
+            assert payload["repair_request"]["precheck"]["retryable"] is True
+            return _payload(
+                "worker-graph-structure-ai-repair-base",
+                "workerai_repair_base",
+                service_id,
+            )
+
+        return _ai_call
+
+    monkeypatch.setattr(
+        "agent.governance.reconcile_semantic_ai.build_semantic_ai_call",
+        _stub_build_ai_call,
+    )
+    request = graph_events.create_event(
+        conn,
+        PID,
+        "worker-graph-structure-ai-repair-base",
+        event_type="graph_structure_requested",
+        event_kind="semantic_job",
+        target_type="snapshot",
+        target_id="worker-graph-structure-ai-repair-base",
+        status=graph_events.EVENT_STATUS_OBSERVED,
+        operation_type="graph_structure",
+        payload={
+            "mode": "accept",
+            "project_root": str(project),
+            "selector": {"paths": ["agent/tests/test_service.py"]},
+        },
+        created_by="test",
+    )
+    conn.commit()
+
+    semantic_worker._drain_graph_structure(PID, "worker-graph-structure-ai-repair-base")
+
+    assert len(calls) == 2
+    request_after = graph_events.get_event(
+        conn,
+        PID,
+        "worker-graph-structure-ai-repair-base",
+        request["event_id"],
+    )
+    assert request_after["status"] == graph_events.EVENT_STATUS_MATERIALIZED
+    completed = graph_events.list_events(
+        conn,
+        PID,
+        "worker-graph-structure-ai-repair-base",
+        event_types=["graph_structure_completed"],
+    )
+    assert len(completed) == 1
+    result = completed[0]["payload"]["result"]
+    assert result["ok"] is True
+    assert result["repair"]["attempted"] is True
+    assert result["repair"]["precheck_before"]["classification"] == "model_repairable"
+    assert result["repair"]["precheck_after"]["status"] == "passed"
 
 
 def test_semantic_worker_graph_structure_payload_uses_operation_contract(conn, tmp_path):

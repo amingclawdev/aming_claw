@@ -201,6 +201,8 @@ def test_graph_enrich_config_ops_dry_run_is_non_mutating_generated_project(tmp_p
     )
 
     assert result["ok"] is True
+    assert result["precheck"]["status"] == "passed"
+    assert result["precheck"]["classification"] == "passed"
     assert result["mutated"] is False
     assert result["accepted"] is False
     assert result["preview"]["config_path"] == str(project / PROJECT_OVERRIDE_PATH)
@@ -331,10 +333,43 @@ def test_graph_enrich_config_aliases_update_rule_and_imports_module_edge(tmp_pat
 
     assert result["ok"] is True
     assert result["gate"]["accepted_count"] == 2
+    assert result["gate"]["precheck"]["status"] == "passed"
     rules = result["preview"]["graph_enrich_config_ops"]["rules"]
     assert rules["imports_module_from_top_level_from_import"]["edge"] == "imports"
     assert rules["weak_call_resolver.bare_builtin_names"]["action"] == "ignore"
     assert rules["weak_call_resolver.bare_builtin_names"]["downgrade_to"] == ""
+
+
+def test_graph_enrich_config_ops_precheck_marks_malformed_output_repairable(tmp_path):
+    project = tmp_path / "generated-project"
+    project.mkdir()
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "source": {
+            "analyzer_role": "reconcile_graph_enrich_config_analyzer",
+        },
+        "operations": [
+            {
+                "op": "invent_config_patch",
+                "rule_id": "bad-op",
+                "edge": "imaginary_edge",
+                "source_evidence": "",
+                "action": "",
+            }
+        ],
+        "self_check": {"valid": True, "checked_rules": ["op_supported"], "known_risks": []},
+    }
+
+    result = run_graph_enrich_config_ai_output_pipeline(
+        raw_output=json.dumps(payload),
+        mode="dry_run",
+        project_root=project,
+    )
+
+    assert result["ok"] is False
+    assert result["precheck"]["classification"] == "model_repairable"
+    assert result["precheck"]["retryable"] is True
+    assert "unsupported_config_op" in result["precheck"]["repairable_errors"]
 
 
 def test_graph_enrich_config_ops_api_accepts_ai_output_and_writes_project_override(

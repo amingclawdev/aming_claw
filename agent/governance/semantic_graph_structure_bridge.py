@@ -14,6 +14,7 @@ from . import graph_snapshot_store as store
 from .graph_structure_ops import (
     ANALYZER_ROLE,
     EDGE_ALLOWLIST,
+    GRAPH_STRUCTURE_SELF_PRECHECK_RULES,
     SCHEMA_VERSION,
     SUPPORTED_HINT_OPS,
 )
@@ -22,6 +23,7 @@ from .graph_enrich_config_ops import (
     CONFIG_DOWNGRADE_TARGETS,
     CONFIG_EDGE_ALIASES,
     CONFIG_EDGE_ALLOWLIST,
+    GRAPH_ENRICH_CONFIG_SELF_PRECHECK_RULES,
     CONFIG_RULE_OPS,
     SCHEMA_VERSION as CONFIG_SCHEMA_VERSION,
     SUPPORTED_ACTIONS as CONFIG_SUPPORTED_ACTIONS,
@@ -385,15 +387,10 @@ def semantic_event_to_graph_structure_output(
         "operations": operations,
         "self_check": {
             "valid": True,
-            "checked_rules": [
-                "schema_version",
-                "semantic_bridge_normalized",
-                "op_supported",
-                "source_path_exists",
-                "target_node_exists",
-                "edge_allowed",
-                "observer_approval_required",
-            ],
+            "checked_rules": list(GRAPH_STRUCTURE_SELF_PRECHECK_RULES),
+            "precheck_status": "passed" if operations else "no_ops",
+            "repair_attempts": 0,
+            "max_repair_attempts": 1,
             "known_risks": [
                 skip.get("reason", "")
                 for skip in skipped
@@ -409,6 +406,12 @@ def semantic_event_to_graph_structure_output(
             "converted_count": len(operations),
             "skipped_count": len(skipped),
             "skipped": skipped,
+            "self_precheck": {
+                "status": "passed" if operations else "no_ops",
+                "checked_rules": list(GRAPH_STRUCTURE_SELF_PRECHECK_RULES),
+                "repair_attempts": 0,
+                "max_repair_attempts": 1,
+            },
         },
     }
 
@@ -449,15 +452,10 @@ def semantic_event_to_graph_enrich_config_output(
         "operations": operations,
         "self_check": {
             "valid": True,
-            "checked_rules": [
-                "schema_version",
-                "semantic_bridge_normalized",
-                "op_supported",
-                "edge_supported",
-                "source_evidence_supported",
-                "action_supported",
-                "observer_approval_required",
-            ],
+            "checked_rules": list(GRAPH_ENRICH_CONFIG_SELF_PRECHECK_RULES),
+            "precheck_status": "passed" if operations else "no_ops",
+            "repair_attempts": 0,
+            "max_repair_attempts": 1,
             "known_risks": [
                 skip.get("reason", "")
                 for skip in skipped
@@ -473,6 +471,12 @@ def semantic_event_to_graph_enrich_config_output(
             "converted_count": len(operations),
             "skipped_count": len(skipped),
             "skipped": skipped,
+            "self_precheck": {
+                "status": "passed" if operations else "no_ops",
+                "checked_rules": list(GRAPH_ENRICH_CONFIG_SELF_PRECHECK_RULES),
+                "repair_attempts": 0,
+                "max_repair_attempts": 1,
+            },
         },
     }
 

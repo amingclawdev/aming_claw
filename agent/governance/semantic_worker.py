@@ -249,6 +249,74 @@ def _snapshot_graph_and_inventory(project_id: str, snapshot_id: str) -> tuple[di
     return graph, [row for row in inventory if isinstance(row, dict)]
 
 
+def _result_precheck(result: Mapping[str, Any]) -> dict[str, Any]:
+    precheck = result.get("precheck") if isinstance(result.get("precheck"), Mapping) else {}
+    if precheck:
+        return dict(precheck)
+    gate = result.get("gate") if isinstance(result.get("gate"), Mapping) else {}
+    gate_precheck = gate.get("precheck") if isinstance(gate.get("precheck"), Mapping) else {}
+    return dict(gate_precheck)
+
+
+def _result_errors(result: Mapping[str, Any]) -> list[str]:
+    errors: list[str] = []
+    errors.extend(str(item or "") for item in result.get("errors") or [])
+    parse = result.get("parse") if isinstance(result.get("parse"), Mapping) else {}
+    errors.extend(str(item or "") for item in parse.get("errors") or [])
+    gate = result.get("gate") if isinstance(result.get("gate"), Mapping) else {}
+    errors.extend(str(item or "") for item in gate.get("errors") or [])
+    operations = gate.get("operations") if isinstance(gate.get("operations"), list) else []
+    for operation in operations:
+        if isinstance(operation, Mapping):
+            errors.extend(str(item or "") for item in operation.get("errors") or [])
+    out: list[str] = []
+    seen: set[str] = set()
+    for error in errors:
+        item = str(error or "").strip()
+        if item and item not in seen:
+            out.append(item)
+            seen.add(item)
+    return out
+
+
+def _should_ai_repair(result: Mapping[str, Any]) -> bool:
+    precheck = _result_precheck(result)
+    return bool(precheck.get("retryable")) and int(precheck.get("max_repair_attempts") or 0) > 0
+
+
+def _repair_payload(
+    payload: Mapping[str, Any],
+    *,
+    previous_output: Any,
+    result: Mapping[str, Any],
+    attempt: int = 1,
+) -> dict[str, Any]:
+    out = dict(payload)
+    out["repair_request"] = {
+        "attempt": max(1, int(attempt or 1)),
+        "max_attempts": int(_result_precheck(result).get("max_repair_attempts") or 1),
+        "precheck": _result_precheck(result),
+        "gate_errors": _result_errors(result),
+        "previous_output": _json_safe(previous_output),
+        "instructions": (
+            "Return exactly one corrected JSON object matching payload.output_contract. "
+            "Fix only model-repairable contract errors. Do not retry policy-rejected "
+            "operations such as low-evidence calls or calls self-edges."
+        ),
+    }
+    return out
+
+
+def _json_safe(value: Any) -> Any:
+    try:
+        import json
+
+        json.dumps(value)
+        return value
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def _graph_structure_ai_payload(
     project_id: str,
     snapshot_id: str,
@@ -432,6 +500,8 @@ def _drain_graph_structure(project_id: str, snapshot_id: str) -> None:
                     if "ai_output" in payload
                     else payload.get("output")
                 )
+                ai_generated = False
+                ai_payload: dict[str, Any] | None = None
                 project_root = payload.get("project_root") if mode in {"accept", "apply", "write"} else None
                 try:
                     with sqlite_write_lock():
@@ -461,15 +531,17 @@ def _drain_graph_structure(project_id: str, snapshot_id: str) -> None:
                         )
                         if ai_call is None:
                             raise RuntimeError("graph_structure_ai_not_configured")
+                        ai_payload = _graph_structure_ai_payload(
+                            project_id,
+                            snapshot_id,
+                            event_payload=payload,
+                            operation_contract=asdict(cfg.graph_structure_ops),
+                        )
                         raw_output = ai_call(
                             "graph_structure",
-                            _graph_structure_ai_payload(
-                                project_id,
-                                snapshot_id,
-                                event_payload=payload,
-                                operation_contract=asdict(cfg.graph_structure_ops),
-                            ),
+                            ai_payload,
                         )
+                        ai_generated = True
                     result = handle_graph_structure_ai_output(
                         project_id,
                         snapshot_id,
@@ -478,7 +550,40 @@ def _drain_graph_structure(project_id: str, snapshot_id: str) -> None:
                         project_root=project_root,
                         operation_contract=operation_contract,
                     )
+                    if ai_generated and ai_payload is not None and _should_ai_repair(result):
+                        repair = {
+                            "attempted": True,
+                            "attempts": 1,
+                            "precheck_before": _result_precheck(result),
+                        }
+                        try:
+                            repaired_output = ai_call(
+                                "graph_structure",
+                                _repair_payload(
+                                    ai_payload,
+                                    previous_output=raw_output,
+                                    result=result,
+                                    attempt=1,
+                                ),
+                            )
+                            repaired_result = handle_graph_structure_ai_output(
+                                project_id,
+                                snapshot_id,
+                                raw_output=repaired_output,
+                                mode=mode,
+                                project_root=project_root,
+                                operation_contract=operation_contract,
+                            )
+                            repair.update({
+                                "status": "passed" if repaired_result.get("ok") else "failed",
+                                "precheck_after": _result_precheck(repaired_result),
+                            })
+                            result = {**repaired_result, "repair": repair}
+                        except Exception as exc:  # noqa: BLE001 - keep original gate failure visible
+                            repair.update({"status": "failed", "error": str(exc)})
+                            result = {**result, "repair": repair}
                     if result.get("ok"):
+                        precheck = _result_precheck(result)
                         with sqlite_write_lock():
                             graph_events.create_event(
                                 conn,
@@ -495,6 +600,7 @@ def _drain_graph_structure(project_id: str, snapshot_id: str) -> None:
                                 evidence={
                                     "source": "semantic_worker_inproc_graph_structure",
                                     "mode": mode,
+                                    "precheck": precheck,
                                 },
                                 created_by="semantic_worker_inproc",
                             )
@@ -510,11 +616,13 @@ def _drain_graph_structure(project_id: str, snapshot_id: str) -> None:
                                     "source": "semantic_worker_inproc_graph_structure",
                                     "completed": True,
                                     "mode": mode,
+                                    "precheck": precheck,
                                 },
                             )
                             conn.commit()
                     else:
-                        errors = result.get("errors") or result.get("parse", {}).get("errors") or []
+                        errors = _result_errors(result)
+                        precheck = _result_precheck(result)
                         with sqlite_write_lock():
                             graph_events.create_event(
                                 conn,
@@ -532,6 +640,7 @@ def _drain_graph_structure(project_id: str, snapshot_id: str) -> None:
                                     "source": "semantic_worker_inproc_graph_structure",
                                     "errors": errors,
                                     "mode": mode,
+                                    "precheck": precheck,
                                 },
                                 created_by="semantic_worker_inproc",
                             )
@@ -547,6 +656,7 @@ def _drain_graph_structure(project_id: str, snapshot_id: str) -> None:
                                     "source": "semantic_worker_inproc_graph_structure",
                                     "errors": errors,
                                     "mode": mode,
+                                    "precheck": precheck,
                                 },
                             )
                             conn.commit()
@@ -636,6 +746,8 @@ def _drain_graph_enrich_config(project_id: str, snapshot_id: str) -> None:
                     if "ai_output" in payload
                     else payload.get("output")
                 )
+                ai_generated = False
+                ai_payload: dict[str, Any] | None = None
                 project_root = payload.get("project_root") or str(_project_root_for(project_id))
                 try:
                     with sqlite_write_lock():
@@ -664,14 +776,16 @@ def _drain_graph_enrich_config(project_id: str, snapshot_id: str) -> None:
                         )
                         if ai_call is None:
                             raise RuntimeError("graph_enrich_config_ai_not_configured")
+                        ai_payload = _graph_enrich_config_ai_payload(
+                            project_id,
+                            snapshot_id,
+                            event_payload=payload,
+                        )
                         raw_output = ai_call(
                             "graph_enrich_config",
-                            _graph_enrich_config_ai_payload(
-                                project_id,
-                                snapshot_id,
-                                event_payload=payload,
-                            ),
+                            ai_payload,
                         )
+                        ai_generated = True
                     result = handle_graph_enrich_config_ai_output(
                         project_id,
                         snapshot_id,
@@ -679,7 +793,39 @@ def _drain_graph_enrich_config(project_id: str, snapshot_id: str) -> None:
                         mode=mode,
                         project_root=root,
                     )
+                    if ai_generated and ai_payload is not None and _should_ai_repair(result):
+                        repair = {
+                            "attempted": True,
+                            "attempts": 1,
+                            "precheck_before": _result_precheck(result),
+                        }
+                        try:
+                            repaired_output = ai_call(
+                                "graph_enrich_config",
+                                _repair_payload(
+                                    ai_payload,
+                                    previous_output=raw_output,
+                                    result=result,
+                                    attempt=1,
+                                ),
+                            )
+                            repaired_result = handle_graph_enrich_config_ai_output(
+                                project_id,
+                                snapshot_id,
+                                raw_output=repaired_output,
+                                mode=mode,
+                                project_root=root,
+                            )
+                            repair.update({
+                                "status": "passed" if repaired_result.get("ok") else "failed",
+                                "precheck_after": _result_precheck(repaired_result),
+                            })
+                            result = {**repaired_result, "repair": repair}
+                        except Exception as exc:  # noqa: BLE001 - keep original gate failure visible
+                            repair.update({"status": "failed", "error": str(exc)})
+                            result = {**result, "repair": repair}
                     if result.get("ok"):
+                        precheck = _result_precheck(result)
                         with sqlite_write_lock():
                             graph_events.create_event(
                                 conn,
@@ -696,6 +842,7 @@ def _drain_graph_enrich_config(project_id: str, snapshot_id: str) -> None:
                                 evidence={
                                     "source": "semantic_worker_inproc_graph_enrich_config",
                                     "mode": mode,
+                                    "precheck": precheck,
                                 },
                                 created_by="semantic_worker_inproc",
                             )
@@ -711,11 +858,13 @@ def _drain_graph_enrich_config(project_id: str, snapshot_id: str) -> None:
                                     "source": "semantic_worker_inproc_graph_enrich_config",
                                     "completed": True,
                                     "mode": mode,
+                                    "precheck": precheck,
                                 },
                             )
                             conn.commit()
                     else:
-                        errors = result.get("errors") or result.get("parse", {}).get("errors") or []
+                        errors = _result_errors(result)
+                        precheck = _result_precheck(result)
                         with sqlite_write_lock():
                             graph_events.create_event(
                                 conn,
@@ -733,6 +882,7 @@ def _drain_graph_enrich_config(project_id: str, snapshot_id: str) -> None:
                                     "source": "semantic_worker_inproc_graph_enrich_config",
                                     "errors": errors,
                                     "mode": mode,
+                                    "precheck": precheck,
                                 },
                                 created_by="semantic_worker_inproc",
                             )
@@ -748,6 +898,7 @@ def _drain_graph_enrich_config(project_id: str, snapshot_id: str) -> None:
                                     "source": "semantic_worker_inproc_graph_enrich_config",
                                     "errors": errors,
                                     "mode": mode,
+                                    "precheck": precheck,
                                 },
                             )
                             conn.commit()

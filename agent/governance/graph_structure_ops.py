@@ -9,6 +9,11 @@ from typing import Any, Iterable, Mapping
 
 from agent.governance.graph_hint_projection import build_hint_projection
 from agent.governance.graph_structure_hints import write_graph_structure_hints
+from agent.governance.semantic_precheck import (
+    gate_precheck,
+    parse_precheck,
+    request_precheck_error,
+)
 
 
 SCHEMA_VERSION = "graph_structure_ops.v1"
@@ -50,6 +55,28 @@ _DEFAULT_EVIDENCE_POLICY = {
         "downgrade_to": "imports",
     },
 }
+GRAPH_STRUCTURE_SELF_PRECHECK_RULES = [
+    "schema_version",
+    "semantic_bridge_normalized",
+    "op_supported",
+    "required_fields_present",
+    "source_path_exists",
+    "target_node_exists",
+    "role_allowed",
+    "edge_allowed",
+    "calls_require_concrete_evidence",
+    "calls_self_edge_rejected",
+    "conflict_check",
+    "observer_approval_required",
+]
+GRAPH_STRUCTURE_NON_RETRYABLE_GATE_ERRORS = {
+    "calls_evidence_missing",
+    "calls_import_only_rejected",
+    "calls_self_edge",
+    "conflicting_move_file_target",
+    "conflicting_edge_add_suppress",
+}
+MAX_AI_REPAIR_ATTEMPTS = 1
 
 
 def default_graph_structure_ops_contract() -> dict[str, Any]:
@@ -147,6 +174,15 @@ def graph_structure_ops_output_contract(contract: Mapping[str, Any] | None = Non
         },
         "evidence_policy": _copy_evidence_policy(normalized.get("evidence_policy") or {}),
         "self_check_required": True,
+        "self_precheck": {
+            "required": True,
+            "checked_rules_required": list(GRAPH_STRUCTURE_SELF_PRECHECK_RULES),
+            "must_not_mark_valid_when": sorted(GRAPH_STRUCTURE_NON_RETRYABLE_GATE_ERRORS),
+            "repair_policy": {
+                "max_attempts": MAX_AI_REPAIR_ATTEMPTS,
+                "retry_only_model_repairable": True,
+            },
+        },
         "no_markdown": True,
     }
 
@@ -239,11 +275,17 @@ def validate_graph_structure_ops(
     ]
     rejected_count = sum(1 for entry in normalized if entry["status"] == "rejected")
     ok = not global_errors and rejected_count == 0
-    return {
+    report = {
         "ok": ok,
         "status": "passed" if ok else "failed",
         "schema_version": contract["schema_version"],
         "operation_contract": graph_structure_ops_output_contract(contract),
+        "self_check": {
+            "valid": self_check.get("valid") is True,
+            "checked_rules_count": len(self_check.get("checked_rules") or [])
+            if isinstance(self_check.get("checked_rules"), list)
+            else 0,
+        },
         "errors": _dedupe(global_errors),
         "accepted_count": len(accepted_hints),
         "deduped_count": deduped_count,
@@ -255,6 +297,12 @@ def validate_graph_structure_ops(
             "hints": accepted_hints,
         },
     }
+    report["precheck"] = gate_precheck(
+        report,
+        non_retryable_error_codes=GRAPH_STRUCTURE_NON_RETRYABLE_GATE_ERRORS,
+        max_repair_attempts=MAX_AI_REPAIR_ATTEMPTS,
+    )
+    return report
 
 
 def dry_run_graph_structure_ops(
@@ -326,6 +374,7 @@ def run_graph_structure_ai_output_pipeline(
             "accepted": False,
             "mutated": False,
             "parse": parsed,
+            "precheck": parse_precheck(parsed, max_repair_attempts=MAX_AI_REPAIR_ATTEMPTS),
         }
     if normalized_mode not in {"dry_run", "dryrun", "preview", "accept", "apply", "write"}:
         return {
@@ -336,6 +385,7 @@ def run_graph_structure_ai_output_pipeline(
             "mutated": False,
             "parse": parsed,
             "errors": ["mode_unsupported"],
+            "precheck": request_precheck_error("mode_unsupported"),
         }
 
     dry_run = dry_run_graph_structure_ops(
@@ -354,6 +404,7 @@ def run_graph_structure_ai_output_pipeline(
             "accepted": False,
             "mutated": False,
             "parse": parsed,
+            "precheck": dry_run.get("gate", {}).get("precheck"),
         }
     if not project_root:
         return {
@@ -366,6 +417,7 @@ def run_graph_structure_ai_output_pipeline(
             "gate": dry_run["gate"],
             "projection": dry_run["projection"],
             "errors": ["project_root_required"],
+            "precheck": request_precheck_error("project_root_required"),
         }
 
     write_result = write_graph_structure_hints(
@@ -383,6 +435,7 @@ def run_graph_structure_ai_output_pipeline(
         "parse": parsed,
         "gate": dry_run["gate"],
         "projection": dry_run["projection"],
+        "precheck": dry_run["gate"].get("precheck"),
         "write": write_result,
     }
 

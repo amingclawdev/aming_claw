@@ -224,6 +224,8 @@ def test_bridge_converts_structured_semantic_dependency_to_gate_job(conn, tmp_pa
     assert ai_output["schema_version"] == "graph_structure_ops.v1"
     assert ai_output["bridge"]["converted_count"] == 1
     assert ai_output["bridge"]["skipped_count"] == 0
+    assert "calls_require_concrete_evidence" in ai_output["self_check"]["checked_rules"]
+    assert ai_output["bridge"]["self_precheck"]["max_repair_attempts"] == 1
     operation = ai_output["operations"][0]
     assert operation["op"] == "add_edge"
     assert operation["source_path"] == "agent/service.py"
@@ -247,6 +249,7 @@ def test_bridge_converts_structured_semantic_dependency_to_gate_job(conn, tmp_pa
     assert len(gated) == 1
     gate_result = gated[0]["payload"]["result"]
     assert gate_result["ok"] is True
+    assert gate_result["precheck"]["status"] == "passed"
     assert gate_result["mutated"] is False
     assert gate_result["gate"]["accepted_count"] == 1
 
@@ -646,6 +649,11 @@ def test_bridge_converts_semantic_graph_enrich_config_suggestion_to_dry_run_job(
     assert request["event_type"] == "graph_enrich_config_requested"
     assert request["operation_type"] == "graph_enrich_config"
     operation = request["payload"]["ai_output"]["operations"][0]
+    assert (
+        "edge_supported_or_canonical_alias"
+        in request["payload"]["ai_output"]["self_check"]["checked_rules"]
+    )
+    assert request["payload"]["ai_output"]["bridge"]["self_precheck"]["max_repair_attempts"] == 1
     assert operation["op"] == "upsert_edge_evidence_policy"
     assert operation["edge"] == "calls"
     assert operation["source_evidence"] == "import_only"
@@ -663,6 +671,7 @@ def test_bridge_converts_semantic_graph_enrich_config_suggestion_to_dry_run_job(
     assert len(completed) == 1
     gate_result = completed[0]["payload"]["result"]
     assert gate_result["ok"] is True
+    assert gate_result["precheck"]["status"] == "passed"
     assert gate_result["mutated"] is False
     assert gate_result["preview"]["config_path"] == str(project / PROJECT_OVERRIDE_PATH)
     assert not (project / PROJECT_OVERRIDE_PATH).exists()

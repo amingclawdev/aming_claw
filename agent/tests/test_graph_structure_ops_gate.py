@@ -174,6 +174,8 @@ def test_valid_graph_structure_ops_gate_emits_hint_compatible_operations() -> No
 
     assert report["ok"] is True
     assert report["status"] == "passed"
+    assert report["precheck"]["status"] == "passed"
+    assert report["precheck"]["classification"] == "passed"
     assert report["accepted_count"] == 3
     assert report["rejected_count"] == 0
     assert report["normalized_hint_index"] == {
@@ -252,6 +254,9 @@ def test_graph_structure_ops_gate_rejects_unsupported_structural_ops() -> None:
     assert report["status"] == "failed"
     assert report["accepted_count"] == 0
     assert report["rejected_count"] == 1
+    assert report["precheck"]["classification"] == "model_repairable"
+    assert report["precheck"]["retryable"] is True
+    assert report["precheck"]["recommended_action"] == "retry_ai_repair_once"
     assert report["operations"][0]["status"] == "rejected"
     assert report["operations"][0]["errors"] == ["unsupported_op_for_hint_materialization"]
 
@@ -608,6 +613,9 @@ def test_graph_structure_ops_gate_rejects_calls_without_concrete_evidence() -> N
     assert report["ok"] is False
     assert report["accepted_count"] == 0
     assert report["rejected_count"] == 1
+    assert report["precheck"]["classification"] == "policy_rejected"
+    assert report["precheck"]["retryable"] is False
+    assert report["precheck"]["recommended_action"] == "observer_review_required"
     assert report["operations"][0]["errors"] == ["calls_evidence_missing"]
 
 
@@ -647,6 +655,8 @@ def test_graph_structure_ops_gate_rejects_calls_self_edges() -> None:
     )
 
     assert report["ok"] is False
+    assert report["precheck"]["classification"] == "policy_rejected"
+    assert report["precheck"]["retryable"] is False
     assert report["operations"][0]["errors"] == ["calls_self_edge"]
     assert report["operations"][0]["hint"]["reason"] == "AI found an internal helper call"
     assert report["operations"][0]["hint"]["evidence"] == (

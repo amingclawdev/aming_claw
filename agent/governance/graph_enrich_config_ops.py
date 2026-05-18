@@ -10,6 +10,11 @@ import yaml
 
 from agent.governance.graph_structure_ops import EDGE_ALLOWLIST
 from agent.governance.reconcile_semantic_config import PROJECT_OVERRIDE_PATH
+from agent.governance.semantic_precheck import (
+    gate_precheck,
+    parse_precheck,
+    request_precheck_error,
+)
 
 
 SCHEMA_VERSION = "graph_enrich_config_ops.v1"
@@ -70,6 +75,19 @@ SUPPORTED_ACTIONS = {
     "reject",
     "require_direct_symbol_import",
 }
+GRAPH_ENRICH_CONFIG_SELF_PRECHECK_RULES = [
+    "schema_version",
+    "semantic_bridge_normalized",
+    "op_supported",
+    "required_fields_present",
+    "edge_supported_or_canonical_alias",
+    "source_evidence_present",
+    "action_present",
+    "config_patch_previewed",
+    "observer_approval_required",
+]
+GRAPH_ENRICH_CONFIG_NON_RETRYABLE_GATE_ERRORS: set[str] = set()
+MAX_AI_REPAIR_ATTEMPTS = 1
 _REQUIRED_OPERATION_FIELDS = {
     name: ["op", "rule_id", "edge", "source_evidence", "action"]
     for name in sorted(CONFIG_RULE_OPS)
@@ -108,6 +126,15 @@ def graph_enrich_config_ops_output_contract() -> dict[str, Any]:
             "analyzer_role": ANALYZER_ROLE,
         },
         "self_check_required": True,
+        "self_precheck": {
+            "required": True,
+            "checked_rules_required": list(GRAPH_ENRICH_CONFIG_SELF_PRECHECK_RULES),
+            "must_not_mark_valid_when": [],
+            "repair_policy": {
+                "max_attempts": MAX_AI_REPAIR_ATTEMPTS,
+                "retry_only_model_repairable": True,
+            },
+        },
         "no_markdown": True,
     }
 
@@ -156,16 +183,28 @@ def validate_graph_enrich_config_ops(payload: Mapping[str, Any]) -> dict[str, An
     rejected_count = len(operations) - len(accepted)
     patch = _config_patch_for_operations(accepted)
     ok = not global_errors and rejected_count == 0
-    return {
+    report = {
         "ok": ok,
         "status": "passed" if ok else "failed",
         "schema_version": SCHEMA_VERSION,
+        "self_check": {
+            "valid": self_check.get("valid") is True,
+            "checked_rules_count": len(self_check.get("checked_rules") or [])
+            if isinstance(self_check.get("checked_rules"), list)
+            else 0,
+        },
         "errors": _dedupe(global_errors),
         "accepted_count": len(accepted),
         "rejected_count": rejected_count,
         "operations": operations,
         "config_patch": patch,
     }
+    report["precheck"] = gate_precheck(
+        report,
+        non_retryable_error_codes=GRAPH_ENRICH_CONFIG_NON_RETRYABLE_GATE_ERRORS,
+        max_repair_attempts=MAX_AI_REPAIR_ATTEMPTS,
+    )
+    return report
 
 
 def dry_run_graph_enrich_config_ops(
@@ -205,6 +244,7 @@ def run_graph_enrich_config_ai_output_pipeline(
             "accepted": False,
             "mutated": False,
             "parse": parsed,
+            "precheck": parse_precheck(parsed, max_repair_attempts=MAX_AI_REPAIR_ATTEMPTS),
         }
     if normalized_mode not in {"dry_run", "dryrun", "preview", "accept", "apply", "write"}:
         return {
@@ -215,6 +255,7 @@ def run_graph_enrich_config_ai_output_pipeline(
             "mutated": False,
             "parse": parsed,
             "errors": ["mode_unsupported"],
+            "precheck": request_precheck_error("mode_unsupported"),
         }
     dry_run = dry_run_graph_enrich_config_ops(parsed["payload"], project_root=project_root)
     if normalized_mode in {"dry_run", "dryrun", "preview"} or not dry_run["ok"]:
@@ -224,6 +265,7 @@ def run_graph_enrich_config_ai_output_pipeline(
             "accepted": False,
             "mutated": False,
             "parse": parsed,
+            "precheck": dry_run.get("gate", {}).get("precheck"),
         }
     write = write_graph_enrich_config(project_root, dry_run["gate"]["config_patch"])
     return {
@@ -237,6 +279,7 @@ def run_graph_enrich_config_ai_output_pipeline(
         "parse": parsed,
         "gate": dry_run["gate"],
         "preview": dry_run["preview"],
+        "precheck": dry_run["gate"].get("precheck"),
         "write": write,
     }
 
