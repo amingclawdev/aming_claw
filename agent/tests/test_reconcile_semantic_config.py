@@ -47,6 +47,10 @@ def test_default_semantic_config_loads_state_only_profile():
         "import_only_action": "downgrade",
         "downgrade_to": "imports",
     }
+    assert config.graph_structure_ops.bridge_policy["calls"]["require_concrete_evidence"] is True
+    assert config.graph_structure_ops.bridge_policy["calls"]["weak_evidence_action"] == "downgrade"
+    assert config.graph_structure_ops.bridge_policy["calls"]["downgrade_to"] == "imports"
+    assert "function_call" in config.graph_structure_ops.bridge_policy["calls"]["evidence_kinds"]
     assert config.job_profiles["retry"].analyzer_role == "reconcile_semantic_retry_reviewer"
     assert config.job_profiles["dry_run"].analyzer_role == "reconcile_semantic_dry_run"
     assert config.executables["anthropic"] == "claude"
@@ -74,11 +78,13 @@ def test_default_semantic_config_loads_state_only_profile():
     assert payload["execution_policy"]["worker_max_concurrency"] == 10
     assert payload["execution_policy"]["worker_claim_batch_size"] == 10
     assert payload["automation_policy"]["feedback_review_mode"] == "enqueue_only"
+    assert payload["graph_structure_ops"]["bridge_policy"]["calls"]["downgrade_to"] == "imports"
     assert payload["prompt_template"]
     structure_payload = config.to_instruction_payload("graph_structure")
     assert structure_payload["job_type"] == "graph_structure"
     assert structure_payload["role"] == "reconcile_graph_structure_analyzer"
     assert "graph_structure_ops.v1" in structure_payload["job_profile"]["prompt_template"]
+    assert structure_payload["graph_structure_ops"]["bridge_policy"]["calls"]["weak_evidence_action"] == "downgrade"
     assert Path(DEFAULT_CONFIG_PATH).exists()
 
 
@@ -106,6 +112,35 @@ def test_graph_structure_ops_config_can_disable_operations_and_edges(tmp_path):
 
     assert config.graph_structure_ops.operations["add_edge"]["edge_allowlist"] == ["tests"]
     assert config.graph_structure_ops.operations["suppress_edge"]["enabled"] is False
+
+
+def test_graph_structure_bridge_policy_can_override_weak_calls(tmp_path):
+    cfg = tmp_path / "semantic-bridge-policy.yaml"
+    cfg.write_text(
+        "\n".join(
+            [
+                'version: "1.0"',
+                "analyzer: reconcile_semantic",
+                "prompt_template: semantic prompt",
+                "graph_structure_ops:",
+                "  bridge_policy:",
+                "    calls:",
+                "      weak_evidence_action: downgrade",
+                "      downgrade_to: depends_on",
+                "      evidence_kinds: [function_call]",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_semantic_enrichment_config(config_path=cfg)
+
+    calls_policy = config.graph_structure_ops.bridge_policy["calls"]
+    assert calls_policy["weak_evidence_action"] == "downgrade"
+    assert calls_policy["downgrade_to"] == "depends_on"
+    assert calls_policy["evidence_kinds"] == ["function_call"]
+    structure_ops = config.to_instruction_payload("graph_structure")["graph_structure_ops"]
+    assert structure_ops["bridge_policy"]["calls"]["downgrade_to"] == "depends_on"
 
 
 def test_semantic_worker_execution_policy_invalid_values_fall_back(tmp_path):

@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 import sqlite3
+from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from . import graph_events
@@ -77,6 +78,28 @@ EDGE_KIND_ALIASES = {
     "calls": "calls",
     "uses": "uses",
 }
+_DEFAULT_BRIDGE_POLICY = {
+    "calls": {
+        "require_concrete_evidence": True,
+        "weak_evidence_action": "downgrade",
+        "downgrade_to": "imports",
+        "evidence_kinds": [
+            "call",
+            "calls",
+            "call_reference",
+            "direct_call",
+            "function_call",
+            "function_calls",
+            "resolved_call",
+            "resolved_function_call",
+            "runtime_call",
+            "strong_call",
+        ],
+    }
+}
+_CALL_EXPRESSION_RE = re.compile(
+    r"\b[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?\s*\("
+)
 
 
 def bridge_semantic_events_to_graph_structure_jobs(
@@ -89,6 +112,8 @@ def bridge_semantic_events_to_graph_structure_jobs(
     mode: str = "dry_run",
     actor: str = "semantic_graph_structure_bridge",
     limit: int = 100,
+    project_root: str | Path = "",
+    bridge_policy: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Queue graph-structure dry-run jobs derived from semantic proposals.
 
@@ -120,6 +145,11 @@ def bridge_semantic_events_to_graph_structure_jobs(
     node_index = _node_index(conn, project_id, snapshot_id)
     inventory_paths = _inventory_paths(project_id, snapshot_id)
     commit_sha = str(snapshot.get("commit_sha") or "")
+    effective_bridge_policy = _effective_bridge_policy(
+        project_id,
+        project_root=project_root,
+        bridge_policy=bridge_policy,
+    )
     queued: list[dict[str, Any]] = []
     audited_skips: list[dict[str, Any]] = []
 
@@ -131,6 +161,7 @@ def bridge_semantic_events_to_graph_structure_jobs(
             base_commit=commit_sha,
             node_index=node_index,
             inventory_paths=inventory_paths,
+            bridge_policy=effective_bridge_policy,
         )
         skipped = raw_output.get("bridge", {}).get("skipped") or []
         audited_skips.extend([
@@ -350,6 +381,7 @@ def semantic_event_to_graph_structure_output(
     base_commit: str,
     node_index: Mapping[str, Mapping[str, Any]],
     inventory_paths: set[str],
+    bridge_policy: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     semantic_payload = _semantic_payload(semantic_event)
     source_node_id = str(semantic_event.get("target_id") or semantic_payload.get("node_id") or "").strip()
@@ -357,6 +389,7 @@ def semantic_event_to_graph_structure_output(
     suggestions = _extract_suggestions(semantic_payload)
     operations: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
+    effective_bridge_policy = _normalize_bridge_policy(bridge_policy)
     for index, suggestion in enumerate(suggestions):
         converted = _convert_suggestion(
             suggestion,
@@ -365,6 +398,7 @@ def semantic_event_to_graph_structure_output(
             source_node=source_node,
             node_index=node_index,
             inventory_paths=inventory_paths,
+            bridge_policy=effective_bridge_policy,
         )
         if converted.get("operation"):
             operations.append(converted["operation"])
@@ -406,6 +440,7 @@ def semantic_event_to_graph_structure_output(
             "converted_count": len(operations),
             "skipped_count": len(skipped),
             "skipped": skipped,
+            "policy": _bridge_policy_summary(effective_bridge_policy),
             "self_precheck": {
                 "status": "passed" if operations else "no_ops",
                 "checked_rules": list(GRAPH_STRUCTURE_SELF_PRECHECK_RULES),
@@ -620,6 +655,281 @@ def _coerce_suggestion_list(raw: Any) -> list[Any]:
     return out
 
 
+def _effective_bridge_policy(
+    project_id: str,
+    *,
+    project_root: str | Path = "",
+    bridge_policy: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    if bridge_policy is not None:
+        return _normalize_bridge_policy(bridge_policy)
+    try:
+        from .reconcile_semantic_config import (
+            apply_project_ai_routing,
+            load_semantic_enrichment_config,
+        )
+
+        root = _bridge_project_root(project_id, project_root)
+        config = apply_project_ai_routing(
+            load_semantic_enrichment_config(project_root=root),
+            project_id=project_id,
+        )
+        return _normalize_bridge_policy(config.graph_structure_ops.bridge_policy)
+    except Exception:
+        return _normalize_bridge_policy({})
+
+
+def _bridge_project_root(project_id: str, project_root: str | Path = "") -> Path:
+    if project_root:
+        return Path(project_root).resolve()
+    try:
+        from . import project_service
+
+        for project in project_service.list_projects():
+            if project.get("project_id") == project_id and project.get("workspace_path"):
+                return Path(str(project["workspace_path"])).resolve()
+    except Exception:
+        pass
+    if project_id == "aming-claw":
+        return Path(__file__).resolve().parents[2]
+    return Path.cwd()
+
+
+def _normalize_bridge_policy(raw: Mapping[str, Any] | None) -> dict[str, Any]:
+    policy = _deep_merge_mapping(_DEFAULT_BRIDGE_POLICY, raw or {})
+    calls = policy.get("calls") if isinstance(policy.get("calls"), Mapping) else {}
+    action = (
+        str(calls.get("weak_evidence_action") or "downgrade")
+        .strip()
+        .lower()
+        .replace("-", "_")
+    )
+    action = {
+        "allow": "keep",
+        "allowed": "keep",
+        "keep": "keep",
+        "downgrade": "downgrade",
+        "reject": "skip",
+        "skip": "skip",
+    }.get(action, action)
+    downgrade_to = (
+        str(calls.get("downgrade_to") or "imports")
+        .strip()
+        .lower()
+        .replace("-", "_")
+    )
+    if action not in {"keep", "downgrade", "skip"}:
+        action = "downgrade"
+    if downgrade_to not in EDGE_ALLOWLIST:
+        downgrade_to = "imports"
+    evidence_kinds = calls.get("evidence_kinds") or []
+    if isinstance(evidence_kinds, str):
+        evidence_kinds = [item.strip() for item in evidence_kinds.split(",")]
+    if not isinstance(evidence_kinds, list):
+        evidence_kinds = []
+    calls = {
+        **calls,
+        "require_concrete_evidence": bool(calls.get("require_concrete_evidence", True)),
+        "weak_evidence_action": action,
+        "downgrade_to": downgrade_to,
+        "evidence_kinds": [
+            _normalize_policy_token(item)
+            for item in evidence_kinds
+            if _normalize_policy_token(item)
+        ],
+    }
+    policy["calls"] = calls
+    return policy
+
+
+def _deep_merge_mapping(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for key, value in base.items():
+        merged[str(key)] = _deep_merge_mapping(value, {}) if isinstance(value, Mapping) else value
+    for key, value in override.items():
+        name = str(key)
+        if isinstance(value, Mapping) and isinstance(merged.get(name), Mapping):
+            merged[name] = _deep_merge_mapping(merged[name], value)
+        else:
+            merged[name] = value
+    return merged
+
+
+def _bridge_policy_summary(policy: Mapping[str, Any]) -> dict[str, Any]:
+    calls = policy.get("calls") if isinstance(policy.get("calls"), Mapping) else {}
+    return {
+        "calls": {
+            "require_concrete_evidence": bool(calls.get("require_concrete_evidence", True)),
+            "weak_evidence_action": str(calls.get("weak_evidence_action") or "downgrade"),
+            "downgrade_to": str(calls.get("downgrade_to") or "imports"),
+            "evidence_kind_count": len(calls.get("evidence_kinds") or []),
+        }
+    }
+
+
+def _apply_bridge_edge_policy(
+    edge: str,
+    raw: Mapping[str, Any],
+    *,
+    op_name: str,
+    bridge_policy: Mapping[str, Any],
+) -> dict[str, Any]:
+    if op_name != "add_edge" or edge != "calls":
+        return {"edge": edge}
+    calls = bridge_policy.get("calls") if isinstance(bridge_policy.get("calls"), Mapping) else {}
+    if not bool(calls.get("require_concrete_evidence", True)):
+        return {"edge": edge, "note": "calls_concrete_evidence_not_required"}
+    has_evidence, evidence_kind = _has_concrete_call_evidence(raw, calls)
+    if has_evidence:
+        return {
+            "edge": edge,
+            "note": "calls_concrete_evidence_present",
+            "source_evidence": evidence_kind or "call_reference",
+        }
+    action = str(calls.get("weak_evidence_action") or "downgrade")
+    if action == "keep":
+        return {
+            "edge": edge,
+            "note": "calls_weak_evidence_kept_by_policy",
+            "source_evidence": "weak_call_evidence",
+        }
+    if action == "skip":
+        return {"edge": edge, "skip_reason": "calls_weak_evidence_skipped"}
+    downgrade_to = str(calls.get("downgrade_to") or "imports")
+    if downgrade_to not in EDGE_ALLOWLIST:
+        downgrade_to = "imports"
+    return {
+        "edge": downgrade_to,
+        "note": f"calls_weak_evidence_downgraded_to_{downgrade_to}",
+        "source_evidence": "missing_concrete_call_evidence",
+        "original_edge": "calls",
+    }
+
+
+def _has_concrete_call_evidence(
+    raw: Mapping[str, Any],
+    calls_policy: Mapping[str, Any],
+) -> tuple[bool, str]:
+    evidence_kind = _bridge_evidence_kind(raw)
+    allowed = {
+        _normalize_policy_token(item)
+        for item in (calls_policy.get("evidence_kinds") or [])
+        if _normalize_policy_token(item)
+    }
+    if evidence_kind and evidence_kind in allowed:
+        return True, evidence_kind
+    for key in ("call_site", "callsite", "call_expression", "callee", "callee_symbol"):
+        if str(raw.get(key) or "").strip():
+            return True, evidence_kind or "call_reference"
+    text = _bridge_evidence_text(raw)
+    if text and _CALL_EXPRESSION_RE.search(text):
+        return True, evidence_kind or "call_reference"
+    return False, evidence_kind
+
+
+def _bridge_evidence_kind(raw: Mapping[str, Any]) -> str:
+    for key in (
+        "source_evidence",
+        "evidence_kind",
+        "kind_of_evidence",
+        "evidence_type",
+        "source_evidence_kind",
+        "call_evidence_kind",
+    ):
+        value = _normalize_policy_token(raw.get(key))
+        if value:
+            return value
+    evidence = raw.get("evidence") if isinstance(raw.get("evidence"), Mapping) else {}
+    for key in (
+        "source_evidence",
+        "evidence_kind",
+        "kind_of_evidence",
+        "evidence_type",
+        "kind",
+        "type",
+    ):
+        value = _normalize_policy_token(evidence.get(key))
+        if value:
+            return value
+    return ""
+
+
+def _bridge_evidence_text(raw: Mapping[str, Any]) -> str:
+    parts: list[str] = []
+    for key in (
+        "call_evidence",
+        "evidence",
+        "line_evidence",
+        "source_ref",
+        "details",
+        "detail",
+        "reason",
+        "summary",
+        "rationale",
+    ):
+        value = raw.get(key)
+        if isinstance(value, Mapping):
+            for nested_key in (
+                "evidence",
+                "line_evidence",
+                "source_ref",
+                "details",
+                "detail",
+                "reason",
+                "summary",
+            ):
+                nested = value.get(nested_key)
+                if nested is not None:
+                    parts.append(str(nested))
+        elif value is not None:
+            parts.append(str(value))
+    return "\n".join(part for part in parts if part.strip())
+
+
+def _operation_evidence(
+    raw: Mapping[str, Any],
+    semantic_event: Mapping[str, Any],
+    *,
+    fallback_reason: str,
+) -> dict[str, Any]:
+    evidence = raw.get("evidence") if isinstance(raw.get("evidence"), Mapping) else {}
+    out = dict(evidence)
+    if not out.get("reason") and fallback_reason:
+        out["reason"] = fallback_reason
+    raw_evidence = raw.get("evidence")
+    if raw_evidence is not None and not isinstance(raw_evidence, Mapping):
+        out.setdefault("evidence", str(raw_evidence))
+    out.setdefault("semantic_suggestion_source", raw.get("_semantic_suggestion_source", ""))
+    out.setdefault("source_semantic_event_id", semantic_event.get("event_id", ""))
+    return out
+
+
+def _annotate_bridge_evidence(
+    evidence: dict[str, Any],
+    edge_policy: Mapping[str, Any],
+) -> None:
+    note = str(edge_policy.get("note") or "").strip()
+    if note:
+        evidence["bridge_policy"] = note
+    source_evidence = str(edge_policy.get("source_evidence") or "").strip()
+    if source_evidence:
+        evidence.setdefault("source_evidence", source_evidence)
+    original_edge = str(edge_policy.get("original_edge") or "").strip()
+    if original_edge:
+        evidence.setdefault("original_edge", original_edge)
+
+
+def _normalize_policy_token(value: Any) -> str:
+    return (
+        str(value or "")
+        .strip()
+        .lower()
+        .replace("-", "_")
+        .replace(".", "_")
+        .replace(" ", "_")
+    )
+
+
 def _parse_structured_string(value: str) -> Any:
     text = str(value or "").strip()
     if not text:
@@ -645,6 +955,7 @@ def _convert_suggestion(
     source_node: Mapping[str, Any],
     node_index: Mapping[str, Mapping[str, Any]],
     inventory_paths: set[str],
+    bridge_policy: Mapping[str, Any],
 ) -> dict[str, Any]:
     raw = dict(suggestion)
     if raw.get("_parse_error"):
@@ -658,6 +969,7 @@ def _convert_suggestion(
             source_node=source_node,
             node_index=node_index,
             inventory_paths=inventory_paths,
+            bridge_policy=bridge_policy,
         )
         return direct
 
@@ -665,12 +977,27 @@ def _convert_suggestion(
     edge = _edge_from_suggestion(raw, kind)
     if not edge:
         return {"reason": "unsupported_suggestion_kind", "suggestion": raw}
+    edge_policy = _apply_bridge_edge_policy(
+        edge,
+        raw,
+        op_name="add_edge",
+        bridge_policy=bridge_policy,
+    )
+    if edge_policy.get("skip_reason"):
+        return {"reason": edge_policy["skip_reason"], "suggestion": raw}
+    edge = str(edge_policy.get("edge") or edge)
     source_path = _resolve_source_path(raw, source_node, inventory_paths, node_index=node_index, edge=edge)
     if not source_path:
         return {"reason": "source_path_unresolved", "suggestion": raw}
     target_node_id = _resolve_target_node(raw, semantic_event, node_index, edge=edge)
     if not target_node_id:
         return {"reason": "target_node_unresolved", "suggestion": raw}
+    evidence = _operation_evidence(
+        raw,
+        semantic_event,
+        fallback_reason=_reason(raw) or f"semantic suggestion {kind}",
+    )
+    _annotate_bridge_evidence(evidence, edge_policy)
     return {
         "operation": {
             "op": "add_edge",
@@ -679,11 +1006,7 @@ def _convert_suggestion(
             "target_node_id": target_node_id,
             "edge": edge,
             "confidence": _confidence(raw),
-            "evidence": {
-                "reason": _reason(raw) or f"semantic suggestion {kind}",
-                "semantic_suggestion_source": raw.get("_semantic_suggestion_source", ""),
-                "source_semantic_event_id": semantic_event.get("event_id", ""),
-            },
+            "evidence": evidence,
         }
     }
 
@@ -756,6 +1079,7 @@ def _normalize_direct_operation(
     source_node: Mapping[str, Any],
     node_index: Mapping[str, Mapping[str, Any]],
     inventory_paths: set[str],
+    bridge_policy: Mapping[str, Any],
 ) -> dict[str, Any]:
     op = str(raw.get("op") or "").strip()
     source_path = _norm_path(raw.get("source_path") or raw.get("path") or raw.get("file"))
@@ -774,10 +1098,11 @@ def _normalize_direct_operation(
         "source_path": source_path,
         "target_node_id": target_node_id,
         "confidence": _confidence(raw),
-        "evidence": raw.get("evidence") if isinstance(raw.get("evidence"), Mapping) else {
-            "reason": _reason(raw),
-            "source_semantic_event_id": semantic_event.get("event_id", ""),
-        },
+        "evidence": _operation_evidence(
+            raw,
+            semantic_event,
+            fallback_reason=_reason(raw),
+        ),
     }
     if op == "move_file":
         role = str(raw.get("role") or "").strip()
@@ -788,6 +1113,16 @@ def _normalize_direct_operation(
         edge = _edge_from_suggestion(raw, _suggestion_kind(raw))
         if not edge:
             return {"reason": "edge_unresolved", "suggestion": dict(raw)}
+        edge_policy = _apply_bridge_edge_policy(
+            edge,
+            raw,
+            op_name=op,
+            bridge_policy=bridge_policy,
+        )
+        if edge_policy.get("skip_reason"):
+            return {"reason": edge_policy["skip_reason"], "suggestion": dict(raw)}
+        edge = str(edge_policy.get("edge") or edge)
+        _annotate_bridge_evidence(operation["evidence"], edge_policy)
         operation["edge"] = edge
     return {"operation": operation}
 

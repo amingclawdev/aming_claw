@@ -354,6 +354,10 @@ def test_bridge_converts_called_by_suggestion_to_calls_from_explicit_source(conn
                     "target": "agent.storage",
                     "confidence": 0.87,
                     "reason": "service_entry calls load_state from storage",
+                    "evidence": {
+                        "source_evidence": "function_call",
+                        "line_evidence": "return load_state()['status']",
+                    },
                 }
             ],
         },
@@ -374,6 +378,120 @@ def test_bridge_converts_called_by_suggestion_to_calls_from_explicit_source(conn
     assert operation["source_path"] == "agent/service.py"
     assert operation["target_node_id"] == storage_id
     assert operation["edge"] == "calls"
+    assert operation["evidence"]["source_evidence"] == "function_call"
+
+
+def test_bridge_downgrades_weak_called_by_suggestion_before_gate(conn, tmp_path):
+    project = tmp_path / "generated-project"
+    _write_generated_project(project)
+    snapshot_id = _create_snapshot(conn, project, "semantic-bridge-weak-called-by")
+    storage_id = _node_id_for_primary(snapshot_id, "agent/storage.py")
+    event = _semantic_event(
+        conn,
+        snapshot_id,
+        storage_id,
+        {
+            "dependency_patch_suggestions": [
+                {
+                    "kind": "add_called_by",
+                    "source": "agent.service",
+                    "target": "agent.storage",
+                    "confidence": 0.72,
+                    "reason": "storage appears to be used from service, but no call site was provided",
+                }
+            ],
+        },
+        event_id="sem-bridge-weak-called-by",
+    )
+
+    result = bridge.bridge_semantic_events_to_graph_structure_jobs(
+        conn,
+        PID,
+        snapshot_id,
+        event_ids=[event["event_id"]],
+        actor="test",
+    )
+    conn.commit()
+
+    assert result["ok"] is True
+    assert result["queued_count"] == 1
+    operation = result["events"][0]["payload"]["ai_output"]["operations"][0]
+    assert operation["source_path"] == "agent/service.py"
+    assert operation["target_node_id"] == storage_id
+    assert operation["edge"] == "imports"
+    assert operation["evidence"]["original_edge"] == "calls"
+    assert operation["evidence"]["bridge_policy"] == "calls_weak_evidence_downgraded_to_imports"
+    assert (
+        result["events"][0]["payload"]["ai_output"]["bridge"]["policy"]["calls"]["downgrade_to"]
+        == "imports"
+    )
+
+    semantic_worker._drain_graph_structure(PID, snapshot_id)
+
+    completed = graph_events.list_events(
+        conn,
+        PID,
+        snapshot_id,
+        event_types=["graph_structure_completed"],
+    )
+    gate_result = completed[0]["payload"]["result"]
+    assert gate_result["ok"] is True
+    assert gate_result["gate"]["accepted_count"] == 1
+    assert gate_result["gate"]["operations"][0]["edge"] == "imports"
+
+
+def test_bridge_uses_project_bridge_policy_for_weak_calls(conn, tmp_path):
+    project = tmp_path / "generated-project"
+    _write_generated_project(project)
+    override_path = project / PROJECT_OVERRIDE_PATH
+    override_path.parent.mkdir(parents=True)
+    override_path.write_text(
+        "\n".join(
+            [
+                "graph_structure_ops:",
+                "  bridge_policy:",
+                "    calls:",
+                "      weak_evidence_action: downgrade",
+                "      downgrade_to: depends_on",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    snapshot_id = _create_snapshot(conn, project, "semantic-bridge-policy-called-by")
+    storage_id = _node_id_for_primary(snapshot_id, "agent/storage.py")
+    event = _semantic_event(
+        conn,
+        snapshot_id,
+        storage_id,
+        {
+            "dependency_patch_suggestions": [
+                {
+                    "kind": "add_called_by",
+                    "source": "agent.service",
+                    "target": "agent.storage",
+                    "confidence": 0.72,
+                    "reason": "storage is related to service without concrete call evidence",
+                }
+            ],
+        },
+        event_id="sem-bridge-policy-called-by",
+    )
+
+    result = bridge.bridge_semantic_events_to_graph_structure_jobs(
+        conn,
+        PID,
+        snapshot_id,
+        event_ids=[event["event_id"]],
+        actor="test",
+        project_root=project,
+    )
+
+    assert result["ok"] is True
+    assert result["queued_count"] == 1
+    operation = result["events"][0]["payload"]["ai_output"]["operations"][0]
+    assert operation["target_node_id"] == storage_id
+    assert operation["edge"] == "depends_on"
+    assert operation["evidence"]["bridge_policy"] == "calls_weak_evidence_downgraded_to_depends_on"
 
 
 def test_bridge_rejects_unresolved_explicit_source_instead_of_fallback(conn, tmp_path):

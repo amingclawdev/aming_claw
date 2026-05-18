@@ -74,6 +74,22 @@ graph_structure_ops:
       require_call_evidence: true
       import_only_action: downgrade
       downgrade_to: imports
+  bridge_policy:
+    calls:
+      require_concrete_evidence: true
+      weak_evidence_action: downgrade
+      downgrade_to: imports
+      evidence_kinds:
+        - call
+        - calls
+        - call_reference
+        - direct_call
+        - function_call
+        - function_calls
+        - resolved_call
+        - resolved_function_call
+        - runtime_call
+        - strong_call
   operations:
     move_file:
       enabled: true
@@ -160,7 +176,9 @@ job_profiles:
       payload.output_contract.self_precheck.checked_rules_required. If a
       relation needs a calls edge but you do not have concrete call evidence,
       emit imports/depends_on or a graph_enrich_config suggestion instead of
-      marking the calls proposal valid.
+      marking the calls proposal valid. The semantic bridge also applies
+      payload.instructions.graph_structure_ops.bridge_policy before gate
+      submission, so weak calls may be downgraded before validation.
   graph_enrich_config:
     analyzer_role: reconcile_graph_enrich_config_analyzer
     prompt_template: |-
@@ -264,8 +282,9 @@ prompt_template: |-
   evidence. These suggestions are never applied directly; the worker converts
   them into graph-structure dry-run jobs that must pass the gate and observer
   approval before source hints are written. Self-precheck these suggestions
-  before emitting them: do not propose calls without concrete call evidence,
-  do not point to missing files/nodes, and keep unsafe/uncertain corrections in
+  before emitting them using graph_structure_ops.bridge_policy: do not propose
+  calls without concrete call evidence, do not point to missing files/nodes,
+  and keep unsafe/uncertain corrections in
   known risks or graph_enrich_config_suggestions.
 
   When a correction requires changing graph-enrichment rules instead of writing

@@ -27,6 +27,27 @@ _FORBIDDEN_ALLOWED = {
 DEFAULT_SEMANTIC_WORKER_MAX_CONCURRENCY = 4
 DEFAULT_SEMANTIC_WORKER_CLAIM_BATCH_SIZE = 4
 DEFAULT_SEMANTIC_WORKER_LEASE_SECONDS = 600
+_GRAPH_STRUCTURE_EDGE_ALLOWLIST = {
+    "calls",
+    "configures",
+    "depends_on",
+    "documents",
+    "imports",
+    "tests",
+    "uses",
+}
+_DEFAULT_GRAPH_STRUCTURE_BRIDGE_CALL_EVIDENCE_KINDS = [
+    "call",
+    "calls",
+    "call_reference",
+    "direct_call",
+    "function_call",
+    "function_calls",
+    "resolved_call",
+    "resolved_function_call",
+    "runtime_call",
+    "strong_call",
+]
 
 GRAPH_STRUCTURE_PROMPT_TEMPLATE = """You are the reconcile graph structure analyzer.
 
@@ -105,6 +126,7 @@ class GraphStructureOpsConfig:
     analyzer_role: str = "reconcile_graph_structure_analyzer"
     operations: dict[str, dict[str, Any]] = field(default_factory=dict)
     evidence_policy: dict[str, Any] = field(default_factory=dict)
+    bridge_policy: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -353,6 +375,7 @@ class SemanticAnalyzerConfig:
             "input_policy": asdict(self.input_policy),
             "execution_policy": asdict(self.execution_policy),
             "automation_policy": asdict(self.automation_policy),
+            "graph_structure_ops": asdict(self.graph_structure_ops),
             "output_schema": self.output_schema,
             "prompt_template": self.prompt_template,
         }
@@ -564,7 +587,76 @@ def _parse_graph_structure_ops_config(raw: Any) -> GraphStructureOpsConfig:
             if isinstance(spec, dict)
         },
         evidence_policy=dict(contract.get("evidence_policy") or {}),
+        bridge_policy=_normalize_graph_structure_bridge_policy(
+            raw.get("bridge_policy") if isinstance(raw, dict) else None,
+            evidence_policy=contract.get("evidence_policy") or {},
+        ),
     )
+
+
+def _normalize_graph_structure_bridge_policy(
+    raw: Any,
+    *,
+    evidence_policy: dict[str, Any],
+) -> dict[str, Any]:
+    if raw not in (None, "") and not isinstance(raw, dict):
+        raise SemanticConfigValidationError("'graph_structure_ops.bridge_policy' must be a mapping")
+    calls_evidence = (
+        evidence_policy.get("calls")
+        if isinstance(evidence_policy.get("calls"), dict)
+        else {}
+    )
+    evidence_action = str(calls_evidence.get("import_only_action") or "downgrade").strip().lower()
+    weak_action = {
+        "allow": "keep",
+        "downgrade": "downgrade",
+        "reject": "skip",
+    }.get(evidence_action, "downgrade")
+    default_policy: dict[str, Any] = {
+        "calls": {
+            "require_concrete_evidence": bool(calls_evidence.get("require_call_evidence", True)),
+            "weak_evidence_action": weak_action,
+            "downgrade_to": str(calls_evidence.get("downgrade_to") or "imports").strip(),
+            "evidence_kinds": list(_DEFAULT_GRAPH_STRUCTURE_BRIDGE_CALL_EVIDENCE_KINDS),
+        }
+    }
+    policy = _deep_merge(default_policy, raw or {})
+    calls = policy.get("calls") if isinstance(policy.get("calls"), dict) else {}
+    action = str(calls.get("weak_evidence_action") or "downgrade").strip().lower()
+    action = {
+        "allow": "keep",
+        "allowed": "keep",
+        "keep": "keep",
+        "downgrade": "downgrade",
+        "reject": "skip",
+        "skip": "skip",
+    }.get(action, action)
+    if action not in {"keep", "downgrade", "skip"}:
+        raise SemanticConfigValidationError(
+            "graph_structure_ops.bridge_policy.calls.weak_evidence_action must be keep, downgrade, or skip"
+        )
+    downgrade_to = str(calls.get("downgrade_to") or "imports").strip().lower()
+    if downgrade_to and downgrade_to not in _GRAPH_STRUCTURE_EDGE_ALLOWLIST:
+        raise SemanticConfigValidationError(
+            "graph_structure_ops.bridge_policy.calls.downgrade_to must be a supported edge"
+        )
+    evidence_kinds = calls.get("evidence_kinds") or []
+    if isinstance(evidence_kinds, str):
+        evidence_kinds = [item.strip() for item in evidence_kinds.split(",")]
+    if not isinstance(evidence_kinds, list):
+        raise SemanticConfigValidationError(
+            "graph_structure_ops.bridge_policy.calls.evidence_kinds must be a list"
+        )
+    calls["require_concrete_evidence"] = bool(calls.get("require_concrete_evidence", True))
+    calls["weak_evidence_action"] = action
+    calls["downgrade_to"] = downgrade_to
+    calls["evidence_kinds"] = [
+        str(item).strip().lower().replace("-", "_").replace(".", "_")
+        for item in evidence_kinds
+        if str(item).strip()
+    ]
+    policy["calls"] = dict(calls)
+    return policy
 
 
 def _default_config_dict() -> dict[str, Any]:
