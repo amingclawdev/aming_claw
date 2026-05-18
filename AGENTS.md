@@ -79,5 +79,16 @@ build is needed when `agent/governance/dashboard_dist/index.html` or
 - If ServiceManager/executor are offline, chain/executor is degraded even when
   local AI CLIs are detected.
 
+## Structured AI Output
+
+- Any AI path that produces machine-consumed structured data must expose and
+  require a local precheck script/API for the draft output before final output.
+- The AI-facing prompt must tell the model to run that precheck on its own
+  output, repair model-correctable schema/contract errors once, and include
+  precheck evidence in the final structured result.
+- The local governance gate remains authoritative. AI self-precheck reduces
+  malformed outputs and retries, but it must never bypass server-side parsing,
+  validation, review, or observer approval.
+
 Global Codex settings are intentionally out of scope for v1. Keep this
 project-level setup transparent and reversible.

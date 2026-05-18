@@ -140,6 +140,14 @@ Project-level `ai.routing.semantic` wins over the global semantic config. If
 the project semantic provider/model is missing, AI Enrich is blocked until AI
 config is saved for that project.
 
+For any AI workflow that emits structured data consumed by governance code,
+require an AI self-precheck step before final output. The prompt or payload
+must expose the applicable local precheck script/API and instruct the model to
+run it against the draft JSON, repair model-correctable contract errors once,
+and include precheck evidence in the final result. The system-side gate remains
+authoritative: AI self-precheck cannot bypass parsing, validation, Review
+Queue, or observer approval.
+
 ## Governance Hint MVP
 
 Governance Hint is the MVP-safe graph-structure correction path for orphan
