@@ -315,8 +315,19 @@ def test_semantic_worker_graph_structure_job_invokes_ai_when_output_missing(
             calls.append((stage, payload))
             assert stage == "graph_structure"
             assert payload["output_contract"]["schema_version"] == SCHEMA_VERSION
+            assert payload["output_contract"]["supported_operations"] == [
+                "add_edge",
+                "move_file",
+                "suppress_edge",
+            ]
+            assert "test" in payload["output_contract"]["supported_roles"]
+            assert "tests" in payload["output_contract"]["supported_edges"]
             assert payload["snapshot_id"] == "worker-graph-structure-ai-base"
             assert payload["base_commit"] == "workerai_base"
+            assert payload["operator_request"]["goal"] == "attach generated test to service"
+            assert payload["selector"]["paths"] == ["agent/tests/test_service.py"]
+            assert payload["instructions"]["risk_tolerance"] == "low"
+            assert payload["options"]["max_operations"] == 1
             assert "agent/tests/test_service.py" in payload["inventory_paths"]
             assert any(
                 "agent/service.py" in node.get("primary", [])
@@ -343,7 +354,10 @@ def test_semantic_worker_graph_structure_job_invokes_ai_when_output_missing(
         payload={
             "mode": "accept",
             "project_root": str(project),
+            "selector": {"paths": ["agent/tests/test_service.py"]},
             "operator_request": {"goal": "attach generated test to service"},
+            "instructions": {"risk_tolerance": "low"},
+            "options": {"max_operations": 1},
         },
         created_by="test",
     )

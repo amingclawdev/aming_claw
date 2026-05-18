@@ -157,6 +157,12 @@ def _graph_structure_ai_payload(
 ) -> dict[str, Any]:
     from . import db as governance_db
     from . import graph_snapshot_store as store
+    from .graph_structure_ops import (
+        EDGE_ALLOWLIST,
+        ROLE_ALLOWLIST,
+        SCHEMA_VERSION,
+        SUPPORTED_HINT_OPS,
+    )
 
     event_payload = event_payload if isinstance(event_payload, dict) else {}
     conn = governance_db.get_connection(project_id)
@@ -179,6 +185,16 @@ def _graph_structure_ai_payload(
         if isinstance(event_payload.get("operator_request"), dict)
         else {}
     )
+    instructions = (
+        event_payload.get("instructions")
+        if isinstance(event_payload.get("instructions"), dict)
+        else {}
+    )
+    options = (
+        event_payload.get("options")
+        if isinstance(event_payload.get("options"), dict)
+        else {}
+    )
     return {
         "schema_version": 1,
         "project_id": project_id,
@@ -188,6 +204,8 @@ def _graph_structure_ai_payload(
         "mode": str(event_payload.get("mode") or "dry_run"),
         "selector": selector,
         "operator_request": operator_request,
+        "instructions": instructions,
+        "options": options,
         "graph": {
             "nodes": [
                 {
@@ -218,10 +236,17 @@ def _graph_structure_ai_payload(
         },
         "inventory_paths": inventory_paths[:1000],
         "output_contract": {
-            "schema_version": "graph_structure_ops.v1",
+            "schema_version": SCHEMA_VERSION,
             "return_exactly_one_json_object": True,
-            "supported_operations": ["move_file", "add_edge", "suppress_edge"],
+            "supported_operations": sorted(SUPPORTED_HINT_OPS),
+            "supported_roles": sorted(ROLE_ALLOWLIST),
+            "supported_edges": sorted(EDGE_ALLOWLIST),
             "required_top_level_fields": ["schema_version", "source", "operations", "self_check"],
+            "required_operation_fields": {
+                "move_file": ["op", "hint_id", "source_path", "target_node_id", "role"],
+                "add_edge": ["op", "hint_id", "source_path", "target_node_id", "edge"],
+                "suppress_edge": ["op", "hint_id", "source_path", "target_node_id", "edge"],
+            },
             "source": {
                 "snapshot_id": snapshot_id,
                 "base_commit": str(snapshot.get("commit_sha") or ""),

@@ -323,7 +323,16 @@ def test_graph_structure_ops_jobs_selector_request_drains_through_ai_generated_p
             assert stage == "graph_structure"
             assert payload["operator_request"]["goal"] == "attach generated test to service"
             assert payload["selector"]["paths"] == ["agent/tests/test_service.py"]
+            assert payload["instructions"]["risk_tolerance"] == "low"
+            assert payload["options"]["max_operations"] == 1
             assert payload["output_contract"]["schema_version"] == SCHEMA_VERSION
+            assert payload["output_contract"]["supported_operations"] == [
+                "add_edge",
+                "move_file",
+                "suppress_edge",
+            ]
+            assert "test" in payload["output_contract"]["supported_roles"]
+            assert "tests" in payload["output_contract"]["supported_edges"]
             assert "agent/tests/test_service.py" in payload["inventory_paths"]
             return {
                 "schema_version": SCHEMA_VERSION,
@@ -365,6 +374,7 @@ def test_graph_structure_ops_jobs_selector_request_drains_through_ai_generated_p
                 "selector": {"paths": ["agent/tests/test_service.py"]},
                 "operator_request": {"goal": "attach generated test to service"},
                 "instructions": {"risk_tolerance": "low"},
+                "options": {"max_operations": 1},
             },
         )
     )
@@ -376,6 +386,7 @@ def test_graph_structure_ops_jobs_selector_request_drains_through_ai_generated_p
     assert event_payload["selector"]["paths"] == ["agent/tests/test_service.py"]
     assert event_payload["operator_request"]["goal"] == "attach generated test to service"
     assert event_payload["instructions"]["risk_tolerance"] == "low"
+    assert event_payload["options"]["max_operations"] == 1
     assert published[0][0] == "semantic_job.enqueued"
 
     semantic_worker._drain_graph_structure(PID, "graph-ops-selector-ai-base")
