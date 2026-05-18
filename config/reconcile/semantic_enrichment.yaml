@@ -47,6 +47,12 @@ execution_policy:
   # is available only when callers explicitly set semantic_ai_input_mode=batch.
   ai_input_mode: feature
   dynamic_semantic_graph_state: true
+  # Worker runtime is config-driven so dogfood runs can temporarily raise
+  # throughput without code changes. Code falls back to 4/4/600 if config is
+  # absent or invalid.
+  worker_max_concurrency: 10
+  worker_claim_batch_size: 10
+  worker_lease_seconds: 600
 
 automation_policy:
   # External projects start safe: structure graph and queues can be generated

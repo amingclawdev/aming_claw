@@ -48,6 +48,9 @@ def test_default_semantic_config_loads_state_only_profile():
     assert config.use_ai_default is False
     assert config.execution_policy.ai_input_mode == "feature"
     assert config.execution_policy.dynamic_semantic_graph_state is True
+    assert config.execution_policy.worker_max_concurrency == 10
+    assert config.execution_policy.worker_claim_batch_size == 10
+    assert config.execution_policy.worker_lease_seconds == 600
     assert config.automation_policy.semantic_mode == "manual"
     assert config.automation_policy.feedback_review_mode == "enqueue_only"
     assert config.automation_policy.graph_apply_mode == "manual"
@@ -62,6 +65,8 @@ def test_default_semantic_config_loads_state_only_profile():
     assert payload["legacy_role_alias"] == "pm"
     assert payload["job_type"] == "node"
     assert payload["execution_policy"]["ai_input_mode"] == "feature"
+    assert payload["execution_policy"]["worker_max_concurrency"] == 10
+    assert payload["execution_policy"]["worker_claim_batch_size"] == 10
     assert payload["automation_policy"]["feedback_review_mode"] == "enqueue_only"
     assert payload["prompt_template"]
     structure_payload = config.to_instruction_payload("graph_structure")
@@ -97,6 +102,30 @@ def test_graph_structure_ops_config_can_disable_operations_and_edges(tmp_path):
     assert config.graph_structure_ops.operations["suppress_edge"]["enabled"] is False
 
 
+def test_semantic_worker_execution_policy_invalid_values_fall_back(tmp_path):
+    cfg = tmp_path / "semantic-worker-policy.yaml"
+    cfg.write_text(
+        "\n".join(
+            [
+                'version: "1.0"',
+                "analyzer: reconcile_semantic",
+                "prompt_template: semantic prompt",
+                "execution_policy:",
+                "  worker_max_concurrency: nope",
+                "  worker_claim_batch_size: -5",
+                "  worker_lease_seconds: 5",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_semantic_enrichment_config(config_path=cfg)
+
+    assert config.execution_policy.worker_max_concurrency == 4
+    assert config.execution_policy.worker_claim_batch_size == 4
+    assert config.execution_policy.worker_lease_seconds == 600
+
+
 def test_project_ai_routing_overrides_semantic_provider_and_model(monkeypatch):
     config = load_semantic_enrichment_config()
     monkeypatch.setattr(
@@ -115,6 +144,34 @@ def test_project_ai_routing_overrides_semantic_provider_and_model(monkeypatch):
 
     assert updated.provider == "openai"
     assert updated.model == "gpt-5.5"
+    assert "demo-project:ai.routing.semantic" in updated.override_path
+
+
+def test_project_ai_routing_can_override_semantic_worker_policy(monkeypatch):
+    config = load_semantic_enrichment_config()
+    monkeypatch.setattr(
+        "agent.governance.project_service.get_project_config_metadata",
+        lambda project_id: {
+            "project_id": project_id,
+            "ai": {
+                "routing": {
+                    "semantic": {
+                        "worker": {
+                            "worker_max_concurrency": 7,
+                            "claim_batch_size": 8,
+                            "claim_lease_seconds": 901,
+                        }
+                    }
+                }
+            },
+        },
+    )
+
+    updated = apply_project_ai_routing(config, project_id="demo-project")
+
+    assert updated.execution_policy.worker_max_concurrency == 7
+    assert updated.execution_policy.worker_claim_batch_size == 8
+    assert updated.execution_policy.worker_lease_seconds == 901
     assert "demo-project:ai.routing.semantic" in updated.override_path
 
 
@@ -214,6 +271,8 @@ def test_project_override_merges_with_default(tmp_path):
     assert config.use_ai_default is True
     assert config.input_policy.max_excerpt_chars == 77
     assert config.execution_policy.ai_input_mode == "batch"
+    assert config.execution_policy.worker_max_concurrency == 10
+    assert config.execution_policy.worker_claim_batch_size == 10
     assert config.automation_policy.semantic_mode == "auto"
     assert config.automation_policy.feedback_review_mode == "auto"
     assert config.automation_policy.review_workers == 2

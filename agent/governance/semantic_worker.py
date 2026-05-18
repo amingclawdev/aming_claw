@@ -23,9 +23,10 @@ feedback_review) are ignored at the claim layer (`claim_semantic_jobs`
 already filters node-shaped rows).
 
 Concurrency: a per-(project, snapshot) lock prevents overlapping
-drains. A small ThreadPoolExecutor caps total concurrent AI calls at 4.
-SQLite WAL + the existing `sqlite_write_lock` handles cross-thread
-write serialization.
+drains. A semantic enrichment config policy caps total concurrent AI
+calls and claim batch size, with conservative defaults if config cannot
+be loaded. SQLite WAL + the existing `sqlite_write_lock` handles
+cross-thread write serialization.
 """
 
 from __future__ import annotations
@@ -33,27 +34,98 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import asdict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
 log = logging.getLogger(__name__)
 
 _executor: ThreadPoolExecutor | None = None
+_executor_max_workers: int | None = None
+_executor_guard = threading.Lock()
 _busy_locks: dict[tuple[str, str], threading.Lock] = {}
 _busy_locks_guard = threading.Lock()
 _registered = False
-_DRAIN_BATCH_SIZE = 4
-_DRAIN_LEASE_SECONDS = 600
+_DEFAULT_WORKER_MAX_CONCURRENCY = 4
+_DEFAULT_DRAIN_BATCH_SIZE = 4
+_DEFAULT_DRAIN_LEASE_SECONDS = 600
 
 
-def _get_executor() -> ThreadPoolExecutor:
-    global _executor
-    if _executor is None:
-        _executor = ThreadPoolExecutor(
-            max_workers=4, thread_name_prefix="semantic-worker",
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _worker_runtime_config(project_id: str = "") -> dict[str, int]:
+    defaults = {
+        "max_workers": _DEFAULT_WORKER_MAX_CONCURRENCY,
+        "claim_batch_size": _DEFAULT_DRAIN_BATCH_SIZE,
+        "lease_seconds": _DEFAULT_DRAIN_LEASE_SECONDS,
+    }
+    try:
+        from .reconcile_semantic_config import (
+            apply_project_ai_routing,
+            load_semantic_enrichment_config,
         )
-    return _executor
+
+        root = _project_root_for(project_id) if project_id else Path.cwd()
+        cfg = apply_project_ai_routing(
+            load_semantic_enrichment_config(project_root=root),
+            project_id=project_id,
+        )
+        policy = cfg.execution_policy
+        return {
+            "max_workers": _positive_int(
+                getattr(policy, "worker_max_concurrency", None),
+                defaults["max_workers"],
+            ),
+            "claim_batch_size": _positive_int(
+                getattr(policy, "worker_claim_batch_size", None),
+                defaults["claim_batch_size"],
+            ),
+            "lease_seconds": _positive_int(
+                getattr(policy, "worker_lease_seconds", None),
+                defaults["lease_seconds"],
+            ),
+        }
+    except Exception as exc:  # noqa: BLE001 - worker must stay alive on bad config
+        log.warning("semantic_worker: config load failed; using defaults: %s", exc)
+        return defaults
+
+
+def _get_executor(max_workers: int | None = None) -> ThreadPoolExecutor:
+    global _executor, _executor_max_workers
+    configured_max_workers = _positive_int(max_workers, _DEFAULT_WORKER_MAX_CONCURRENCY)
+    old_executor: ThreadPoolExecutor | None = None
+    with _executor_guard:
+        if _executor is not None and _executor_max_workers == configured_max_workers:
+            return _executor
+        old_executor = _executor
+        _executor = ThreadPoolExecutor(
+            max_workers=configured_max_workers,
+            thread_name_prefix="semantic-worker",
+        )
+        _executor_max_workers = configured_max_workers
+        current = _executor
+    if old_executor is not None:
+        old_executor.shutdown(wait=False, cancel_futures=False)
+    return current
+
+
+def _reset_worker_runtime_for_tests() -> None:
+    global _executor, _executor_max_workers, _busy_locks, _registered
+    with _executor_guard:
+        old_executor = _executor
+        _executor = None
+        _executor_max_workers = None
+    if old_executor is not None:
+        old_executor.shutdown(wait=False, cancel_futures=True)
+    with _busy_locks_guard:
+        _busy_locks = {}
+    _registered = False
 
 
 def _drain_lock_for(project_id: str, snapshot_id: str) -> threading.Lock:
@@ -254,6 +326,7 @@ def _drain(project_id: str, snapshot_id: str) -> None:
 
 def _drain_graph_structure(project_id: str, snapshot_id: str) -> None:
     """Drain queued graph-structure events for one snapshot."""
+    runtime_config = _worker_runtime_config(project_id)
     lock = _drain_lock_for(project_id, snapshot_id + ":graph_structure")
     if not lock.acquire(blocking=False):
         log.debug("semantic_worker: graph-structure drain skipped (busy) %s/%s",
@@ -278,7 +351,7 @@ def _drain_graph_structure(project_id: str, snapshot_id: str) -> None:
                 snapshot_id,
                 event_types=["graph_structure_requested"],
                 statuses=[graph_events.EVENT_STATUS_OBSERVED],
-                limit=_DRAIN_BATCH_SIZE,
+                limit=runtime_config["claim_batch_size"],
             )
             if not queued:
                 log.info("semantic_worker: no graph-structure jobs to drain for %s/%s",
@@ -458,10 +531,11 @@ def _drain_graph_structure(project_id: str, snapshot_id: str) -> None:
 def _drain_node(project_id: str, snapshot_id: str) -> None:
     """Drain ai_pending semantic jobs for one snapshot.
 
-    Runs at most one node enrichment per call to keep worker threads
-    responsive. The enqueue listener will fire again as new rows land,
-    and startup catchup loops until the queue is empty.
+    Claims one configured batch, then processes claimed nodes concurrently
+    up to execution_policy.worker_max_concurrency. The snapshot lock only
+    protects claim ownership; each node uses its own DB connection.
     """
+    runtime_config = _worker_runtime_config(project_id)
     lock = _drain_lock_for(project_id, snapshot_id)
     if not lock.acquire(blocking=False):
         log.debug("semantic_worker: drain skipped (busy) %s/%s", project_id, snapshot_id)
@@ -485,8 +559,8 @@ def _drain_node(project_id: str, snapshot_id: str) -> None:
                     snapshot_id,
                     worker_id="semantic_worker_inproc",
                     statuses=["ai_pending", "pending_ai"],
-                    limit=_DRAIN_BATCH_SIZE,
-                    lease_seconds=_DRAIN_LEASE_SECONDS,
+                    limit=runtime_config["claim_batch_size"],
+                    lease_seconds=runtime_config["lease_seconds"],
                     actor="semantic_worker_inproc",
                 )
             except Exception as exc:  # noqa: BLE001 - claim is best-effort
@@ -520,191 +594,342 @@ def _drain_node(project_id: str, snapshot_id: str) -> None:
             except Exception as exc:  # noqa: BLE001 - record + leave rows for next drain
                 log.error("semantic_worker: build_semantic_ai_call failed: %s", exc)
                 return
-            for node_id in node_ids:
-                node_id_s = str(node_id or "").strip()
-                if not node_id_s:
-                    continue
-                # MF 2026-05-11: emit ai_reviewing interstitial publish for
-                # the dashboard's operations queue. There's no per-node
-                # graph_events row to update at claim time (run_semantic_
-                # enrichment writes the enriched event itself), so this is
-                # publish-only — the dashboard derives "running" from
-                # the bare event presence + downstream count rollup.
-                try:
-                    from . import event_bus
-                    event_bus.publish("semantic_node.running", {
-                        "project_id": project_id,
-                        "snapshot_id": snapshot_id,
-                        "node_id": node_id_s,
-                        "source": "semantic_worker_inproc",
-                    })
-                    event_bus.publish("dashboard.changed", {
-                        "project_id": project_id,
-                        "path": "/semantic_worker/node_running",
-                        "method": "WORKER",
-                        "source": "semantic_worker_inproc",
-                    })
-                except Exception as exc:  # noqa: BLE001 - advisory
-                    log.debug("semantic_worker: node running publish failed for %s: %s",
-                              node_id_s, exc)
-                try:
-                    result = semantic.run_semantic_enrichment(
-                        conn, project_id, snapshot_id, str(root),
-                        use_ai=True,
-                        ai_call=ai_call,
-                        semantic_node_ids=[node_id_s],
-                        semantic_skip_completed=False,
-                        submit_for_review=True,
-                        created_by="semantic_worker_inproc",
+            max_node_workers = min(runtime_config["max_workers"], len(node_ids))
+            if max_node_workers <= 1:
+                for node_id in node_ids:
+                    _process_node_semantic_job(
+                        project_id, snapshot_id, root=root, ai_call=ai_call, node_id=node_id
                     )
-                except Exception as exc:  # noqa: BLE001 - record + carry on
-                    log.exception("semantic_worker: enrich failed for %s: %s",
-                                  node_id_s, exc)
-                    continue
-                summary = result.get("summary") if isinstance(result, dict) else {}
-                ai_complete = (summary or {}).get("ai_complete_count", 0)
-                if not ai_complete:
-                    log.warning("semantic_worker: enrich returned 0 ai_complete for %s",
-                                node_id_s)
-                    continue
-                # Write a feedback item so the dashboard Review Queue surfaces it.
-                # Evidence carries the linked event_id derived from feature_hash.
-                feature_hash = ""
-                # The most recently written graph_semantic_nodes row is the source
-                # of truth for feature_hash; pull it.
-                row = conn.execute(
-                    "SELECT feature_hash FROM graph_semantic_nodes WHERE project_id=? AND snapshot_id=? AND node_id=?",
-                    (project_id, snapshot_id, node_id_s),
-                ).fetchone()
-                if row:
-                    feature_hash = str(row["feature_hash"] or "")
-                # Event id is deterministic per backfill: f"semnode-{snapshot_id}-{node_id}-{feature_hash[:12]}"
-                # but governance constructs it via _safe_event_id — duplicate the
-                # construction here is brittle. Instead, after running enrichment,
-                # trigger a backfill pass so the event row exists, then look it up.
-                try:
-                    from . import graph_events
-                    graph_events.backfill_existing_semantic_events(
-                        conn, project_id, snapshot_id, actor="semantic_worker_inproc",
-                    )
-                except Exception as exc:  # noqa: BLE001 - advisory
-                    log.warning("semantic_worker: backfill failed for %s: %s",
-                                node_id_s, exc)
-                    conn.commit()
-                    continue
-                # Look up the just-written PROPOSED event for this node.
-                event_id = ""
-                try:
-                    ev_row = conn.execute(
-                        """
-                        SELECT event_id FROM graph_events
-                        WHERE project_id = ? AND snapshot_id = ?
-                          AND event_type = 'semantic_node_enriched'
-                          AND target_id = ?
-                          AND status = 'proposed'
-                        ORDER BY event_seq DESC LIMIT 1
-                        """,
-                        (project_id, snapshot_id, node_id_s),
-                    ).fetchone()
-                    if ev_row:
-                        event_id = str(ev_row["event_id"] or "")
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("semantic_worker: event lookup failed for %s: %s",
-                                node_id_s, exc)
-                # Submit feedback row pointing at the event for review. The
-                # accept handler reads node_id from item.target_id and the
-                # event id list from item.evidence.linked_event_ids; we pack
-                # both into the issue dict so submit_feedback_item carries
-                # them through to the persisted feedback row.
-                try:
-                    reconcile_feedback.submit_feedback_item(
-                        project_id,
-                        snapshot_id,
-                        feedback_kind=reconcile_feedback.KIND_NEEDS_OBSERVER_DECISION,
-                        issue={
-                            "issue": f"AI semantic enrichment generated for {node_id_s} — awaiting operator review",
-                            "source_node_ids": [node_id_s],
-                            "target_id": node_id_s,
-                            "target_type": "node",
-                            "priority": "P3",
-                            "evidence": {
-                                "source": "semantic_worker_inproc",
-                                "node_id": node_id_s,
-                                "feature_hash": feature_hash,
-                                "linked_event_ids": [event_id] if event_id else [],
-                            },
-                        },
-                        actor="semantic_worker_inproc",
-                    )
-                except Exception as exc:  # noqa: BLE001 - feedback row is advisory
-                    log.warning("semantic_worker: feedback submit failed for %s: %s",
-                                node_id_s, exc)
-                bridge_result: dict[str, Any] = {}
-                if event_id:
-                    try:
-                        from . import semantic_graph_structure_bridge
-
-                        bridge_result = (
-                            semantic_graph_structure_bridge
-                            .bridge_semantic_events_to_graph_structure_jobs(
-                                conn,
-                                project_id,
-                                snapshot_id,
-                                event_ids=[event_id],
-                                mode="dry_run",
-                                actor="semantic_worker_inproc",
-                                limit=1,
-                            )
-                        )
-                    except Exception as exc:  # noqa: BLE001 - graph-structure bridge is advisory
-                        log.warning(
-                            "semantic_worker: semantic graph-structure bridge failed for %s: %s",
-                            node_id_s,
-                            exc,
-                        )
-                conn.commit()
-                # Notify EventBus so dashboard SSE clients refetch. See the
-                # mirror publish in _drain_edge for context — the worker runs
-                # entirely in-process, never goes through HTTP, and therefore
-                # never fires _emit_dashboard_changed on its own. We publish
-                # both a typed `semantic_node.proposed` (so future programmatic
-                # subscribers can listen for the specific transition) AND
-                # `dashboard.changed` because the frontend SSE hook only
-                # explicitly subscribes to known names — the latter is what
-                # actually wakes up the dashboard.
-                try:
-                    from . import event_bus
-                    payload = {
-                        "project_id": project_id,
-                        "snapshot_id": snapshot_id,
-                        "node_id": node_id_s,
-                        "event_id": event_id,
-                        "feature_hash": feature_hash,
-                        "source": "semantic_worker_inproc",
+            else:
+                with ThreadPoolExecutor(
+                    max_workers=max_node_workers,
+                    thread_name_prefix="semantic-node",
+                ) as node_pool:
+                    futures = {
+                        node_pool.submit(
+                            _process_node_semantic_job,
+                            project_id,
+                            snapshot_id,
+                            root=root,
+                            ai_call=ai_call,
+                            node_id=node_id,
+                        ): node_id
+                        for node_id in node_ids
                     }
-                    event_bus.publish("semantic_node.proposed", payload)
-                    event_bus.publish("dashboard.changed", {
-                        "project_id": project_id,
-                        "path": "/semantic_worker/node_proposed",
-                        "method": "WORKER",
-                        "source": "semantic_worker_inproc",
-                    })
-                    for bridge_event in bridge_result.get("events", []):
-                        if bridge_event.get("event_type") != "graph_structure_requested":
-                            continue
-                        event_bus.publish("semantic_job.enqueued", {
-                            "project_id": project_id,
-                            "snapshot_id": snapshot_id,
-                            "target_scope": "graph_structure",
-                            "event_id": bridge_event.get("event_id", ""),
-                        })
-                except Exception as exc:  # noqa: BLE001 - notification is advisory
-                    log.debug("semantic_worker: node eventbus publish failed for %s: %s",
-                              node_id_s, exc)
+                    for future in as_completed(futures):
+                        node_id = futures[future]
+                        try:
+                            future.result()
+                        except Exception as exc:  # noqa: BLE001 - record + carry on
+                            log.exception(
+                                "semantic_worker: node job failed for %s: %s",
+                                node_id,
+                                exc,
+                            )
+            finalized = _finalize_completed_node_jobs_from_events(
+                project_id,
+                snapshot_id,
+                node_ids=node_ids,
+            )
+            if finalized:
+                log.info(
+                    "semantic_worker: finalized %d completed node job(s) for %s/%s",
+                    finalized,
+                    project_id,
+                    snapshot_id,
+                )
         finally:
             conn.close()
     finally:
         lock.release()
+
+
+def _process_node_semantic_job(
+    project_id: str,
+    snapshot_id: str,
+    *,
+    root: Path,
+    ai_call: Any,
+    node_id: str,
+) -> dict[str, Any]:
+    from . import db as governance_db
+    from . import reconcile_feedback
+    from . import reconcile_semantic_enrichment as semantic
+
+    node_id_s = str(node_id or "").strip()
+    if not node_id_s:
+        return {"ok": False, "status": "skipped", "reason": "empty_node_id"}
+    conn = governance_db.get_connection(project_id)
+    try:
+        # MF 2026-05-11: emit ai_reviewing interstitial publish for the
+        # dashboard's operations queue. There's no per-node graph_events row
+        # to update at claim time, so this is publish-only.
+        try:
+            from . import event_bus
+            event_bus.publish("semantic_node.running", {
+                "project_id": project_id,
+                "snapshot_id": snapshot_id,
+                "node_id": node_id_s,
+                "source": "semantic_worker_inproc",
+            })
+            event_bus.publish("dashboard.changed", {
+                "project_id": project_id,
+                "path": "/semantic_worker/node_running",
+                "method": "WORKER",
+                "source": "semantic_worker_inproc",
+            })
+        except Exception as exc:  # noqa: BLE001 - advisory
+            log.debug("semantic_worker: node running publish failed for %s: %s",
+                      node_id_s, exc)
+        try:
+            result = semantic.run_semantic_enrichment(
+                conn, project_id, snapshot_id, str(root),
+                use_ai=True,
+                ai_call=ai_call,
+                semantic_node_ids=[node_id_s],
+                semantic_skip_completed=False,
+                submit_for_review=True,
+                created_by="semantic_worker_inproc",
+            )
+        except Exception as exc:  # noqa: BLE001 - record + carry on
+            log.exception("semantic_worker: enrich failed for %s: %s",
+                          node_id_s, exc)
+            _finalize_node_semantic_job(
+                conn,
+                project_id,
+                snapshot_id,
+                node_id_s,
+                status="ai_failed",
+                last_error=str(exc),
+            )
+            conn.commit()
+            return {"ok": False, "status": "failed", "node_id": node_id_s, "error": str(exc)}
+        summary = result.get("summary") if isinstance(result, dict) else {}
+        ai_complete = (summary or {}).get("ai_complete_count", 0)
+        if not ai_complete:
+            log.warning("semantic_worker: enrich returned 0 ai_complete for %s",
+                        node_id_s)
+            _finalize_node_semantic_job(
+                conn,
+                project_id,
+                snapshot_id,
+                node_id_s,
+                status="ai_failed",
+                last_error="ai_complete_count_zero",
+            )
+            conn.commit()
+            return {"ok": False, "status": "ai_incomplete", "node_id": node_id_s}
+        feature_hash = ""
+        row = conn.execute(
+            "SELECT feature_hash FROM graph_semantic_nodes WHERE project_id=? AND snapshot_id=? AND node_id=?",
+            (project_id, snapshot_id, node_id_s),
+        ).fetchone()
+        if row:
+            feature_hash = str(row["feature_hash"] or "")
+        try:
+            from . import graph_events
+            graph_events.backfill_existing_semantic_events(
+                conn, project_id, snapshot_id, actor="semantic_worker_inproc",
+            )
+        except Exception as exc:  # noqa: BLE001 - advisory
+            log.warning("semantic_worker: backfill failed for %s: %s",
+                        node_id_s, exc)
+            conn.commit()
+            return {"ok": False, "status": "backfill_failed", "node_id": node_id_s}
+        event_id = ""
+        try:
+            ev_row = conn.execute(
+                """
+                SELECT event_id FROM graph_events
+                WHERE project_id = ? AND snapshot_id = ?
+                  AND event_type = 'semantic_node_enriched'
+                  AND target_id = ?
+                  AND status = 'proposed'
+                ORDER BY event_seq DESC LIMIT 1
+                """,
+                (project_id, snapshot_id, node_id_s),
+            ).fetchone()
+            if ev_row:
+                event_id = str(ev_row["event_id"] or "")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("semantic_worker: event lookup failed for %s: %s",
+                        node_id_s, exc)
+        try:
+            reconcile_feedback.submit_feedback_item(
+                project_id,
+                snapshot_id,
+                feedback_kind=reconcile_feedback.KIND_NEEDS_OBSERVER_DECISION,
+                issue={
+                    "issue": f"AI semantic enrichment generated for {node_id_s} — awaiting operator review",
+                    "source_node_ids": [node_id_s],
+                    "target_id": node_id_s,
+                    "target_type": "node",
+                    "priority": "P3",
+                    "evidence": {
+                        "source": "semantic_worker_inproc",
+                        "node_id": node_id_s,
+                        "feature_hash": feature_hash,
+                        "linked_event_ids": [event_id] if event_id else [],
+                    },
+                },
+                actor="semantic_worker_inproc",
+            )
+        except Exception as exc:  # noqa: BLE001 - feedback row is advisory
+            log.warning("semantic_worker: feedback submit failed for %s: %s",
+                        node_id_s, exc)
+        bridge_result: dict[str, Any] = {}
+        if event_id:
+            try:
+                from . import semantic_graph_structure_bridge
+
+                bridge_result = (
+                    semantic_graph_structure_bridge
+                    .bridge_semantic_events_to_graph_structure_jobs(
+                        conn,
+                        project_id,
+                        snapshot_id,
+                        event_ids=[event_id],
+                        mode="dry_run",
+                        actor="semantic_worker_inproc",
+                        limit=1,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - graph-structure bridge is advisory
+                log.warning(
+                    "semantic_worker: semantic graph-structure bridge failed for %s: %s",
+                    node_id_s,
+                        exc,
+                )
+        _finalize_node_semantic_job(
+            conn,
+            project_id,
+            snapshot_id,
+            node_id_s,
+            status="ai_complete",
+        )
+        conn.commit()
+        try:
+            from . import event_bus
+            payload = {
+                "project_id": project_id,
+                "snapshot_id": snapshot_id,
+                "node_id": node_id_s,
+                "event_id": event_id,
+                "feature_hash": feature_hash,
+                "source": "semantic_worker_inproc",
+            }
+            event_bus.publish("semantic_node.proposed", payload)
+            event_bus.publish("dashboard.changed", {
+                "project_id": project_id,
+                "path": "/semantic_worker/node_proposed",
+                "method": "WORKER",
+                "source": "semantic_worker_inproc",
+            })
+            for bridge_event in bridge_result.get("events", []):
+                if bridge_event.get("event_type") != "graph_structure_requested":
+                    continue
+                event_bus.publish("semantic_job.enqueued", {
+                    "project_id": project_id,
+                    "snapshot_id": snapshot_id,
+                    "target_scope": "graph_structure",
+                    "event_id": bridge_event.get("event_id", ""),
+                })
+        except Exception as exc:  # noqa: BLE001 - notification is advisory
+            log.debug("semantic_worker: node eventbus publish failed for %s: %s",
+                      node_id_s, exc)
+        return {
+            "ok": True,
+            "status": "proposed",
+            "node_id": node_id_s,
+            "event_id": event_id,
+            "bridge": bridge_result,
+        }
+    finally:
+        conn.close()
+
+
+def _finalize_node_semantic_job(
+    conn: Any,
+    project_id: str,
+    snapshot_id: str,
+    node_id: str,
+    *,
+    status: str,
+    last_error: str = "",
+) -> None:
+    from .db import sqlite_write_lock
+    from . import reconcile_semantic_enrichment as semantic
+
+    node_id_s = str(node_id or "").strip()
+    if not node_id_s:
+        return
+    now = semantic.utc_now()
+    with sqlite_write_lock():
+        conn.execute(
+            """
+            UPDATE graph_semantic_jobs
+            SET status = ?,
+                worker_id = '',
+                claim_id = '',
+                claimed_at = '',
+                lease_expires_at = '',
+                claimed_by = '',
+                last_error = ?,
+                updated_at = ?
+            WHERE project_id = ?
+              AND snapshot_id = ?
+              AND node_id = ?
+            """,
+            (
+                str(status or ""),
+                str(last_error or ""),
+                now,
+                project_id,
+                snapshot_id,
+                node_id_s,
+            ),
+        )
+
+
+def _finalize_completed_node_jobs_from_events(
+    project_id: str,
+    snapshot_id: str,
+    *,
+    node_ids: list[str],
+) -> int:
+    from . import db as governance_db
+
+    target_ids = [str(node_id or "").strip() for node_id in node_ids if str(node_id or "").strip()]
+    if not target_ids:
+        return 0
+    conn = governance_db.get_connection(project_id)
+    try:
+        placeholders = ",".join("?" for _ in target_ids)
+        rows = conn.execute(
+            f"""
+            SELECT DISTINCT target_id
+            FROM graph_events
+            WHERE project_id = ?
+              AND snapshot_id = ?
+              AND event_type = 'semantic_node_enriched'
+              AND status = 'proposed'
+              AND target_id IN ({placeholders})
+            """,
+            (project_id, snapshot_id, *target_ids),
+        ).fetchall()
+        completed_ids = [str(row["target_id"] or "").strip() for row in rows if str(row["target_id"] or "").strip()]
+        for node_id in completed_ids:
+            _finalize_node_semantic_job(
+                conn,
+                project_id,
+                snapshot_id,
+                node_id,
+                status="ai_complete",
+            )
+        conn.commit()
+        return len(completed_ids)
+    finally:
+        conn.close()
 
 
 def _drain_edge(project_id: str, snapshot_id: str) -> None:
@@ -718,6 +943,7 @@ def _drain_edge(project_id: str, snapshot_id: str) -> None:
     a PROPOSED enriched event, and submits a needs_observer_decision feedback
     row so the Review Queue picks it up — same review gate as the node path.
     """
+    runtime_config = _worker_runtime_config(project_id)
     # Use a separate lock from the node drain so node + edge work in parallel.
     lock = _drain_lock_for(project_id, snapshot_id + ":edge")
     if not lock.acquire(blocking=False):
@@ -765,7 +991,7 @@ def _drain_edge(project_id: str, snapshot_id: str) -> None:
                 ORDER BY r.created_at
                 LIMIT ?
                 """,
-                (project_id, snapshot_id, _DRAIN_BATCH_SIZE),
+                (project_id, snapshot_id, runtime_config["claim_batch_size"]),
             ).fetchall()
             if not rows:
                 log.info("semantic_worker: no edges to drain for %s/%s",
@@ -1051,11 +1277,17 @@ def on_semantic_job_enqueued(payload: Any) -> None:
             project_id, snapshot_id, target_scope,
         )
         if target_scope == "edge":
-            _get_executor().submit(_drain_edge, project_id, snapshot_id)
+            _get_executor(_worker_runtime_config(project_id)["max_workers"]).submit(
+                _drain_edge, project_id, snapshot_id
+            )
         elif target_scope in {"graph_structure", "graph-structure"}:
-            _get_executor().submit(_drain_graph_structure, project_id, snapshot_id)
+            _get_executor(_worker_runtime_config(project_id)["max_workers"]).submit(
+                _drain_graph_structure, project_id, snapshot_id
+            )
         else:
-            _get_executor().submit(_drain_node, project_id, snapshot_id)
+            _get_executor(_worker_runtime_config(project_id)["max_workers"]).submit(
+                _drain_node, project_id, snapshot_id
+            )
     except Exception as exc:  # noqa: BLE001 - listener must not raise
         log.exception("semantic_worker: on_semantic_job_enqueued failed: %s", exc)
 
@@ -1109,7 +1341,9 @@ def on_governance_startup(payload: Any = None) -> None:
                             "semantic_worker: startup catchup %s/%s nodes=%d",
                             project_id, sid, n,
                         )
-                        _get_executor().submit(_drain_node, project_id, sid)
+                        _get_executor(_worker_runtime_config(project_id)["max_workers"]).submit(
+                            _drain_node, project_id, sid
+                        )
                     # MF-2026-05-10-017: also drain unenriched edge requests.
                     # observer-hotfix 2026-05-11: mirror the dedup-by-event_seq
                     # fix from _drain_edge — startup catchup must use the SAME
@@ -1141,7 +1375,9 @@ def on_governance_startup(payload: Any = None) -> None:
                             "semantic_worker: startup catchup %s/%s edges=%d",
                             project_id, sid, en,
                         )
-                        _get_executor().submit(_drain_edge, project_id, sid)
+                        _get_executor(_worker_runtime_config(project_id)["max_workers"]).submit(
+                            _drain_edge, project_id, sid
+                        )
                     graph_structure_pending = conn.execute(
                         """
                         SELECT COUNT(*) AS n FROM graph_events
@@ -1157,7 +1393,9 @@ def on_governance_startup(payload: Any = None) -> None:
                             "semantic_worker: startup catchup %s/%s graph_structure=%d",
                             project_id, sid, gn,
                         )
-                        _get_executor().submit(_drain_graph_structure, project_id, sid)
+                        _get_executor(_worker_runtime_config(project_id)["max_workers"]).submit(
+                            _drain_graph_structure, project_id, sid
+                        )
                     if n <= 0 and en <= 0 and gn <= 0:
                         continue
                 finally:

@@ -24,6 +24,9 @@ _FORBIDDEN_ALLOWED = {
     "create_chain_task",
     "finalize_snapshot",
 }
+DEFAULT_SEMANTIC_WORKER_MAX_CONCURRENCY = 4
+DEFAULT_SEMANTIC_WORKER_CLAIM_BATCH_SIZE = 4
+DEFAULT_SEMANTIC_WORKER_LEASE_SECONDS = 600
 
 GRAPH_STRUCTURE_PROMPT_TEMPLATE = """You are the reconcile graph structure analyzer.
 
@@ -60,6 +63,9 @@ class SemanticInputPolicy:
 class SemanticExecutionPolicy:
     ai_input_mode: str = "feature"
     dynamic_semantic_graph_state: bool = True
+    worker_max_concurrency: int = DEFAULT_SEMANTIC_WORKER_MAX_CONCURRENCY
+    worker_claim_batch_size: int = DEFAULT_SEMANTIC_WORKER_CLAIM_BATCH_SIZE
+    worker_lease_seconds: int = DEFAULT_SEMANTIC_WORKER_LEASE_SECONDS
 
 
 @dataclass
@@ -174,6 +180,39 @@ class SemanticAnalyzerConfig:
             ),
             dynamic_semantic_graph_state=bool(
                 execution_policy_raw.get("dynamic_semantic_graph_state", True)
+            ),
+            worker_max_concurrency=_bounded_int(
+                _first_present(
+                    execution_policy_raw,
+                    "worker_max_concurrency",
+                    "max_concurrent_ai_calls",
+                    "semantic_worker_max_workers",
+                ),
+                default=DEFAULT_SEMANTIC_WORKER_MAX_CONCURRENCY,
+                min_value=1,
+                max_value=32,
+            ),
+            worker_claim_batch_size=_bounded_int(
+                _first_present(
+                    execution_policy_raw,
+                    "worker_claim_batch_size",
+                    "claim_batch_size",
+                    "semantic_worker_claim_batch_size",
+                ),
+                default=DEFAULT_SEMANTIC_WORKER_CLAIM_BATCH_SIZE,
+                min_value=1,
+                max_value=100,
+            ),
+            worker_lease_seconds=_bounded_int(
+                _first_present(
+                    execution_policy_raw,
+                    "worker_lease_seconds",
+                    "claim_lease_seconds",
+                    "semantic_worker_lease_seconds",
+                ),
+                default=DEFAULT_SEMANTIC_WORKER_LEASE_SECONDS,
+                min_value=30,
+                max_value=86400,
             ),
         )
         automation_raw = data.get("automation_policy") or data.get("automation") or {}
@@ -340,6 +379,31 @@ def _normalize_ai_input_mode(value: Any) -> str:
     raise SemanticConfigValidationError(
         "execution_policy.ai_input_mode must be 'feature' or 'batch'"
     )
+
+
+def _first_present(raw: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in raw:
+            return raw.get(key)
+    return None
+
+
+def _bounded_int(
+    value: Any,
+    *,
+    default: int,
+    min_value: int,
+    max_value: int,
+) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    if parsed < min_value:
+        return default
+    if parsed > max_value:
+        return max_value
+    return parsed
 
 
 def _normalize_automation_mode(value: Any) -> str:
@@ -611,15 +675,82 @@ def apply_project_ai_routing(
         config.provider = provider
     if model:
         config.model = model
-    if provider or model:
+    worker_override = _project_worker_policy_override(ai_config, route)
+    if worker_override:
+        policy = config.execution_policy
+        policy.worker_max_concurrency = _bounded_int(
+            _first_present(
+                worker_override,
+                "worker_max_concurrency",
+                "max_concurrent_ai_calls",
+                "semantic_worker_max_workers",
+            ),
+            default=policy.worker_max_concurrency,
+            min_value=1,
+            max_value=32,
+        )
+        policy.worker_claim_batch_size = _bounded_int(
+            _first_present(
+                worker_override,
+                "worker_claim_batch_size",
+                "claim_batch_size",
+                "semantic_worker_claim_batch_size",
+            ),
+            default=policy.worker_claim_batch_size,
+            min_value=1,
+            max_value=100,
+        )
+        policy.worker_lease_seconds = _bounded_int(
+            _first_present(
+                worker_override,
+                "worker_lease_seconds",
+                "claim_lease_seconds",
+                "semantic_worker_lease_seconds",
+            ),
+            default=policy.worker_lease_seconds,
+            min_value=30,
+            max_value=86400,
+        )
+    if provider or model or worker_override:
         marker = f"aming_claw_registry:{project_key}:ai.routing.semantic"
         existing = str(getattr(config, "override_path", "") or "").strip()
         config.override_path = f"{existing}; {marker}" if existing else marker
     return config
 
 
+def _project_worker_policy_override(
+    ai_config: dict[str, Any],
+    semantic_route: dict[str, Any],
+) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for source in (
+        semantic_route,
+        semantic_route.get("worker") if isinstance(semantic_route, dict) else None,
+        semantic_route.get("execution_policy") if isinstance(semantic_route, dict) else None,
+        ai_config.get("semantic_worker") if isinstance(ai_config, dict) else None,
+    ):
+        if isinstance(source, dict):
+            for key in (
+                "worker_max_concurrency",
+                "max_concurrent_ai_calls",
+                "semantic_worker_max_workers",
+                "worker_claim_batch_size",
+                "claim_batch_size",
+                "semantic_worker_claim_batch_size",
+                "worker_lease_seconds",
+                "claim_lease_seconds",
+                "semantic_worker_lease_seconds",
+            ):
+                if key in source:
+                    merged[key] = source.get(key)
+    return merged
+
+
 __all__ = [
     "DEFAULT_CONFIG_PATH",
+    "DEFAULT_SEMANTIC_WORKER_CLAIM_BATCH_SIZE",
+    "DEFAULT_SEMANTIC_WORKER_LEASE_SECONDS",
+    "DEFAULT_SEMANTIC_WORKER_MAX_CONCURRENCY",
     "PROJECT_OVERRIDE_PATH",
     "SemanticAnalyzerConfig",
     "SemanticConfigError",
