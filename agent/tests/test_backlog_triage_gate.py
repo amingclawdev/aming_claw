@@ -23,6 +23,7 @@ if sys.version_info < (3, 10): sys.meta_path.insert(0, _Py39Fix())
 
 from unittest.mock import MagicMock, patch
 import pytest
+from governance.backlog_triage import triage_backlog_insert
 
 def _ctx(bug_id="NEW-1", pid="test-proj", **b):
     c = MagicMock(); c.path_params = {"project_id": pid, "bug_id": bug_id}; c.body = b; return c
@@ -67,6 +68,38 @@ def test_merge_into_appends_details():
         from governance.server import handle_backlog_upsert
         r = handle_backlog_upsert(_ctx(title="X", target_files=["a.py", "b.py"], details_md="e"))
         assert r["action"] == "merge_into" and r["bug_id"] == "OLD-3"
+
+def test_single_generic_file_overlap_does_not_merge_unrelated_domains():
+    decision = triage_backlog_insert(
+        {
+            "bug_id": "BUG-AUDIT-GRAPH-QUERY-TRACE-LEFT-RUNNING-R1-20260518",
+            "title": "Graph query audit traces remain running after one-shot MCP/API queries",
+            "target_files": [
+                "agent/governance/graph_query_trace.py",
+                "agent/governance/server.py",
+                "agent/governance/mcp_server.py",
+            ],
+        },
+        [
+            {
+                "bug_id": "OPT-FILE-INVENTORY-ORPHAN-LIST-PERFORMANCE",
+                "title": "File inventory orphan queries need timeout and pagination hardening",
+                "target_files": '["agent/governance/server.py","agent/governance/graph_snapshot_store.py","agent/governance/reconcile_file_inventory.py"]',
+            }
+        ],
+    )
+
+    assert decision["action"] == "admit"
+
+def test_merge_into_reports_overlap_evidence():
+    decision = triage_backlog_insert(
+        {"bug_id": "NEW-1", "title": "Worker queue lease timeout", "target_files": ["a.py", "b.py"]},
+        [{"bug_id": "OLD-1", "title": "Worker queue stale lease", "target_files": '["a.py","z.py"]'}],
+    )
+
+    assert decision["action"] == "merge_into"
+    assert decision["evidence"]["overlap_files"] == ["a.py"]
+    assert decision["evidence"]["title_token_overlap"] == ["lease", "queue", "worker"]
 
 def test_force_admit_bypasses_gate():
     with patch("governance.server.get_connection", return_value=_conn([{"bug_id": "OLD-1", "title": "Dup Bug", "target_files": "[]"}])):
