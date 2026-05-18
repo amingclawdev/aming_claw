@@ -352,6 +352,8 @@ def _normalize_semantic_job_type(value: Any) -> str:
         return "edge"
     if "global" in mode or mode in {"project_review", "health_review", "semantic_review"}:
         return "global_review"
+    if "graph_structure" in mode or mode in {"structure", "structure_ops", "graph_ops"}:
+        return "graph_structure"
     if "retry" in mode or "feedback" in mode or mode in {"repair", "refine"}:
         return "retry"
     if "dry_run" in mode or "preview" in mode:
@@ -366,6 +368,7 @@ def _default_job_profiles() -> dict[str, SemanticJobProfile]:
         "node": SemanticJobProfile(analyzer_role="reconcile_node_semantic_analyzer"),
         "edge": SemanticJobProfile(analyzer_role="reconcile_edge_semantic_analyzer"),
         "global_review": SemanticJobProfile(analyzer_role="reconcile_global_semantic_reviewer"),
+        "graph_structure": SemanticJobProfile(analyzer_role="reconcile_graph_structure_analyzer"),
         "retry": SemanticJobProfile(analyzer_role="reconcile_semantic_retry_reviewer"),
         "dry_run": SemanticJobProfile(analyzer_role="reconcile_semantic_dry_run"),
     }

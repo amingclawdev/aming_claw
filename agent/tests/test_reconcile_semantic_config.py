@@ -28,6 +28,7 @@ def test_default_semantic_config_loads_state_only_profile():
     assert config.job_profiles["node"].analyzer_role == "reconcile_node_semantic_analyzer"
     assert config.job_profiles["edge"].analyzer_role == "reconcile_edge_semantic_analyzer"
     assert config.job_profiles["global_review"].analyzer_role == "reconcile_global_semantic_reviewer"
+    assert config.job_profiles["graph_structure"].analyzer_role == "reconcile_graph_structure_analyzer"
     assert config.job_profiles["retry"].analyzer_role == "reconcile_semantic_retry_reviewer"
     assert config.job_profiles["dry_run"].analyzer_role == "reconcile_semantic_dry_run"
     assert config.executables["anthropic"] == "claude"
@@ -51,6 +52,10 @@ def test_default_semantic_config_loads_state_only_profile():
     assert payload["execution_policy"]["ai_input_mode"] == "feature"
     assert payload["automation_policy"]["feedback_review_mode"] == "enqueue_only"
     assert payload["prompt_template"]
+    structure_payload = config.to_instruction_payload("graph_structure")
+    assert structure_payload["job_type"] == "graph_structure"
+    assert structure_payload["role"] == "reconcile_graph_structure_analyzer"
+    assert "graph_structure_ops.v1" in structure_payload["job_profile"]["prompt_template"]
     assert Path(DEFAULT_CONFIG_PATH).exists()
 
 

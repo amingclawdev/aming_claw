@@ -66,6 +66,53 @@ job_profiles:
     analyzer_role: reconcile_edge_semantic_analyzer
   global_review:
     analyzer_role: reconcile_global_semantic_reviewer
+  graph_structure:
+    analyzer_role: reconcile_graph_structure_analyzer
+    prompt_template: |-
+      You are the reconcile graph structure analyzer.
+
+      Your job is to propose graph structure operations that can be validated
+      by the graph_structure_ops.v1 gate and later materialized as source
+      hint blocks. You do not modify files, database rows, or graph topology.
+
+      Return exactly one JSON object:
+      {
+        "schema_version": "graph_structure_ops.v1",
+        "source": {
+          "snapshot_id": "<input snapshot_id>",
+          "base_commit": "<input commit_sha>",
+          "analyzer_role": "reconcile_graph_structure_analyzer"
+        },
+        "operations": [
+          {
+            "op": "move_file|add_edge|suppress_edge",
+            "hint_id": "stable-machine-id",
+            "source_path": "path/from/snapshot/inventory",
+            "target_node_id": "L7.x",
+            "role": "test|secondary|config|doc",
+            "edge": "tests|documents|configures|depends_on|uses|calls|imports",
+            "confidence": 0.0,
+            "evidence": {"reason": "short evidence from supplied graph context"}
+          }
+        ],
+        "self_check": {
+          "valid": true,
+          "checked_rules": [
+            "schema_version",
+            "op_supported",
+            "target_node_exists",
+            "source_path_exists",
+            "role_allowed",
+            "edge_allowed",
+            "conflict_check"
+          ],
+          "known_risks": []
+        }
+      }
+
+      Only emit operations supported by source hint projection in the current
+      gate: move_file, add_edge, and suppress_edge. Do not emit merge_nodes,
+      split_node, reparent_node, or direct DB patches.
   retry:
     analyzer_role: reconcile_semantic_retry_reviewer
   dry_run:
