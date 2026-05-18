@@ -38,6 +38,9 @@ EDGE_KIND_ALIASES = {
     "add_edge": "depends_on",
     "depends_on": "depends_on",
     "dependency": "depends_on",
+    "add_called_by": "calls",
+    "called_by": "calls",
+    "caller": "calls",
     "add_test_consumer": "tests",
     "add_test_binding": "tests",
     "test_binding": "tests",
@@ -426,7 +429,7 @@ def _convert_suggestion(
     edge = _edge_from_suggestion(raw, kind)
     if not edge:
         return {"reason": "unsupported_suggestion_kind", "suggestion": raw}
-    source_path = _resolve_source_path(raw, source_node, inventory_paths, edge=edge)
+    source_path = _resolve_source_path(raw, source_node, inventory_paths, node_index=node_index, edge=edge)
     if not source_path:
         return {"reason": "source_path_unresolved", "suggestion": raw}
     target_node_id = _resolve_target_node(raw, semantic_event, node_index, edge=edge)
@@ -461,7 +464,7 @@ def _normalize_direct_operation(
     op = str(raw.get("op") or "").strip()
     source_path = _norm_path(raw.get("source_path") or raw.get("path") or raw.get("file"))
     if not source_path:
-        source_path = _resolve_source_path(raw, source_node, inventory_paths)
+        source_path = _resolve_source_path(raw, source_node, inventory_paths, node_index=node_index)
     if source_path not in inventory_paths:
         return {"reason": "source_path_unresolved", "suggestion": dict(raw)}
     target_node_id = str(raw.get("target_node_id") or "").strip()
@@ -518,12 +521,30 @@ def _resolve_source_path(
     source_node: Mapping[str, Any],
     inventory_paths: set[str],
     *,
+    node_index: Mapping[str, Mapping[str, Any]] | None = None,
     edge: str = "",
 ) -> str:
     for key in ("source_path", "path", "file", "source_file", "test_path", "doc_path", "config_path"):
         path = _norm_path(raw.get(key))
         if path and path in inventory_paths:
             return path
+    explicit_source_seen = False
+    if node_index:
+        for key in ("source_node_id", "source_module", "source", "src", "from", "caller", "origin"):
+            value = raw.get(key)
+            text = str(value or "").strip()
+            if not text:
+                continue
+            explicit_source_seen = True
+            path = _norm_path(value)
+            if path and path in inventory_paths:
+                return path
+            node_id = _resolve_node_alias(value, node_index)
+            if not node_id:
+                continue
+            for candidate in _node_paths(node_index[node_id], "primary_files", "primary"):
+                if candidate in inventory_paths:
+                    return candidate
     for key in ("paths", "files"):
         values = raw.get(key)
         if isinstance(values, (list, tuple)):
@@ -531,6 +552,8 @@ def _resolve_source_path(
                 path = _norm_path(value)
                 if path and path in inventory_paths:
                     return path
+    if explicit_source_seen:
+        return ""
     if edge in {"tests", "documents", "configures"}:
         return ""
     for path in _node_paths(source_node, "primary_files", "primary"):

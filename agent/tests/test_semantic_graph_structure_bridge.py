@@ -84,6 +84,12 @@ def _write(path: Path, text: str) -> None:
 def _write_generated_project(root: Path) -> None:
     _write(root / "agent" / "__init__.py", "")
     _write(
+        root / "agent" / "api.py",
+        "from agent.storage import load_state\n\n"
+        "def api_entry():\n"
+        "    return load_state()['status']\n",
+    )
+    _write(
         root / "agent" / "storage.py",
         "def load_state():\n"
         "    return {'status': 'ok'}\n",
@@ -216,6 +222,123 @@ def test_bridge_converts_structured_semantic_dependency_to_gate_job(conn, tmp_pa
     assert gate_result["ok"] is True
     assert gate_result["mutated"] is False
     assert gate_result["gate"]["accepted_count"] == 1
+
+
+def test_bridge_resolves_explicit_source_module_for_cross_node_dependency(conn, tmp_path):
+    project = tmp_path / "generated-project"
+    _write_generated_project(project)
+    snapshot_id = _create_snapshot(conn, project, "semantic-bridge-cross-source")
+    service_id = _node_id_for_primary(snapshot_id, "agent/service.py")
+    storage_id = _node_id_for_primary(snapshot_id, "agent/storage.py")
+    event = _semantic_event(
+        conn,
+        snapshot_id,
+        service_id,
+        {
+            "dependency_patch_suggestions": [
+                {
+                    "kind": "add_depends_on",
+                    "source": "agent.api",
+                    "target": "agent/storage.py",
+                    "confidence": 0.91,
+                    "reason": "api imports load_state from storage",
+                }
+            ],
+        },
+        event_id="sem-bridge-cross-source",
+    )
+
+    result = bridge.bridge_semantic_events_to_graph_structure_jobs(
+        conn,
+        PID,
+        snapshot_id,
+        event_ids=[event["event_id"]],
+        actor="test",
+    )
+
+    assert result["ok"] is True
+    assert result["queued_count"] == 1
+    operation = result["events"][0]["payload"]["ai_output"]["operations"][0]
+    assert operation["source_path"] == "agent/api.py"
+    assert operation["target_node_id"] == storage_id
+    assert operation["edge"] == "depends_on"
+
+
+def test_bridge_converts_called_by_suggestion_to_calls_from_explicit_source(conn, tmp_path):
+    project = tmp_path / "generated-project"
+    _write_generated_project(project)
+    snapshot_id = _create_snapshot(conn, project, "semantic-bridge-called-by")
+    storage_id = _node_id_for_primary(snapshot_id, "agent/storage.py")
+    event = _semantic_event(
+        conn,
+        snapshot_id,
+        storage_id,
+        {
+            "dependency_patch_suggestions": [
+                {
+                    "kind": "add_called_by",
+                    "source": "agent.service",
+                    "target": "agent.storage",
+                    "confidence": 0.87,
+                    "reason": "service_entry calls load_state from storage",
+                }
+            ],
+        },
+        event_id="sem-bridge-called-by",
+    )
+
+    result = bridge.bridge_semantic_events_to_graph_structure_jobs(
+        conn,
+        PID,
+        snapshot_id,
+        event_ids=[event["event_id"]],
+        actor="test",
+    )
+
+    assert result["ok"] is True
+    assert result["queued_count"] == 1
+    operation = result["events"][0]["payload"]["ai_output"]["operations"][0]
+    assert operation["source_path"] == "agent/service.py"
+    assert operation["target_node_id"] == storage_id
+    assert operation["edge"] == "calls"
+
+
+def test_bridge_rejects_unresolved_explicit_source_instead_of_fallback(conn, tmp_path):
+    project = tmp_path / "generated-project"
+    _write_generated_project(project)
+    snapshot_id = _create_snapshot(conn, project, "semantic-bridge-unresolved-source")
+    service_id = _node_id_for_primary(snapshot_id, "agent/service.py")
+    event = _semantic_event(
+        conn,
+        snapshot_id,
+        service_id,
+        {
+            "dependency_patch_suggestions": [
+                {
+                    "kind": "add_depends_on",
+                    "source": "agent.missing",
+                    "target": "agent.storage",
+                    "confidence": 0.91,
+                    "reason": "source cannot be resolved",
+                }
+            ],
+        },
+        event_id="sem-bridge-unresolved-source",
+    )
+
+    result = bridge.bridge_semantic_events_to_graph_structure_jobs(
+        conn,
+        PID,
+        snapshot_id,
+        event_ids=[event["event_id"]],
+        actor="test",
+    )
+
+    assert result["ok"] is True
+    assert result["queued_count"] == 0
+    assert result["audit_event_count"] == 1
+    assert result["skipped_count"] == 1
+    assert result["skipped"][0]["reason"] == "source_path_unresolved"
 
 
 def test_bridge_audits_malformed_or_unsupported_semantic_suggestions(conn, tmp_path):
