@@ -9,6 +9,10 @@ from pathlib import Path
 import pytest
 
 from agent.tests.fixtures.parallel_project import create_parallel_fixture_project
+from agent.tests.fixtures.rule_fingerprint_project import (
+    create_rule_fingerprint_git_fixture_project,
+    rule_fingerprint_mismatch_pair,
+)
 from agent.governance import graph_correction_patches
 from agent.governance import graph_events
 from agent.governance import graph_snapshot_store as store
@@ -7008,50 +7012,29 @@ def test_operations_queue_synthesizes_stale_scope_reconcile(conn, monkeypatch, t
 
 
 def test_operations_queue_surfaces_rule_fingerprint_rebuild_action(conn, monkeypatch, tmp_path):
-    project = tmp_path / "generated-rule-rollback-project"
-    project.mkdir()
-    subprocess.run(["git", "init"], cwd=project, check=True, capture_output=True, text=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project, check=True)
-    subprocess.run(["git", "config", "user.name", "Test User"], cwd=project, check=True)
-    (project / "agent").mkdir()
-    (project / "agent" / "service.py").write_text("def run():\n    return 'ok'\n", encoding="utf-8")
-    subprocess.run(["git", "add", "."], cwd=project, check=True)
-    subprocess.run(["git", "commit", "-m", "base"], cwd=project, check=True, capture_output=True, text=True)
-    head = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=project,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
+    fixture = create_rule_fingerprint_git_fixture_project(tmp_path)
+    old_rule, current_rule = rule_fingerprint_mismatch_pair()
 
     monkeypatch.setattr(
         server,
         "_require_graph_governance_operator",
         lambda *_args, **_kwargs: {"role": "observer"},
     )
-    monkeypatch.setattr(server, "_graph_governance_project_root", lambda *_args, **_kwargs: project)
-    monkeypatch.setattr(server, "_current_graph_rule_fingerprint", lambda _root: {
-        "fingerprint": "sha256:current-after-rollback",
-        "components": {"algorithm": {"fingerprint": "sha256:algo-v2"}},
-    })
+    monkeypatch.setattr(server, "_graph_governance_project_root", lambda *_args, **_kwargs: fixture.root)
+    monkeypatch.setattr(server, "_current_graph_rule_fingerprint", lambda _root: current_rule)
     monkeypatch.setattr(server, "_git_changed_paths_between", lambda *_args, **_kwargs: [])
 
-    old_rule = {
-        "fingerprint": "sha256:anchor-before-rollback",
-        "components": {"algorithm": {"fingerprint": "sha256:algo-v1"}},
-    }
     snapshot = store.create_graph_snapshot(
         conn,
         PID,
         snapshot_id="full-rule-anchor",
-        commit_sha=head,
+        commit_sha=fixture.head_commit,
         snapshot_kind="full",
         graph_json=_graph(),
         notes=json.dumps({
             "graph_rule_fingerprint": old_rule,
             "full_reconcile_anchor": {
-                "anchor_commit": head,
+                "anchor_commit": fixture.head_commit,
                 "snapshot_id": "full-rule-anchor",
                 "structure_rule_fingerprint": old_rule["fingerprint"],
                 "reconcile_mode": "full",
@@ -7080,7 +7063,7 @@ def test_operations_queue_surfaces_rule_fingerprint_rebuild_action(conn, monkeyp
     row = next(item for item in queue["operations"] if item["operation_id"].startswith("scope-reconcile:rule-fingerprint:"))
     assert row["operation_type"] == "scope_reconcile"
     assert row["status"] == "not_queued"
-    assert row["target_id"] == head
+    assert row["target_id"] == fixture.head_commit
     assert row["last_result"] == "graph rule fingerprint changed; run full reconcile before trusting active graph"
     assert row["supported_actions"] == ["run_full_reconcile", "view_trace", "file_backlog"]
 
