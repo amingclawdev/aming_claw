@@ -17,6 +17,13 @@ from .graph_structure_ops import (
     SCHEMA_VERSION,
     SUPPORTED_HINT_OPS,
 )
+from .graph_enrich_config_ops import (
+    ANALYZER_ROLE as CONFIG_ANALYZER_ROLE,
+    SCHEMA_VERSION as CONFIG_SCHEMA_VERSION,
+    SUPPORTED_ACTIONS as CONFIG_SUPPORTED_ACTIONS,
+    SUPPORTED_OPS as CONFIG_SUPPORTED_OPS,
+    SUPPORTED_SOURCE_EVIDENCE as CONFIG_SUPPORTED_SOURCE_EVIDENCE,
+)
 
 
 DIRECT_SUGGESTION_KEYS = (
@@ -26,6 +33,12 @@ DIRECT_SUGGESTION_KEYS = (
     "dependency_patch_suggestions",
     "open_issues",
     "health_issues",
+)
+
+CONFIG_SUGGESTION_KEYS = (
+    "graph_enrich_config_ops",
+    "graph_enrich_config_suggestions",
+    "graph_enrich_config_candidates",
 )
 
 EDGE_KIND_ALIASES = {
@@ -192,6 +205,134 @@ def bridge_semantic_events_to_graph_structure_jobs(
     }
 
 
+def bridge_semantic_events_to_graph_enrich_config_jobs(
+    conn: sqlite3.Connection,
+    project_id: str,
+    snapshot_id: str,
+    *,
+    event_ids: Iterable[str] | None = None,
+    node_ids: Iterable[str] | None = None,
+    mode: str = "dry_run",
+    actor: str = "semantic_graph_structure_bridge",
+    limit: int = 100,
+    project_root: str = "",
+) -> dict[str, Any]:
+    """Queue config-rule gate jobs derived from semantic AI proposals."""
+    graph_events.ensure_schema(conn)
+    snapshot = store.get_graph_snapshot(conn, project_id, snapshot_id)
+    if not snapshot:
+        return {
+            "ok": False,
+            "project_id": project_id,
+            "snapshot_id": snapshot_id,
+            "errors": ["snapshot_not_found"],
+            "queued_count": 0,
+            "skipped_count": 0,
+            "events": [],
+        }
+
+    semantic_events = _select_semantic_events(
+        conn,
+        project_id,
+        snapshot_id,
+        event_ids=event_ids,
+        node_ids=node_ids,
+        limit=limit,
+    )
+    queued: list[dict[str, Any]] = []
+    audited_skips: list[dict[str, Any]] = []
+    for semantic_event in semantic_events:
+        raw_output = semantic_event_to_graph_enrich_config_output(
+            semantic_event,
+            project_id=project_id,
+            snapshot_id=snapshot_id,
+        )
+        skipped = raw_output.get("bridge", {}).get("skipped") or []
+        audited_skips.extend([
+            {
+                "semantic_event_id": semantic_event.get("event_id", ""),
+                **skip,
+            }
+            for skip in skipped
+            if isinstance(skip, dict)
+        ])
+        operations = raw_output.get("operations") if isinstance(raw_output.get("operations"), list) else []
+        if not operations:
+            if skipped:
+                queued.append(_create_config_bridge_audit_event(
+                    conn,
+                    project_id,
+                    snapshot_id,
+                    semantic_event,
+                    raw_output,
+                    actor=actor,
+                ))
+            continue
+        payload: dict[str, Any] = {
+            "mode": _normalized_mode(mode),
+            "ai_output": raw_output,
+            "selector": {
+                "source_semantic_event_id": semantic_event.get("event_id", ""),
+                "source_node_id": semantic_event.get("target_id", ""),
+            },
+            "operator_request": {
+                "goal": "Dry-run graph_enrich_config_ops candidates derived from semantic AI suggestions.",
+            },
+            "instructions": {
+                "source": "semantic_graph_structure_bridge",
+                "apply_policy": "observer_must_approve_before_accept",
+            },
+            "options": {
+                "bridge": raw_output.get("bridge", {}),
+                "converted_count": len(operations),
+                "skipped_count": len(skipped),
+            },
+        }
+        if project_root:
+            payload["project_root"] = project_root
+        request = graph_events.create_event(
+            conn,
+            project_id,
+            snapshot_id,
+            event_id=_bridge_event_id("gecbridge", semantic_event, raw_output),
+            event_type="graph_enrich_config_requested",
+            event_kind="semantic_job",
+            target_type="project",
+            target_id=project_id,
+            status=graph_events.EVENT_STATUS_OBSERVED,
+            operation_type="graph_enrich_config",
+            source_event_id=str(semantic_event.get("event_id") or ""),
+            payload=payload,
+            evidence={
+                "source": "semantic_graph_structure_bridge",
+                "source_semantic_event_id": semantic_event.get("event_id", ""),
+                "converted_count": len(operations),
+                "skipped_count": len(skipped),
+                "requires_gate": True,
+                "requires_observer_approval": True,
+            },
+            created_by=actor,
+        )
+        queued.append(request)
+    return {
+        "ok": True,
+        "project_id": project_id,
+        "snapshot_id": snapshot_id,
+        "semantic_event_count": len(semantic_events),
+        "queued_count": sum(
+            1 for event in queued
+            if event.get("event_type") == "graph_enrich_config_requested"
+        ),
+        "audit_event_count": sum(
+            1 for event in queued
+            if event.get("event_type") == "graph_enrich_config_completed"
+        ),
+        "skipped_count": len(audited_skips),
+        "events": queued,
+        "skipped": audited_skips,
+    }
+
+
 def semantic_event_to_graph_structure_output(
     semantic_event: Mapping[str, Any],
     *,
@@ -258,6 +399,70 @@ def semantic_event_to_graph_structure_output(
             "snapshot_id": snapshot_id,
             "source_semantic_event_id": semantic_event.get("event_id", ""),
             "source_node_id": source_node_id,
+            "converted_count": len(operations),
+            "skipped_count": len(skipped),
+            "skipped": skipped,
+        },
+    }
+
+
+def semantic_event_to_graph_enrich_config_output(
+    semantic_event: Mapping[str, Any],
+    *,
+    project_id: str,
+    snapshot_id: str,
+) -> dict[str, Any]:
+    semantic_payload = _semantic_payload(semantic_event)
+    suggestions = _extract_config_suggestions(semantic_payload)
+    operations: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for index, suggestion in enumerate(suggestions):
+        converted = _convert_config_suggestion(
+            suggestion,
+            index=index,
+            semantic_event=semantic_event,
+        )
+        if converted.get("operation"):
+            operations.append(converted["operation"])
+        else:
+            skipped.append({
+                "index": index,
+                "reason": converted.get("reason") or "unsupported_config_suggestion",
+                "suggestion": converted.get("suggestion", suggestion),
+            })
+    return {
+        "schema_version": CONFIG_SCHEMA_VERSION,
+        "source": {
+            "snapshot_id": snapshot_id,
+            "analyzer_role": CONFIG_ANALYZER_ROLE,
+            "bridge": "semantic_graph_structure_bridge",
+            "source_semantic_event_id": semantic_event.get("event_id", ""),
+            "source_node_id": semantic_event.get("target_id", ""),
+        },
+        "operations": operations,
+        "self_check": {
+            "valid": True,
+            "checked_rules": [
+                "schema_version",
+                "semantic_bridge_normalized",
+                "op_supported",
+                "edge_supported",
+                "source_evidence_supported",
+                "action_supported",
+                "observer_approval_required",
+            ],
+            "known_risks": [
+                skip.get("reason", "")
+                for skip in skipped
+                if str(skip.get("reason") or "").strip()
+            ][:20],
+        },
+        "bridge": {
+            "source": "semantic_graph_structure_bridge",
+            "project_id": project_id,
+            "snapshot_id": snapshot_id,
+            "source_semantic_event_id": semantic_event.get("event_id", ""),
+            "source_node_id": semantic_event.get("target_id", ""),
             "converted_count": len(operations),
             "skipped_count": len(skipped),
             "skipped": skipped,
@@ -362,6 +567,22 @@ def _extract_suggestions(semantic_payload: Mapping[str, Any]) -> list[dict[str, 
     return out
 
 
+def _extract_config_suggestions(semantic_payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for key in CONFIG_SUGGESTION_KEYS:
+        raw = semantic_payload.get(key)
+        if key == "graph_enrich_config_ops" and isinstance(raw, Mapping):
+            raw_ops = raw.get("operations")
+            if isinstance(raw_ops, list):
+                raw = raw_ops
+        for item in _coerce_suggestion_list(raw):
+            if isinstance(item, dict):
+                item = dict(item)
+                item.setdefault("_semantic_suggestion_source", key)
+                out.append(item)
+    return out
+
+
 def _coerce_suggestion_list(raw: Any) -> list[Any]:
     if raw is None or raw == "":
         return []
@@ -450,6 +671,56 @@ def _convert_suggestion(
             },
         }
     }
+
+
+def _convert_config_suggestion(
+    suggestion: Mapping[str, Any],
+    *,
+    index: int,
+    semantic_event: Mapping[str, Any],
+) -> dict[str, Any]:
+    raw = dict(suggestion)
+    if raw.get("_parse_error"):
+        return {"reason": "suggestion_parse_error", "suggestion": raw}
+    op = str(
+        raw.get("op")
+        or raw.get("operation")
+        or raw.get("kind")
+        or ""
+    ).strip()
+    if op not in CONFIG_SUPPORTED_OPS:
+        return {"reason": "unsupported_config_op", "suggestion": raw}
+    edge = str(raw.get("edge") or raw.get("edge_type") or "").strip().lower()
+    source_evidence = str(
+        raw.get("source_evidence")
+        or raw.get("evidence_kind")
+        or raw.get("kind_of_evidence")
+        or ""
+    ).strip().lower().replace("-", "_")
+    action = str(raw.get("action") or raw.get("import_only_action") or "").strip().lower()
+    if edge not in EDGE_ALLOWLIST:
+        return {"reason": "edge_unsupported", "suggestion": raw}
+    if source_evidence not in CONFIG_SUPPORTED_SOURCE_EVIDENCE:
+        return {"reason": "source_evidence_unsupported", "suggestion": raw}
+    if action not in CONFIG_SUPPORTED_ACTIONS:
+        return {"reason": "action_unsupported", "suggestion": raw}
+    operation = {
+        "op": op,
+        "rule_id": str(raw.get("rule_id") or _hint_id(semantic_event, index, raw)).strip(),
+        "edge": edge,
+        "source_evidence": source_evidence,
+        "action": action,
+        "confidence": _confidence(raw),
+        "evidence": raw.get("evidence") if isinstance(raw.get("evidence"), Mapping) else {
+            "reason": _reason(raw),
+            "semantic_suggestion_source": raw.get("_semantic_suggestion_source", ""),
+            "source_semantic_event_id": semantic_event.get("event_id", ""),
+        },
+    }
+    downgrade_to = str(raw.get("downgrade_to") or "").strip()
+    if downgrade_to:
+        operation["downgrade_to"] = downgrade_to
+    return {"operation": operation}
 
 
 def _normalize_direct_operation(
@@ -646,6 +917,50 @@ def _create_bridge_audit_event(
         target_id=str(semantic_event.get("target_id") or ""),
         status=graph_events.EVENT_STATUS_MATERIALIZED,
         operation_type="graph_structure",
+        source_event_id=str(semantic_event.get("event_id") or ""),
+        payload={
+            "result": {
+                "ok": True,
+                "status": "skipped",
+                "mode": "dry_run",
+                "accepted": False,
+                "mutated": False,
+                "converted_count": 0,
+                "skipped": bridge.get("skipped") or [],
+            },
+            "bridge": bridge,
+        },
+        evidence={
+            "source": "semantic_graph_structure_bridge",
+            "source_semantic_event_id": semantic_event.get("event_id", ""),
+            "converted_count": 0,
+            "skipped_count": int(bridge.get("skipped_count") or 0),
+        },
+        created_by=actor,
+    )
+
+
+def _create_config_bridge_audit_event(
+    conn: sqlite3.Connection,
+    project_id: str,
+    snapshot_id: str,
+    semantic_event: Mapping[str, Any],
+    raw_output: Mapping[str, Any],
+    *,
+    actor: str,
+) -> dict[str, Any]:
+    bridge = raw_output.get("bridge") if isinstance(raw_output.get("bridge"), Mapping) else {}
+    return graph_events.create_event(
+        conn,
+        project_id,
+        snapshot_id,
+        event_id=_bridge_event_id("gecbridge-noop", semantic_event, raw_output),
+        event_type="graph_enrich_config_completed",
+        event_kind="semantic_job",
+        target_type="project",
+        target_id=project_id,
+        status=graph_events.EVENT_STATUS_MATERIALIZED,
+        operation_type="graph_enrich_config",
         source_event_id=str(semantic_event.get("event_id") or ""),
         payload={
             "result": {

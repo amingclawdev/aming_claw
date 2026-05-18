@@ -255,6 +255,12 @@ def build_semantic_ai_call(
                 "The top-level schema_version must be graph_structure_ops.v1. "
                 "Only use supported operations listed in the supplied payload. "
             )
+        elif stage_job_type == "graph_enrich_config":
+            output_instruction = (
+                "Return exactly one JSON object matching payload.output_contract. "
+                "The top-level schema_version must be graph_enrich_config_ops.v1. "
+                "Only use supported operations listed in the supplied payload. "
+            )
         else:
             output_instruction = (
                 "Return exactly one JSON object matching the requested semantic fields. "

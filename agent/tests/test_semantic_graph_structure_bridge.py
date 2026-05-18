@@ -14,6 +14,7 @@ from agent.governance import semantic_worker
 from agent.governance import server
 from agent.governance import state_reconcile
 from agent.governance.db import _ensure_schema
+from agent.governance.reconcile_semantic_config import PROJECT_OVERRIDE_PATH
 from agent.governance.state_reconcile import run_state_only_full_reconcile
 
 
@@ -155,6 +156,32 @@ def _semantic_event(
     )
     conn.commit()
     return event
+
+
+def _config_ops_payload() -> dict:
+    return {
+        "schema_version": "graph_enrich_config_ops.v1",
+        "source": {
+            "analyzer_role": "reconcile_graph_enrich_config_analyzer",
+        },
+        "operations": [
+            {
+                "op": "upsert_edge_evidence_policy",
+                "rule_id": "calls-import-only-downgrade",
+                "edge": "calls",
+                "source_evidence": "import_only",
+                "action": "downgrade",
+                "downgrade_to": "imports",
+                "confidence": 0.93,
+                "evidence": {"reason": "import-only references should become imports edges"},
+            }
+        ],
+        "self_check": {
+            "valid": True,
+            "checked_rules": ["schema_version", "op_supported", "action_supported"],
+            "known_risks": [],
+        },
+    }
 
 
 def test_bridge_converts_structured_semantic_dependency_to_gate_job(conn, tmp_path):
@@ -527,3 +554,253 @@ def test_semantic_graph_structure_candidates_api_surfaces_queue_operation(
     assert graph_ops[0]["source_event_id"] == event["event_id"]
     assert queue["summary"]["by_type"]["graph_structure"] == 1
     assert queue["summary"]["graph_structure_jobs"]["by_status"]["observed"] == 1
+
+
+def test_bridge_converts_semantic_graph_enrich_config_suggestion_to_dry_run_job(
+    conn,
+    tmp_path,
+):
+    project = tmp_path / "generated-project"
+    _write_generated_project(project)
+    snapshot_id = _create_snapshot(conn, project, "semantic-bridge-config")
+    service_id = _node_id_for_primary(snapshot_id, "agent/service.py")
+    event = _semantic_event(
+        conn,
+        snapshot_id,
+        service_id,
+        {
+            "graph_enrich_config_suggestions": [
+                {
+                    "op": "upsert_edge_evidence_policy",
+                    "rule_id": "calls-import-only-downgrade",
+                    "edge": "calls",
+                    "source_evidence": "import_only",
+                    "action": "downgrade",
+                    "downgrade_to": "imports",
+                    "confidence": 0.91,
+                    "evidence": {
+                        "reason": "AI found import-only call suggestions should be downgraded",
+                    },
+                }
+            ],
+        },
+        event_id="sem-bridge-config",
+    )
+
+    result = bridge.bridge_semantic_events_to_graph_enrich_config_jobs(
+        conn,
+        PID,
+        snapshot_id,
+        event_ids=[event["event_id"]],
+        actor="test",
+        project_root=str(project),
+    )
+    conn.commit()
+
+    assert result["ok"] is True
+    assert result["queued_count"] == 1
+    request = result["events"][0]
+    assert request["event_type"] == "graph_enrich_config_requested"
+    assert request["operation_type"] == "graph_enrich_config"
+    operation = request["payload"]["ai_output"]["operations"][0]
+    assert operation["op"] == "upsert_edge_evidence_policy"
+    assert operation["edge"] == "calls"
+    assert operation["source_evidence"] == "import_only"
+
+    semantic_worker._drain_graph_enrich_config(PID, snapshot_id)
+
+    request_after = graph_events.get_event(conn, PID, snapshot_id, request["event_id"])
+    assert request_after["status"] == graph_events.EVENT_STATUS_MATERIALIZED
+    completed = graph_events.list_events(
+        conn,
+        PID,
+        snapshot_id,
+        event_types=["graph_enrich_config_completed"],
+    )
+    assert len(completed) == 1
+    gate_result = completed[0]["payload"]["result"]
+    assert gate_result["ok"] is True
+    assert gate_result["mutated"] is False
+    assert gate_result["preview"]["config_path"] == str(project / PROJECT_OVERRIDE_PATH)
+    assert not (project / PROJECT_OVERRIDE_PATH).exists()
+
+
+def test_semantic_worker_drains_graph_enrich_config_accept_job_generated_project(
+    conn,
+    tmp_path,
+):
+    project = tmp_path / "generated-project"
+    _write_generated_project(project)
+    snapshot_id = _create_snapshot(conn, project, "semantic-bridge-config-accept")
+    request = graph_events.create_event(
+        conn,
+        PID,
+        snapshot_id,
+        event_type="graph_enrich_config_requested",
+        event_kind="semantic_job",
+        target_type="project",
+        target_id=PID,
+        status=graph_events.EVENT_STATUS_OBSERVED,
+        operation_type="graph_enrich_config",
+        payload={
+            "mode": "accept",
+            "ai_output": _config_ops_payload(),
+            "project_root": str(project),
+        },
+        created_by="test",
+    )
+    conn.commit()
+
+    semantic_worker._drain_graph_enrich_config(PID, snapshot_id)
+
+    request_after = graph_events.get_event(conn, PID, snapshot_id, request["event_id"])
+    assert request_after["status"] == graph_events.EVENT_STATUS_MATERIALIZED
+    override_path = project / PROJECT_OVERRIDE_PATH
+    assert override_path.exists()
+    assert "import_only_action: downgrade" in override_path.read_text(encoding="utf-8")
+
+
+def test_semantic_enrichment_persists_graph_enrich_config_suggestions_for_bridge(
+    conn,
+    tmp_path,
+):
+    project = tmp_path / "generated-project"
+    _write_generated_project(project)
+    snapshot_id = _create_snapshot(conn, project, "semantic-bridge-config-persisted")
+    service_id = _node_id_for_primary(snapshot_id, "agent/service.py")
+
+    def fake_ai(stage: str, payload: dict) -> dict:
+        assert stage == "reconcile_semantic_feature"
+        assert payload["feature"]["node_id"] == service_id
+        return {
+            "feature_name": "Service Runtime",
+            "semantic_summary": "Service runtime uses storage through imports.",
+            "intent": "Expose a small service entrypoint.",
+            "domain_label": "runtime",
+            "doc_coverage_review": {"bound": False, "action": "none"},
+            "test_coverage_review": {"bound": True, "action": "keep"},
+            "config_coverage_review": {"bound": False, "action": "none"},
+            "graph_enrich_config_suggestions": [
+                {
+                    "op": "upsert_edge_evidence_policy",
+                    "rule_id": "calls-import-only-downgrade",
+                    "edge": "calls",
+                    "source_evidence": "import_only",
+                    "action": "downgrade",
+                    "downgrade_to": "imports",
+                    "confidence": 0.89,
+                    "evidence": {"reason": "import-only references should not be calls"},
+                }
+            ],
+        }
+
+    result = semantic.run_semantic_enrichment(
+        conn,
+        PID,
+        snapshot_id,
+        project,
+        use_ai=True,
+        ai_call=fake_ai,
+        semantic_ai_scope="selected",
+        semantic_node_ids=[service_id],
+        submit_for_review=True,
+        created_by="test",
+    )
+    assert result["summary"]["ai_complete_count"] == 1
+    row = conn.execute(
+        """
+        SELECT semantic_json FROM graph_semantic_nodes
+        WHERE project_id=? AND snapshot_id=? AND node_id=?
+        """,
+        (PID, snapshot_id, service_id),
+    ).fetchone()
+    persisted = json.loads(row["semantic_json"])
+    assert persisted["graph_enrich_config_suggestions"][0]["edge"] == "calls"
+
+    graph_events.backfill_existing_semantic_events(conn, PID, snapshot_id, actor="test")
+    event = graph_events.list_events(
+        conn,
+        PID,
+        snapshot_id,
+        event_types=["semantic_node_enriched"],
+        statuses=[graph_events.EVENT_STATUS_PROPOSED],
+        target_type="node",
+        target_id=service_id,
+    )[0]
+
+    bridge_result = bridge.bridge_semantic_events_to_graph_enrich_config_jobs(
+        conn,
+        PID,
+        snapshot_id,
+        event_ids=[event["event_id"]],
+        actor="test",
+        project_root=str(project),
+    )
+
+    assert bridge_result["queued_count"] == 1
+    operation = bridge_result["events"][0]["payload"]["ai_output"]["operations"][0]
+    assert operation["source_evidence"] == "import_only"
+
+
+def test_semantic_graph_enrich_config_candidates_api_surfaces_queue_operation(
+    conn,
+    tmp_path,
+    monkeypatch,
+):
+    project = tmp_path / "generated-project"
+    _write_generated_project(project)
+    snapshot_id = _create_snapshot(conn, project, "semantic-bridge-config-api")
+    service_id = _node_id_for_primary(snapshot_id, "agent/service.py")
+    event = _semantic_event(
+        conn,
+        snapshot_id,
+        service_id,
+        {
+            "graph_enrich_config_ops": _config_ops_payload(),
+        },
+        event_id="sem-bridge-config-api",
+    )
+    published: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "agent.governance.event_bus.publish",
+        lambda topic, payload: published.append((topic, payload)),
+    )
+
+    status, result = server.handle_graph_governance_snapshot_semantic_graph_enrich_config_candidates(
+        _ctx(
+            snapshot_id,
+            {
+                "semantic_event_ids": [event["event_id"]],
+                "actor": "test",
+                "project_root": str(project),
+            },
+        )
+    )
+
+    assert status == 202
+    assert result["ok"] is True
+    assert result["queued"] is True
+    assert result["queued_count"] == 1
+    assert result["published_count"] == 1
+    assert published == [
+        (
+            "semantic_job.enqueued",
+            {
+                "project_id": PID,
+                "snapshot_id": snapshot_id,
+                "target_scope": "graph_enrich_config",
+                "event_id": result["events"][0]["event_id"],
+            },
+        )
+    ]
+
+    queue = server.handle_graph_governance_operations_queue(_get_ctx(snapshot_id))
+    config_ops = [
+        op for op in queue["operations"]
+        if op["operation_type"] == "graph_enrich_config"
+    ]
+    assert len(config_ops) == 1
+    assert config_ops[0]["status"] == "queued"
+    assert config_ops[0]["source_event_id"] == event["event_id"]
+    assert queue["summary"]["by_type"]["graph_enrich_config"] == 1
+    assert queue["summary"]["graph_enrich_config_jobs"]["by_status"]["observed"] == 1

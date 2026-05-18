@@ -204,6 +204,31 @@ def handle_graph_structure_ai_output(
         conn.close()
 
 
+def handle_graph_enrich_config_ai_output(
+    project_id: str,
+    snapshot_id: str = "",
+    *,
+    raw_output: Any,
+    mode: str = "dry_run",
+    project_root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Process one graph_enrich_config AI output without making a model call."""
+    from .graph_enrich_config_ops import run_graph_enrich_config_ai_output_pipeline
+
+    root = Path(project_root or _project_root_for(project_id)).resolve()
+    result = run_graph_enrich_config_ai_output_pipeline(
+        raw_output=raw_output,
+        mode=mode,
+        project_root=root,
+    )
+    return {
+        "project_id": project_id,
+        "snapshot_id": snapshot_id,
+        "project_root": str(root),
+        **result,
+    }
+
+
 def _snapshot_graph_and_inventory(project_id: str, snapshot_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     import json
     from . import graph_snapshot_store as store
@@ -315,6 +340,45 @@ def _graph_structure_ai_payload(
         },
         "inventory_paths": inventory_paths[:1000],
         "output_contract": output_contract,
+    }
+
+
+def _graph_enrich_config_ai_payload(
+    project_id: str,
+    snapshot_id: str,
+    *,
+    event_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    from .graph_enrich_config_ops import graph_enrich_config_ops_output_contract
+
+    event_payload = event_payload if isinstance(event_payload, dict) else {}
+    selector = event_payload.get("selector") if isinstance(event_payload.get("selector"), dict) else {}
+    operator_request = (
+        event_payload.get("operator_request")
+        if isinstance(event_payload.get("operator_request"), dict)
+        else {}
+    )
+    instructions = (
+        event_payload.get("instructions")
+        if isinstance(event_payload.get("instructions"), dict)
+        else {}
+    )
+    options = (
+        event_payload.get("options")
+        if isinstance(event_payload.get("options"), dict)
+        else {}
+    )
+    return {
+        "schema_version": 1,
+        "project_id": project_id,
+        "snapshot_id": snapshot_id,
+        "task": "graph_enrich_config_ops",
+        "mode": str(event_payload.get("mode") or "dry_run"),
+        "selector": selector,
+        "operator_request": operator_request,
+        "instructions": instructions,
+        "options": options,
+        "output_contract": graph_enrich_config_ops_output_contract(),
     }
 
 
@@ -518,6 +582,207 @@ def _drain_graph_structure(project_id: str, snapshot_id: str) -> None:
                             operation_type="graph_structure",
                             evidence={
                                 "source": "semantic_worker_inproc_graph_structure",
+                                "errors": [str(exc)],
+                            },
+                        )
+                        conn.commit()
+        finally:
+            conn.close()
+    finally:
+        lock.release()
+
+
+def _drain_graph_enrich_config(project_id: str, snapshot_id: str) -> None:
+    """Drain queued graph-enrich-config events for one snapshot."""
+    runtime_config = _worker_runtime_config(project_id)
+    lock = _drain_lock_for(project_id, snapshot_id + ":graph_enrich_config")
+    if not lock.acquire(blocking=False):
+        log.debug("semantic_worker: graph-enrich-config drain skipped (busy) %s/%s",
+                  project_id, snapshot_id)
+        return
+    try:
+        from . import db as governance_db
+        from . import graph_events
+        from .db import sqlite_write_lock
+        from .reconcile_semantic_ai import build_semantic_ai_call
+        from .reconcile_semantic_config import (
+            apply_project_ai_routing,
+            load_semantic_enrichment_config,
+        )
+
+        conn = governance_db.get_connection(project_id)
+        try:
+            graph_events.ensure_schema(conn)
+            queued = graph_events.list_events(
+                conn,
+                project_id,
+                snapshot_id,
+                event_types=["graph_enrich_config_requested"],
+                statuses=[graph_events.EVENT_STATUS_OBSERVED],
+                limit=runtime_config["claim_batch_size"],
+            )
+            if not queued:
+                log.info("semantic_worker: no graph-enrich-config jobs to drain for %s/%s",
+                         project_id, snapshot_id)
+                return
+            for event in queued:
+                event_id = str(event.get("event_id") or "")
+                if not event_id:
+                    continue
+                payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+                mode = str(payload.get("mode") or "dry_run").strip().lower().replace("-", "_")
+                raw_output = (
+                    payload.get("ai_output")
+                    if "ai_output" in payload
+                    else payload.get("output")
+                )
+                project_root = payload.get("project_root") or str(_project_root_for(project_id))
+                try:
+                    with sqlite_write_lock():
+                        graph_events.update_event_status(
+                            conn,
+                            project_id,
+                            snapshot_id,
+                            event_id,
+                            status=graph_events.EVENT_STATUS_AI_REVIEWING,
+                            actor="semantic_worker_inproc_graph_enrich_config",
+                            operation_type="graph_enrich_config",
+                            evidence={"source": "semantic_worker_inproc_graph_enrich_config"},
+                        )
+                        conn.commit()
+                    root = Path(project_root)
+                    cfg = apply_project_ai_routing(
+                        load_semantic_enrichment_config(project_root=root),
+                        project_id=project_id,
+                    )
+                    if raw_output in (None, ""):
+                        ai_call = build_semantic_ai_call(
+                            semantic_config=cfg,
+                            project_id=project_id,
+                            snapshot_id=snapshot_id,
+                            project_root=root,
+                        )
+                        if ai_call is None:
+                            raise RuntimeError("graph_enrich_config_ai_not_configured")
+                        raw_output = ai_call(
+                            "graph_enrich_config",
+                            _graph_enrich_config_ai_payload(
+                                project_id,
+                                snapshot_id,
+                                event_payload=payload,
+                            ),
+                        )
+                    result = handle_graph_enrich_config_ai_output(
+                        project_id,
+                        snapshot_id,
+                        raw_output=raw_output,
+                        mode=mode,
+                        project_root=root,
+                    )
+                    if result.get("ok"):
+                        with sqlite_write_lock():
+                            graph_events.create_event(
+                                conn,
+                                project_id,
+                                snapshot_id,
+                                event_type="graph_enrich_config_completed",
+                                event_kind="semantic_job",
+                                target_type="project",
+                                target_id=project_id,
+                                status=graph_events.EVENT_STATUS_OBSERVED,
+                                operation_type="graph_enrich_config",
+                                source_event_id=event_id,
+                                payload={"result": result},
+                                evidence={
+                                    "source": "semantic_worker_inproc_graph_enrich_config",
+                                    "mode": mode,
+                                },
+                                created_by="semantic_worker_inproc",
+                            )
+                            graph_events.update_event_status(
+                                conn,
+                                project_id,
+                                snapshot_id,
+                                event_id,
+                                status=graph_events.EVENT_STATUS_MATERIALIZED,
+                                actor="semantic_worker_inproc_graph_enrich_config",
+                                operation_type="graph_enrich_config",
+                                evidence={
+                                    "source": "semantic_worker_inproc_graph_enrich_config",
+                                    "completed": True,
+                                    "mode": mode,
+                                },
+                            )
+                            conn.commit()
+                    else:
+                        errors = result.get("errors") or result.get("parse", {}).get("errors") or []
+                        with sqlite_write_lock():
+                            graph_events.create_event(
+                                conn,
+                                project_id,
+                                snapshot_id,
+                                event_type="graph_enrich_config_failed",
+                                event_kind="semantic_job",
+                                target_type="project",
+                                target_id=project_id,
+                                status=graph_events.EVENT_STATUS_FAILED,
+                                operation_type="graph_enrich_config",
+                                source_event_id=event_id,
+                                payload={"result": result},
+                                evidence={
+                                    "source": "semantic_worker_inproc_graph_enrich_config",
+                                    "errors": errors,
+                                    "mode": mode,
+                                },
+                                created_by="semantic_worker_inproc",
+                            )
+                            graph_events.update_event_status(
+                                conn,
+                                project_id,
+                                snapshot_id,
+                                event_id,
+                                status=graph_events.EVENT_STATUS_FAILED,
+                                actor="semantic_worker_inproc_graph_enrich_config",
+                                operation_type="graph_enrich_config",
+                                evidence={
+                                    "source": "semantic_worker_inproc_graph_enrich_config",
+                                    "errors": errors,
+                                    "mode": mode,
+                                },
+                            )
+                            conn.commit()
+                except Exception as exc:  # noqa: BLE001 - record and continue
+                    log.exception("semantic_worker: graph-enrich-config job failed %s: %s",
+                                  event_id, exc)
+                    with sqlite_write_lock():
+                        graph_events.create_event(
+                            conn,
+                            project_id,
+                            snapshot_id,
+                            event_type="graph_enrich_config_failed",
+                            event_kind="semantic_job",
+                            target_type="project",
+                            target_id=project_id,
+                            status=graph_events.EVENT_STATUS_FAILED,
+                            operation_type="graph_enrich_config",
+                            source_event_id=event_id,
+                            payload={},
+                            evidence={
+                                "source": "semantic_worker_inproc_graph_enrich_config",
+                                "errors": [str(exc)],
+                            },
+                            created_by="semantic_worker_inproc",
+                        )
+                        graph_events.update_event_status(
+                            conn,
+                            project_id,
+                            snapshot_id,
+                            event_id,
+                            status=graph_events.EVENT_STATUS_FAILED,
+                            actor="semantic_worker_inproc_graph_enrich_config",
+                            operation_type="graph_enrich_config",
+                            evidence={
+                                "source": "semantic_worker_inproc_graph_enrich_config",
                                 "errors": [str(exc)],
                             },
                         )
@@ -778,6 +1043,7 @@ def _process_node_semantic_job(
             log.warning("semantic_worker: feedback submit failed for %s: %s",
                         node_id_s, exc)
         bridge_result: dict[str, Any] = {}
+        config_bridge_result: dict[str, Any] = {}
         if event_id:
             try:
                 from . import semantic_graph_structure_bridge
@@ -785,6 +1051,18 @@ def _process_node_semantic_job(
                 bridge_result = (
                     semantic_graph_structure_bridge
                     .bridge_semantic_events_to_graph_structure_jobs(
+                        conn,
+                        project_id,
+                        snapshot_id,
+                        event_ids=[event_id],
+                        mode="dry_run",
+                        actor="semantic_worker_inproc",
+                        limit=1,
+                    )
+                )
+                config_bridge_result = (
+                    semantic_graph_structure_bridge
+                    .bridge_semantic_events_to_graph_enrich_config_jobs(
                         conn,
                         project_id,
                         snapshot_id,
@@ -834,6 +1112,15 @@ def _process_node_semantic_job(
                     "target_scope": "graph_structure",
                     "event_id": bridge_event.get("event_id", ""),
                 })
+            for bridge_event in config_bridge_result.get("events", []):
+                if bridge_event.get("event_type") != "graph_enrich_config_requested":
+                    continue
+                event_bus.publish("semantic_job.enqueued", {
+                    "project_id": project_id,
+                    "snapshot_id": snapshot_id,
+                    "target_scope": "graph_enrich_config",
+                    "event_id": bridge_event.get("event_id", ""),
+                })
         except Exception as exc:  # noqa: BLE001 - notification is advisory
             log.debug("semantic_worker: node eventbus publish failed for %s: %s",
                       node_id_s, exc)
@@ -843,6 +1130,7 @@ def _process_node_semantic_job(
             "node_id": node_id_s,
             "event_id": event_id,
             "bridge": bridge_result,
+            "config_bridge": config_bridge_result,
         }
     finally:
         conn.close()
@@ -1284,6 +1572,10 @@ def on_semantic_job_enqueued(payload: Any) -> None:
             _get_executor(_worker_runtime_config(project_id)["max_workers"]).submit(
                 _drain_graph_structure, project_id, snapshot_id
             )
+        elif target_scope in {"graph_enrich_config", "graph-enrich-config"}:
+            _get_executor(_worker_runtime_config(project_id)["max_workers"]).submit(
+                _drain_graph_enrich_config, project_id, snapshot_id
+            )
         else:
             _get_executor(_worker_runtime_config(project_id)["max_workers"]).submit(
                 _drain_node, project_id, snapshot_id
@@ -1396,7 +1688,25 @@ def on_governance_startup(payload: Any = None) -> None:
                         _get_executor(_worker_runtime_config(project_id)["max_workers"]).submit(
                             _drain_graph_structure, project_id, sid
                         )
-                    if n <= 0 and en <= 0 and gn <= 0:
+                    graph_enrich_config_pending = conn.execute(
+                        """
+                        SELECT COUNT(*) AS n FROM graph_events
+                        WHERE project_id = ? AND snapshot_id = ?
+                          AND event_type = 'graph_enrich_config_requested'
+                          AND status = 'observed'
+                        """,
+                        (project_id, sid),
+                    ).fetchone()
+                    cn = int(graph_enrich_config_pending["n"] if graph_enrich_config_pending else 0)
+                    if cn > 0:
+                        log.info(
+                            "semantic_worker: startup catchup %s/%s graph_enrich_config=%d",
+                            project_id, sid, cn,
+                        )
+                        _get_executor(_worker_runtime_config(project_id)["max_workers"]).submit(
+                            _drain_graph_enrich_config, project_id, sid
+                        )
+                    if n <= 0 and en <= 0 and gn <= 0 and cn <= 0:
                         continue
                 finally:
                     conn.close()

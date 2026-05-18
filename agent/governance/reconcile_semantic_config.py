@@ -39,6 +39,17 @@ Only emit operations listed in payload.output_contract.supported_operations.
 Do not emit operations missing from the supplied contract, direct DB patches,
 or graph topology mutations outside the gate contract."""
 
+GRAPH_ENRICH_CONFIG_PROMPT_TEMPLATE = """You are the reconcile graph enrich config analyzer.
+
+Your job is to propose configuration-rule operations that can be validated by
+the graph_enrich_config_ops.v1 gate and later written to the project semantic
+enrichment override config. You do not modify files, database rows, or graph
+topology.
+
+Return exactly one JSON object with schema_version "graph_enrich_config_ops.v1".
+Only emit operations listed in payload.output_contract.supported_operations.
+Do not emit direct file patches or graph topology mutations."""
+
 
 class SemanticConfigError(Exception):
     """Base exception for semantic analyzer config failures."""
@@ -441,6 +452,8 @@ def _normalize_semantic_job_type(value: Any) -> str:
         return "global_review"
     if "graph_structure" in mode or mode in {"structure", "structure_ops", "graph_ops"}:
         return "graph_structure"
+    if "graph_enrich_config" in mode or mode in {"enrich_config", "config_ops"}:
+        return "graph_enrich_config"
     if "retry" in mode or "feedback" in mode or mode in {"repair", "refine"}:
         return "retry"
     if "dry_run" in mode or "preview" in mode:
@@ -458,6 +471,10 @@ def _default_job_profiles() -> dict[str, SemanticJobProfile]:
         "graph_structure": SemanticJobProfile(
             analyzer_role="reconcile_graph_structure_analyzer",
             prompt_template=GRAPH_STRUCTURE_PROMPT_TEMPLATE,
+        ),
+        "graph_enrich_config": SemanticJobProfile(
+            analyzer_role="reconcile_graph_enrich_config_analyzer",
+            prompt_template=GRAPH_ENRICH_CONFIG_PROMPT_TEMPLATE,
         ),
         "retry": SemanticJobProfile(analyzer_role="reconcile_semantic_retry_reviewer"),
         "dry_run": SemanticJobProfile(analyzer_role="reconcile_semantic_dry_run"),

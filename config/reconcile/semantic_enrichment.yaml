@@ -149,6 +149,48 @@ job_profiles:
       Only emit operations supported by source hint projection in the current
       gate: move_file, add_edge, and suppress_edge. Do not emit merge_nodes,
       split_node, reparent_node, or direct DB patches.
+  graph_enrich_config:
+    analyzer_role: reconcile_graph_enrich_config_analyzer
+    prompt_template: |-
+      You are the reconcile graph enrich config analyzer.
+
+      Your job is to propose configuration-rule operations that can be
+      validated by the graph_enrich_config_ops.v1 gate and later written to the
+      project semantic enrichment override config. You do not modify files,
+      database rows, or graph topology. Only emit operations listed in
+      payload.output_contract.supported_operations.
+
+      Return exactly one JSON object:
+      {
+        "schema_version": "graph_enrich_config_ops.v1",
+        "source": {
+          "analyzer_role": "reconcile_graph_enrich_config_analyzer"
+        },
+        "operations": [
+          {
+            "op": "upsert_edge_evidence_policy",
+            "rule_id": "stable-machine-id",
+            "edge": "calls",
+            "source_evidence": "import_only",
+            "action": "downgrade|reject|allow",
+            "downgrade_to": "imports",
+            "confidence": 0.0,
+            "evidence": {"reason": "short evidence from supplied graph context"}
+          }
+        ],
+        "self_check": {
+          "valid": true,
+          "checked_rules": [
+            "schema_version",
+            "op_supported",
+            "edge_supported",
+            "source_evidence_supported",
+            "action_supported",
+            "config_patch_previewed"
+          ],
+          "known_risks": []
+        }
+      }
   retry:
     analyzer_role: reconcile_semantic_retry_reviewer
   dry_run:
@@ -170,6 +212,8 @@ output_schema:
     - split_suggestions
     - dead_code_candidates
     - graph_structure_suggestions
+    - graph_enrich_config_suggestions
+    - graph_enrich_config_ops
     - rejected_feedback_ids
 
 prompt_template: |-
@@ -196,3 +240,10 @@ prompt_template: |-
   evidence. These suggestions are never applied directly; the worker converts
   them into graph-structure dry-run jobs that must pass the gate and observer
   approval before source hints are written.
+
+  When a correction requires changing graph-enrichment rules instead of writing
+  a source hint, emit it in graph_enrich_config_suggestions using only
+  graph_enrich_config_ops.v1-compatible fields: op, rule_id, edge,
+  source_evidence, action, downgrade_to, confidence, and evidence. These
+  suggestions are never applied directly; they must pass the config gate and
+  observer approval before project override config is written.

@@ -17,6 +17,36 @@ ANALYZER_ROLE = "reconcile_graph_enrich_config_analyzer"
 SUPPORTED_OPS = {"upsert_edge_evidence_policy"}
 SUPPORTED_SOURCE_EVIDENCE = {"import_only"}
 SUPPORTED_ACTIONS = {"allow", "downgrade", "reject"}
+_REQUIRED_OPERATION_FIELDS = {
+    "upsert_edge_evidence_policy": [
+        "op",
+        "rule_id",
+        "edge",
+        "source_evidence",
+        "action",
+    ],
+}
+
+
+def graph_enrich_config_ops_output_contract() -> dict[str, Any]:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "return_exactly_one_json_object": True,
+        "supported_operations": sorted(SUPPORTED_OPS),
+        "supported_edges": sorted(EDGE_ALLOWLIST),
+        "supported_source_evidence": sorted(SUPPORTED_SOURCE_EVIDENCE),
+        "supported_actions": sorted(SUPPORTED_ACTIONS),
+        "required_top_level_fields": ["schema_version", "source", "operations", "self_check"],
+        "required_operation_fields": {
+            name: list(fields)
+            for name, fields in sorted(_REQUIRED_OPERATION_FIELDS.items())
+        },
+        "source": {
+            "analyzer_role": ANALYZER_ROLE,
+        },
+        "self_check_required": True,
+        "no_markdown": True,
+    }
 
 
 def parse_graph_enrich_config_ai_output(raw_output: Any) -> dict[str, Any]:
