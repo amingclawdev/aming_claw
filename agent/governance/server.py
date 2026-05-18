@@ -5864,11 +5864,15 @@ def handle_graph_governance_snapshot_graph_structure_ops_jobs_create(ctx: Reques
         snapshot = store.get_graph_snapshot(conn, project_id, snapshot_id)
         if not snapshot:
             raise ValidationError(f"graph snapshot not found: {snapshot_id}")
-        payload = {
-            "mode": mode,
-            "ai_output": raw_output,
-        }
-        if body.get("project_root"):
+        payload = {"mode": mode}
+        if raw_output not in (None, ""):
+            payload["ai_output"] = raw_output
+        for key in ("selector", "operator_request", "instructions", "options"):
+            if isinstance(body.get(key), dict):
+                payload[key] = body[key]
+        if mode in {"accept", "apply", "write"}:
+            payload["project_root"] = str(_graph_governance_project_root(project_id, body))
+        elif body.get("project_root"):
             payload["project_root"] = str(body.get("project_root") or "")
         with sqlite_write_lock():
             event = graph_events.create_event(

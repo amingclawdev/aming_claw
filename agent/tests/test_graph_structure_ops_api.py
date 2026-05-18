@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from pathlib import Path
 
 import pytest
 
+from agent.governance import graph_events
 from agent.governance import graph_snapshot_store as store
 from agent.governance import server
+from agent.governance import semantic_worker
 from agent.governance import state_reconcile
 from agent.governance.db import _ensure_schema
 from agent.governance.graph_structure_ops import SCHEMA_VERSION
@@ -61,6 +64,7 @@ def conn(tmp_path, monkeypatch):
     _ensure_schema(c)
     store.ensure_schema(c)
     monkeypatch.setattr(server, "get_connection", lambda _project_id: _NoCloseConn(c))
+    monkeypatch.setattr("agent.governance.db.get_connection", lambda _project_id: _NoCloseConn(c))
     monkeypatch.setattr(
         server,
         "_require_graph_governance_operator",
@@ -279,6 +283,133 @@ def test_graph_structure_ops_jobs_enqueue_surfaces_in_operations_queue(conn, mon
     assert graph_ops[0]["status"] == "queued"
     assert queue["summary"]["by_type"]["graph_structure"] == 1
     assert queue["summary"]["graph_structure_jobs"]["by_status"]["observed"] == 1
+
+
+def test_graph_structure_ops_jobs_selector_request_drains_through_ai_generated_project(
+    conn,
+    tmp_path,
+    monkeypatch,
+):
+    project = tmp_path / "generated-project"
+    _write_generated_project(project)
+    base = run_state_only_full_reconcile(
+        conn,
+        PID,
+        project,
+        run_id="graph-ops-selector-ai-base",
+        commit_sha="selectorbase",
+        snapshot_id="graph-ops-selector-ai-base",
+        created_by="test",
+    )
+    assert base["ok"] is True
+    service_id = _service_node_id("graph-ops-selector-ai-base")
+    published: list[tuple[str, dict]] = []
+    ai_calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "agent.governance.event_bus.publish",
+        lambda topic, payload: published.append((topic, payload)),
+    )
+
+    def _stub_build_ai_call(*, semantic_config, project_id, snapshot_id, project_root):
+        assert semantic_config.job_profile("graph_structure").analyzer_role == (
+            "reconcile_graph_structure_analyzer"
+        )
+        assert project_id == PID
+        assert snapshot_id == "graph-ops-selector-ai-base"
+        assert Path(project_root) == project
+
+        def _ai_call(stage: str, payload: dict):
+            ai_calls.append((stage, payload))
+            assert stage == "graph_structure"
+            assert payload["operator_request"]["goal"] == "attach generated test to service"
+            assert payload["selector"]["paths"] == ["agent/tests/test_service.py"]
+            assert payload["output_contract"]["schema_version"] == SCHEMA_VERSION
+            assert "agent/tests/test_service.py" in payload["inventory_paths"]
+            return {
+                "schema_version": SCHEMA_VERSION,
+                "source": {
+                    "snapshot_id": "graph-ops-selector-ai-base",
+                    "base_commit": "selectorbase",
+                    "analyzer_role": "reconcile_graph_structure_analyzer",
+                },
+                "operations": [
+                    {
+                        "op": "add_edge",
+                        "hint_id": "api-selector-test-edge",
+                        "source_path": "agent/tests/test_service.py",
+                        "target_node_id": service_id,
+                        "edge": "tests",
+                        "confidence": 0.92,
+                        "evidence": {"reason": "selector requested test binding"},
+                    }
+                ],
+                "self_check": {
+                    "valid": True,
+                    "checked_rules": ["hint-compatible-op", "snapshot-match"],
+                    "known_risks": [],
+                },
+            }
+
+        return _ai_call
+
+    monkeypatch.setattr(
+        "agent.governance.reconcile_semantic_ai.build_semantic_ai_call",
+        _stub_build_ai_call,
+    )
+    status, queued = server.handle_graph_governance_snapshot_graph_structure_ops_jobs_create(
+        _ctx(
+            "graph-ops-selector-ai-base",
+            {
+                "mode": "accept",
+                "project_root": str(project),
+                "selector": {"paths": ["agent/tests/test_service.py"]},
+                "operator_request": {"goal": "attach generated test to service"},
+                "instructions": {"risk_tolerance": "low"},
+            },
+        )
+    )
+
+    assert status == 202
+    event_payload = queued["event"]["payload"]
+    assert "ai_output" not in event_payload
+    assert event_payload["project_root"] == str(project.resolve())
+    assert event_payload["selector"]["paths"] == ["agent/tests/test_service.py"]
+    assert event_payload["operator_request"]["goal"] == "attach generated test to service"
+    assert event_payload["instructions"]["risk_tolerance"] == "low"
+    assert published[0][0] == "semantic_job.enqueued"
+
+    semantic_worker._drain_graph_structure(PID, "graph-ops-selector-ai-base")
+
+    assert len(ai_calls) == 1
+    request_after = graph_events.get_event(
+        conn,
+        PID,
+        "graph-ops-selector-ai-base",
+        queued["event"]["event_id"],
+    )
+    assert request_after["status"] == graph_events.EVENT_STATUS_MATERIALIZED
+    assert "api-selector-test-edge" in (
+        project / "agent" / "tests" / "test_service.py"
+    ).read_text(encoding="utf-8")
+
+    materialized = run_state_only_full_reconcile(
+        conn,
+        PID,
+        project,
+        run_id="graph-ops-selector-ai-materialized",
+        commit_sha="selectorhead",
+        snapshot_id="graph-ops-selector-ai-materialized",
+        created_by="test",
+    )
+    assert materialized["ok"] is True
+    graph = state_reconcile._read_snapshot_graph(PID, "graph-ops-selector-ai-materialized")
+    assert any(
+        edge.get("src") == "agent/tests/test_service.py"
+        and edge.get("dst") == service_id
+        and edge.get("edge_type") == "tests"
+        and edge.get("direction") == "source_hint"
+        for edge in state_reconcile._deps_graph_edges(graph)
+    )
 
 
 def test_graph_structure_ops_accept_writes_hint_in_generated_project_and_reconcile_materializes(
