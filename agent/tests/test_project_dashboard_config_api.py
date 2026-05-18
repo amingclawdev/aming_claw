@@ -8,12 +8,17 @@ from types import SimpleNamespace
 from agent.governance import server
 
 
-def _ctx(project_id: str, method: str = "GET", body: dict | None = None):
+def _ctx(
+    project_id: str,
+    method: str = "GET",
+    body: dict | None = None,
+    query: dict | None = None,
+):
     return server.RequestContext(
         None,
         method,
         {"project_id": project_id},
-        {},
+        query or {},
         body or {},
         "req-project-config-test",
         "",
@@ -169,6 +174,42 @@ def test_project_ai_config_endpoint_returns_writable_dashboard_contract(tmp_path
     assert payload["semantic"]["analyzer_role"]
     assert payload["project_config"]["ai"]["routing"]["semantic"]["model"] == "claude-opus-4-7"
     assert "dashboard.semantic.safe" in payload["project_config"]["testing"]["e2e"]["suites"]
+
+
+def test_project_ai_config_live_check_marks_claude_auth_error(tmp_path, monkeypatch):
+    _write_project_config(tmp_path)
+    monkeypatch.setattr(
+        server.project_service,
+        "list_projects",
+        lambda: [{
+            "project_id": "dashboard-demo",
+            "workspace_path": str(tmp_path),
+            "status": "active",
+        }],
+    )
+    monkeypatch.setattr(server.shutil, "which", lambda candidate: f"/bin/{candidate}")
+
+    def _run(cmd, **kwargs):
+        if "--version" in cmd:
+            return SimpleNamespace(returncode=0, stdout="2.1.140 (Claude Code)\n", stderr="")
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({
+                "is_error": True,
+                "api_error_status": 401,
+                "result": "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+            }),
+            stderr="",
+        )
+
+    monkeypatch.setattr(server.subprocess, "run", _run)
+
+    payload = server.handle_project_ai_config(_ctx("dashboard-demo", query={"live_check": "1"}))
+
+    anthropic = payload["tool_health"]["anthropic"]
+    assert anthropic["status"] == "auth_error"
+    assert anthropic["auth_status"] == "live_failed"
+    assert "Invalid authentication credentials" in anthropic["error"]
 
 
 def test_project_ai_config_endpoint_updates_project_routing(tmp_path, monkeypatch):

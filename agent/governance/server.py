@@ -1318,7 +1318,70 @@ def handle_project_e2e_config(ctx: RequestContext):
         return 404, {"error": f"e2e config not found: {exc}"}
 
 
-def _ai_tool_health() -> dict[str, Any]:
+def _ai_tool_live_check(
+    provider: str,
+    resolved: str,
+    model: str,
+) -> dict[str, str]:
+    if provider != "anthropic" or not resolved:
+        return {"auth_status": "unknown", "error": ""}
+    cmd = [resolved, "-p", "--output-format", "json"]
+    if model:
+        cmd.extend(["--model", model])
+    cmd.append('Return exactly {"ok": true}')
+    env = {
+        k: v for k, v in os.environ.items()
+        if k not in {
+            "CLAUDECODE",
+            "CLAUDE_CODE_ENTRYPOINT",
+            "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
+            "CLAUDE_CODE_EXECPATH",
+            "CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH",
+            "CLAUDE_CODE_EMIT_TOOL_USE_SUMMARIES",
+            "CLAUDE_CODE_ENABLE_ASK_USER_QUESTION_TOOL",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
+        }
+    }
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+            env=env,
+        )
+    except Exception as exc:
+        return {"auth_status": "smoke_error", "error": str(exc)[:400]}
+    raw = (proc.stdout or proc.stderr or "").strip()
+    try:
+        parsed = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        parsed = {}
+    if proc.returncode == 0 and isinstance(parsed, dict) and parsed.get("is_error") is not True:
+        return {"auth_status": "live_ok", "error": ""}
+    message = ""
+    if isinstance(parsed, dict):
+        message = str(parsed.get("result") or parsed.get("error") or parsed.get("message") or "")
+    return {"auth_status": "live_failed", "error": (message or raw or "live AI check failed")[:400]}
+
+
+def _semantic_route_from_project_config(project_config: dict) -> dict[str, str]:
+    ai_config = project_config.get("ai") if isinstance(project_config.get("ai"), dict) else {}
+    routing = ai_config.get("routing") if isinstance(ai_config.get("routing"), dict) else {}
+    route = routing.get("semantic") if isinstance(routing.get("semantic"), dict) else {}
+    return {
+        "provider": str(route.get("provider") or "").strip(),
+        "model": str(route.get("model") or "").strip(),
+    }
+
+
+def _ai_tool_health(
+    *,
+    live_check: bool = False,
+    semantic_route: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """Detect local CLI tools used by dashboard-configured AI providers."""
     health: dict[str, Any] = {}
     for provider, requirement in AI_PROVIDER_REQUIREMENTS.items():
@@ -1356,6 +1419,17 @@ def _ai_tool_health() -> dict[str, Any]:
             except Exception as exc:
                 status = "version_error"
                 error = str(exc)
+        auth_status = "unknown"
+        if live_check and resolved:
+            route = semantic_route or {}
+            route_provider = str(route.get("provider") or "").strip()
+            route_model = str(route.get("model") or "").strip()
+            if provider == route_provider:
+                live = _ai_tool_live_check(provider, resolved, route_model)
+                auth_status = live.get("auth_status", "unknown")
+                if auth_status != "live_ok":
+                    status = "auth_error"
+                    error = live.get("error", error)
         health[provider] = {
             "provider": provider,
             "label": requirement["label"],
@@ -1366,7 +1440,7 @@ def _ai_tool_health() -> dict[str, Any]:
             "source": source,
             "status": status,
             "version": version,
-            "auth_status": "unknown",
+            "auth_status": auth_status,
             "error": error,
         }
     return health
@@ -1513,6 +1587,8 @@ def handle_project_ai_config(ctx: RequestContext):
     except Exception as exc:
         project_config_error = str(exc)
 
+    live_check = _query_bool(ctx.query, "live_check", False)
+    semantic_route = _semantic_route_from_project_config(project_config)
     return {
         "project_id": project_id,
         "workspace_path": str(root),
@@ -1527,7 +1603,10 @@ def handle_project_ai_config(ctx: RequestContext):
         "role_config_error": role_config_error,
         "semantic": semantic,
         "semantic_error": semantic_error,
-        "tool_health": _ai_tool_health(),
+        "tool_health": _ai_tool_health(
+            live_check=live_check,
+            semantic_route=semantic_route,
+        ),
         "model_catalog": {
             "providers": AI_PROVIDER_REQUIREMENTS,
             "models": AI_MODEL_CATALOG,
