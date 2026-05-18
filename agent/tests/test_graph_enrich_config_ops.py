@@ -283,6 +283,60 @@ def test_graph_enrich_config_flexible_rule_ops_capture_observer_review_rules(tmp
     assert weak_call["normalizations"] == ["custom_source_evidence"]
 
 
+def test_graph_enrich_config_aliases_update_rule_and_imports_module_edge(tmp_path):
+    project = tmp_path / "generated-project"
+    project.mkdir()
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "source": {
+            "analyzer_role": "reconcile_graph_enrich_config_analyzer",
+        },
+        "operations": [
+            {
+                "op": "update_rule",
+                "rule_id": "imports_module_from_top_level_from_import",
+                "edge": "imports_module",
+                "source_evidence": "import_only",
+                "action": "allow",
+                "confidence": 0.7,
+                "evidence": {
+                    "reason": "Direct from-imports should map to the standard imports edge.",
+                },
+            },
+            {
+                "op": "update_rule",
+                "rule_id": "weak_call_resolver.bare_builtin_names",
+                "edge": "calls",
+                "source_evidence": "function_weak_calls",
+                "action": "downgrade",
+                "downgrade_to": "ignore",
+                "confidence": 0.69,
+                "evidence": {
+                    "reason": "Bare collection method names need stronger call evidence.",
+                },
+            },
+        ],
+        "self_check": {
+            "valid": True,
+            "checked_rules": ["op_supported", "edge_alias_normalized", "config_patch_previewed"],
+            "known_risks": [],
+        },
+    }
+
+    result = run_graph_enrich_config_ai_output_pipeline(
+        raw_output=json.dumps(payload),
+        mode="dry_run",
+        project_root=project,
+    )
+
+    assert result["ok"] is True
+    assert result["gate"]["accepted_count"] == 2
+    rules = result["preview"]["graph_enrich_config_ops"]["rules"]
+    assert rules["imports_module_from_top_level_from_import"]["edge"] == "imports"
+    assert rules["weak_call_resolver.bare_builtin_names"]["action"] == "ignore"
+    assert rules["weak_call_resolver.bare_builtin_names"]["downgrade_to"] == ""
+
+
 def test_graph_enrich_config_ops_api_accepts_ai_output_and_writes_project_override(
     conn,
     tmp_path,

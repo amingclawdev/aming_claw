@@ -251,6 +251,49 @@ def test_bridge_converts_structured_semantic_dependency_to_gate_job(conn, tmp_pa
     assert gate_result["gate"]["accepted_count"] == 1
 
 
+def test_bridge_aliases_imports_module_graph_structure_edge(conn, tmp_path):
+    project = tmp_path / "generated-project"
+    _write_generated_project(project)
+    snapshot_id = _create_snapshot(conn, project, "semantic-bridge-imports-module")
+    service_id = _node_id_for_primary(snapshot_id, "agent/service.py")
+    storage_id = _node_id_for_primary(snapshot_id, "agent/storage.py")
+    event = _semantic_event(
+        conn,
+        snapshot_id,
+        service_id,
+        {
+            "graph_structure_suggestions": [
+                {
+                    "op": "add_edge",
+                    "edge": "imports_module",
+                    "source_path": "agent/service.py",
+                    "target": "agent/storage.py",
+                    "confidence": 0.9,
+                    "evidence": "from agent.storage import load_state",
+                }
+            ],
+        },
+        event_id="sem-bridge-imports-module",
+    )
+
+    result = bridge.bridge_semantic_events_to_graph_structure_jobs(
+        conn,
+        PID,
+        snapshot_id,
+        event_ids=[event["event_id"]],
+        actor="test",
+    )
+    conn.commit()
+
+    assert result["ok"] is True
+    assert result["queued_count"] == 1
+    assert result["skipped_count"] == 0
+    operation = result["events"][0]["payload"]["ai_output"]["operations"][0]
+    assert operation["edge"] == "imports"
+    assert operation["source_path"] == "agent/service.py"
+    assert operation["target_node_id"] == storage_id
+
+
 def test_bridge_resolves_explicit_source_module_for_cross_node_dependency(conn, tmp_path):
     project = tmp_path / "generated-project"
     _write_generated_project(project)
@@ -739,6 +782,17 @@ def test_bridge_converts_flexible_config_rule_ops_and_ignores_empty_ops_object(
                         "reason": "Filename matches should remain weak until symbol imports prove coverage.",
                     },
                 },
+                {
+                    "op": "update_rule",
+                    "rule_id": "imports_module_from_top_level_from_import",
+                    "edge": "imports_module",
+                    "source_evidence": "import_only",
+                    "action": "allow",
+                    "confidence": 0.7,
+                    "evidence": {
+                        "reason": "Direct from-imports should normalize to the standard imports edge.",
+                    },
+                },
             ],
         },
         event_id="sem-bridge-config-flex",
@@ -769,7 +823,9 @@ def test_bridge_converts_flexible_config_rule_ops_and_ignores_empty_ops_object(
     assert [operation["op"] for operation in operations] == [
         "downgrade_relation_confidence",
         "tighten_rule",
+        "update_rule",
     ]
+    assert operations[2]["edge"] == "imports"
 
     semantic_worker._drain_graph_enrich_config(PID, snapshot_id)
 
@@ -784,6 +840,7 @@ def test_bridge_converts_flexible_config_rule_ops_and_ignores_empty_ops_object(
     rules = gate_result["preview"]["graph_enrich_config_ops"]["rules"]
     assert rules["emits_event.string_literal"]["downgrade_to"] == "references_schema"
     assert rules["tests_edge_from_filename_match"]["action"] == "require_direct_symbol_import"
+    assert rules["imports_module_from_top_level_from_import"]["edge"] == "imports"
 
 
 def test_semantic_worker_drains_graph_enrich_config_accept_job_generated_project(

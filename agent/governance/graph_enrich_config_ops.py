@@ -21,6 +21,7 @@ CONFIG_RULE_OPS = {
     "promote_rule",
     "review_rule",
     "tighten_rule",
+    "update_rule",
 }
 SUPPORTED_OPS = {
     *CONFIG_RULE_OPS,
@@ -43,6 +44,11 @@ CONFIG_DOWNGRADE_TARGETS = CONFIG_EDGE_ALLOWLIST | {
     "ignored",
     "weak",
     "weak_tests",
+}
+CONFIG_EDGE_ALIASES = {
+    "import_module": "imports",
+    "imports_module": "imports",
+    "module_import": "imports",
 }
 SUPPORTED_SOURCE_EVIDENCE = {
     "event_bus_subscribe",
@@ -406,7 +412,15 @@ def _reason(evidence: Any) -> str:
 
 
 def _normalize_edge(value: Any) -> str:
-    return str(value or "").strip().lower().replace("-", "_").replace(".", "_")
+    edge = (
+        str(value or "")
+        .strip()
+        .lower()
+        .replace("-", "_")
+        .replace(".", "_")
+        .replace(" ", "_")
+    )
+    return CONFIG_EDGE_ALIASES.get(edge, edge)
 
 
 def _normalize_source_evidence(value: Any) -> str:

@@ -20,6 +20,7 @@ from .graph_structure_ops import (
 from .graph_enrich_config_ops import (
     ANALYZER_ROLE as CONFIG_ANALYZER_ROLE,
     CONFIG_DOWNGRADE_TARGETS,
+    CONFIG_EDGE_ALIASES,
     CONFIG_EDGE_ALLOWLIST,
     CONFIG_RULE_OPS,
     SCHEMA_VERSION as CONFIG_SCHEMA_VERSION,
@@ -67,6 +68,9 @@ EDGE_KIND_ALIASES = {
     "add_config_binding": "configures",
     "config_binding": "configures",
     "configures": "configures",
+    "import_module": "imports",
+    "imports_module": "imports",
+    "module_import": "imports",
     "imports": "imports",
     "calls": "calls",
     "uses": "uses",
@@ -797,7 +801,14 @@ def _suggestion_kind(raw: Mapping[str, Any]) -> str:
 
 
 def _edge_from_suggestion(raw: Mapping[str, Any], kind: str = "") -> str:
-    edge = str(raw.get("edge") or raw.get("edge_type") or raw.get("relation_type") or "").strip().lower()
+    edge = (
+        str(raw.get("edge") or raw.get("edge_type") or raw.get("relation_type") or "")
+        .strip()
+        .lower()
+        .replace("-", "_")
+        .replace(".", "_")
+        .replace(" ", "_")
+    )
     if edge in EDGE_ALLOWLIST:
         return edge
     normalized = EDGE_KIND_ALIASES.get(edge) or EDGE_KIND_ALIASES.get(kind)
@@ -805,7 +816,15 @@ def _edge_from_suggestion(raw: Mapping[str, Any], kind: str = "") -> str:
 
 
 def _normalize_config_token(value: Any) -> str:
-    return str(value or "").strip().lower().replace("-", "_").replace(".", "_")
+    token = (
+        str(value or "")
+        .strip()
+        .lower()
+        .replace("-", "_")
+        .replace(".", "_")
+        .replace(" ", "_")
+    )
+    return CONFIG_EDGE_ALIASES.get(token, token)
 
 
 def _normalize_config_action(value: Any) -> str:
