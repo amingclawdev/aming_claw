@@ -76,6 +76,79 @@ def _project_root_for(project_id: str) -> Path:
     return Path.cwd()
 
 
+def handle_graph_structure_ai_output(
+    project_id: str,
+    snapshot_id: str,
+    *,
+    raw_output: Any,
+    mode: str = "dry_run",
+    project_root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Process one graph_structure AI output without making a model call.
+
+    This is the bridge for future semantic worker/job orchestration. The worker
+    already owns AI invocation; once it has raw model output, this function
+    handles parse/gate/projection and optional source-hint accept.
+    """
+    from . import db as governance_db
+    from . import graph_snapshot_store as store
+    from .graph_structure_ops import run_graph_structure_ai_output_pipeline
+
+    conn = governance_db.get_connection(project_id)
+    try:
+        snapshot = store.get_graph_snapshot(conn, project_id, snapshot_id)
+        if not snapshot:
+            return {
+                "ok": False,
+                "status": "failed",
+                "project_id": project_id,
+                "snapshot_id": snapshot_id,
+                "mode": mode,
+                "accepted": False,
+                "mutated": False,
+                "errors": ["snapshot_not_found"],
+            }
+        graph, inventory = _snapshot_graph_and_inventory(project_id, snapshot_id)
+        root = str(project_root or "") if project_root is not None else ""
+        result = run_graph_structure_ai_output_pipeline(
+            raw_output=raw_output,
+            mode=mode,
+            graph=graph,
+            inventory_paths=[str(row.get("path") or "") for row in inventory],
+            snapshot_id=snapshot_id,
+            base_commit=str(snapshot.get("commit_sha") or ""),
+            project_root=root,
+        )
+        return {
+            "project_id": project_id,
+            "snapshot_id": snapshot_id,
+            "commit_sha": str(snapshot.get("commit_sha") or ""),
+            **result,
+        }
+    finally:
+        conn.close()
+
+
+def _snapshot_graph_and_inventory(project_id: str, snapshot_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    import json
+    from . import graph_snapshot_store as store
+
+    base = store.snapshot_companion_dir(project_id, snapshot_id)
+    try:
+        graph = json.loads((base / "graph.json").read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        graph = {}
+    try:
+        inventory = json.loads((base / "file_inventory.json").read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        inventory = []
+    if not isinstance(graph, dict):
+        graph = {}
+    if not isinstance(inventory, list):
+        inventory = []
+    return graph, [row for row in inventory if isinstance(row, dict)]
+
+
 def _drain(project_id: str, snapshot_id: str) -> None:
     """Backwards-compat shim. Pre MF-2026-05-10-017 the worker only handled
     nodes; callers expecting `_drain(project_id, snapshot_id)` still work."""
