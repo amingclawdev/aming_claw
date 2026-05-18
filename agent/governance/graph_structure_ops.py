@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from agent.governance.graph_hint_projection import build_hint_projection
@@ -29,12 +30,21 @@ _DEFAULT_REQUIRED_FIELDS = {
     "add_edge": ["op", "hint_id", "source_path", "target_node_id", "edge"],
     "suppress_edge": ["op", "hint_id", "source_path", "target_node_id", "edge"],
 }
+_DEFAULT_EVIDENCE_POLICY = {
+    "dedupe_operations": True,
+    "calls": {
+        "require_call_evidence": True,
+        "import_only_action": "downgrade",
+        "downgrade_to": "imports",
+    },
+}
 
 
 def default_graph_structure_ops_contract() -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
         "analyzer_role": ANALYZER_ROLE,
+        "evidence_policy": _copy_evidence_policy(_DEFAULT_EVIDENCE_POLICY),
         "operations": {
             op: {
                 "enabled": True,
@@ -58,6 +68,8 @@ def normalize_graph_structure_ops_contract(raw: Mapping[str, Any] | None = None)
         contract["schema_version"] = str(raw.get("schema_version") or "").strip()
     if raw.get("analyzer_role") is not None:
         contract["analyzer_role"] = str(raw.get("analyzer_role") or "").strip()
+    if raw.get("evidence_policy") is not None:
+        contract["evidence_policy"] = _normalize_evidence_policy(raw.get("evidence_policy"))
     operations_raw = raw.get("operations")
     if operations_raw is None:
         return _validate_contract(contract)
@@ -121,6 +133,7 @@ def graph_structure_ops_output_contract(contract: Mapping[str, Any] | None = Non
         "source": {
             "analyzer_role": normalized["analyzer_role"],
         },
+        "evidence_policy": _copy_evidence_policy(normalized.get("evidence_policy") or {}),
         "self_check_required": True,
         "no_markdown": True,
     }
@@ -158,6 +171,7 @@ def validate_graph_structure_ops(
     snapshot_id: str = "",
     base_commit: str = "",
     operation_contract: Mapping[str, Any] | None = None,
+    project_root: str | Path = "",
 ) -> dict[str, Any]:
     """Validate graph_structure_ops.v1 and emit hint-compatible operations.
 
@@ -168,7 +182,7 @@ def validate_graph_structure_ops(
     operations_raw = payload.get("operations") if isinstance(payload.get("operations"), list) else []
     self_check = payload.get("self_check") if isinstance(payload.get("self_check"), Mapping) else {}
     contract = normalize_graph_structure_ops_contract(operation_contract)
-    node_ids = _graph_node_ids(graph)
+    graph_nodes = _graph_nodes_by_id(graph)
     paths = {_norm_path(path) for path in inventory_paths if _norm_path(path)}
 
     global_errors: list[str] = []
@@ -194,13 +208,15 @@ def validate_graph_structure_ops(
         entry = _validate_operation(
             op,
             index=index,
-            node_ids=node_ids,
+            graph_nodes=graph_nodes,
             inventory_paths=paths,
             seen_hint_ids=seen_hint_ids,
             operation_contract=contract,
+            project_root=project_root,
         )
         normalized.append(entry)
 
+    deduped_count = _mark_duplicate_operations(normalized, contract)
     conflict_errors = _mark_conflicts(normalized)
     global_errors.extend(conflict_errors)
 
@@ -209,7 +225,7 @@ def validate_graph_structure_ops(
         for entry in normalized
         if entry["status"] == "accepted" and not entry["errors"]
     ]
-    rejected_count = len(normalized) - len(accepted_hints)
+    rejected_count = sum(1 for entry in normalized if entry["status"] == "rejected")
     ok = not global_errors and rejected_count == 0
     return {
         "ok": ok,
@@ -218,6 +234,7 @@ def validate_graph_structure_ops(
         "operation_contract": graph_structure_ops_output_contract(contract),
         "errors": _dedupe(global_errors),
         "accepted_count": len(accepted_hints),
+        "deduped_count": deduped_count,
         "rejected_count": rejected_count,
         "conflict_count": len(conflict_errors),
         "operations": normalized,
@@ -236,6 +253,7 @@ def dry_run_graph_structure_ops(
     snapshot_id: str = "",
     base_commit: str = "",
     operation_contract: Mapping[str, Any] | None = None,
+    project_root: str | Path = "",
 ) -> dict[str, Any]:
     """Validate AI graph-structure ops and preview hint projection effects.
 
@@ -250,6 +268,7 @@ def dry_run_graph_structure_ops(
         snapshot_id=snapshot_id,
         base_commit=base_commit,
         operation_contract=operation_contract,
+        project_root=project_root,
     )
     if not gate["ok"]:
         return {
@@ -314,6 +333,7 @@ def run_graph_structure_ai_output_pipeline(
         snapshot_id=snapshot_id,
         base_commit=base_commit,
         operation_contract=operation_contract,
+        project_root=project_root,
     )
     if normalized_mode in {"dry_run", "dryrun", "preview"} or not dry_run["ok"]:
         return {
@@ -359,12 +379,14 @@ def _validate_operation(
     op: Mapping[str, Any],
     *,
     index: int,
-    node_ids: set[str],
+    graph_nodes: Mapping[str, Mapping[str, Any]],
     inventory_paths: set[str],
     seen_hint_ids: set[str],
     operation_contract: Mapping[str, Any],
+    project_root: str | Path = "",
 ) -> dict[str, Any]:
     errors: list[str] = []
+    normalizations: list[str] = []
     op_name = str(op.get("op") or "").strip()
     hint_id = str(op.get("hint_id") or "").strip()
     source_path = _norm_path(op.get("source_path"))
@@ -395,11 +417,23 @@ def _validate_operation(
             errors.append("source_path_missing")
         if not target_node_id:
             errors.append("target_node_missing")
-        elif target_node_id not in node_ids:
+        elif target_node_id not in graph_nodes:
             errors.append("target_node_missing")
         if "role" in required_fields or op_name == "move_file":
             if role not in role_allowlist:
                 errors.append("role_unsupported")
+        if op_name == "add_edge" and edge == "calls":
+            edge, evidence_note = _normalize_calls_edge_from_evidence(
+                op,
+                source_path=source_path,
+                target_node=graph_nodes.get(target_node_id) or {},
+                project_root=project_root,
+                policy=operation_contract.get("evidence_policy") or {},
+            )
+            if evidence_note == "calls_import_only_rejected":
+                errors.append(evidence_note)
+            elif evidence_note:
+                normalizations.append(evidence_note)
         if "edge" in required_fields or op_name in {"add_edge", "suppress_edge"}:
             if edge not in edge_allowlist:
                 errors.append("edge_unsupported")
@@ -434,8 +468,39 @@ def _validate_operation(
         "edge": edge,
         "status": "accepted" if not errors else "rejected",
         "errors": errors,
+        "normalizations": normalizations,
         "hint": hint,
     }
+
+
+def _mark_duplicate_operations(
+    operations: list[dict[str, Any]],
+    operation_contract: Mapping[str, Any],
+) -> int:
+    policy = operation_contract.get("evidence_policy")
+    if isinstance(policy, Mapping) and policy.get("dedupe_operations") is False:
+        return 0
+    seen: dict[tuple[str, str, str, str, str], str] = {}
+    deduped_count = 0
+    for entry in operations:
+        if entry["status"] != "accepted" or entry["errors"]:
+            continue
+        key = (
+            str(entry.get("op") or ""),
+            str(entry.get("source_path") or ""),
+            str(entry.get("target_node_id") or ""),
+            str(entry.get("edge") or ""),
+            str(entry.get("role") or ""),
+        )
+        first_hint_id = seen.get(key)
+        if first_hint_id:
+            entry["status"] = "deduped"
+            entry["duplicate_of"] = first_hint_id
+            entry["hint"]["status"] = "deduped"
+            deduped_count += 1
+            continue
+        seen[key] = str(entry.get("hint_id") or "")
+    return deduped_count
 
 
 def _mark_conflicts(operations: list[dict[str, Any]]) -> list[str]:
@@ -444,7 +509,7 @@ def _mark_conflicts(operations: list[dict[str, Any]]) -> list[str]:
     edge_actions: dict[tuple[str, str, str], set[str]] = {}
 
     for entry in operations:
-        if entry["errors"]:
+        if entry["status"] != "accepted" or entry["errors"]:
             continue
         if entry["op"] == "move_file":
             key = (entry["source_path"], entry["role"])
@@ -527,13 +592,130 @@ def _projection_preview(projection: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _graph_node_ids(graph: Mapping[str, Any]) -> set[str]:
+    return set(_graph_nodes_by_id(graph))
+
+
+def _graph_nodes_by_id(graph: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
     deps_graph = graph.get("deps_graph") if isinstance(graph.get("deps_graph"), Mapping) else {}
     nodes = deps_graph.get("nodes") if isinstance(deps_graph.get("nodes"), list) else []
-    return {
-        str((node if isinstance(node, Mapping) else {}).get("id") or "").strip()
-        for node in nodes
-        if str((node if isinstance(node, Mapping) else {}).get("id") or "").strip()
-    }
+    out: dict[str, Mapping[str, Any]] = {}
+    for raw in nodes:
+        node = raw if isinstance(raw, Mapping) else {}
+        node_id = str(node.get("id") or "").strip()
+        if node_id:
+            out[node_id] = node
+    return out
+
+
+def _normalize_calls_edge_from_evidence(
+    op: Mapping[str, Any],
+    *,
+    source_path: str,
+    target_node: Mapping[str, Any],
+    project_root: str | Path = "",
+    policy: Mapping[str, Any],
+) -> tuple[str, str]:
+    edge = str(op.get("edge") or op.get("edge_type") or "").strip()
+    calls_policy = policy.get("calls") if isinstance(policy.get("calls"), Mapping) else {}
+    if not calls_policy or edge != "calls":
+        return edge, ""
+    evidence_kind = _evidence_kind(op.get("evidence"))
+    if not evidence_kind:
+        evidence_kind = _source_evidence_kind(
+            project_root,
+            source_path=source_path,
+            target_node=target_node,
+        )
+    if evidence_kind != "import_only":
+        return edge, ""
+    action = str(calls_policy.get("import_only_action") or "downgrade").strip().lower()
+    if action == "reject":
+        return edge, "calls_import_only_rejected"
+    if action == "downgrade":
+        downgrade_to = str(calls_policy.get("downgrade_to") or "imports").strip()
+        return downgrade_to, f"calls_import_only_downgraded_to_{downgrade_to}"
+    return edge, ""
+
+
+def _evidence_kind(evidence: Any) -> str:
+    if not isinstance(evidence, Mapping):
+        return ""
+    return str(
+        evidence.get("source_evidence")
+        or evidence.get("evidence_kind")
+        or evidence.get("kind")
+        or ""
+    ).strip().lower().replace("-", "_")
+
+
+def _source_evidence_kind(
+    project_root: str | Path,
+    *,
+    source_path: str,
+    target_node: Mapping[str, Any],
+) -> str:
+    if not project_root or not source_path:
+        return ""
+    target = Path(project_root).resolve() / source_path
+    try:
+        text = target.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+    tokens = _target_reference_tokens(target_node)
+    if not tokens:
+        return ""
+    import_lines: list[str] = []
+    body_lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("import ") or stripped.startswith("from "):
+            import_lines.append(stripped)
+        else:
+            body_lines.append(line)
+    matching_imports = [
+        line for line in import_lines
+        if any(token in line for token in tokens)
+    ]
+    import_present = bool(matching_imports)
+    if not import_present:
+        return ""
+    body = "\n".join(body_lines)
+    call_tokens = tokens + _imported_symbol_tokens(matching_imports)
+    call_present = any(
+        re.search(rf"\b{re.escape(token)}\s*(?:\.|\()", body)
+        for token in call_tokens
+    )
+    return "" if call_present else "import_only"
+
+
+def _imported_symbol_tokens(import_lines: list[str]) -> list[str]:
+    tokens: list[str] = []
+    for line in import_lines:
+        match = re.search(r"\bimport\s+(.+)$", line)
+        if not match:
+            continue
+        for raw in match.group(1).split(","):
+            token = raw.strip().split(" as ", 1)[0].strip()
+            if token and token != "*" and token not in tokens:
+                tokens.append(token)
+    return tokens
+
+
+def _target_reference_tokens(target_node: Mapping[str, Any]) -> list[str]:
+    metadata = target_node.get("metadata") if isinstance(target_node.get("metadata"), Mapping) else {}
+    raw_values = [
+        target_node.get("title"),
+        metadata.get("module"),
+    ]
+    tokens: list[str] = []
+    for raw in raw_values:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        for candidate in (text, text.split(".")[-1]):
+            if candidate and candidate not in tokens:
+                tokens.append(candidate)
+    return tokens
 
 
 def _norm_path(value: Any) -> str:
@@ -563,6 +745,45 @@ def _dedupe(values: Iterable[str]) -> list[str]:
     return out
 
 
+def _copy_evidence_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in policy.items():
+        if isinstance(value, Mapping):
+            out[str(key)] = _copy_evidence_policy(value)
+        else:
+            out[str(key)] = value
+    return out
+
+
+def _normalize_evidence_policy(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, Mapping):
+        raise ValueError("graph_structure_ops.evidence_policy must be a mapping")
+    policy = _copy_evidence_policy(_DEFAULT_EVIDENCE_POLICY)
+    for key, value in raw.items():
+        name = str(key or "").strip()
+        if not name:
+            continue
+        if isinstance(value, Mapping) and isinstance(policy.get(name), Mapping):
+            nested = dict(policy[name])
+            nested.update({str(k): v for k, v in value.items()})
+            policy[name] = nested
+        else:
+            policy[name] = value
+    calls = policy.get("calls") if isinstance(policy.get("calls"), Mapping) else {}
+    action = str(calls.get("import_only_action") or "downgrade").strip().lower()
+    if action not in {"allow", "downgrade", "reject"}:
+        raise ValueError("graph_structure_ops.evidence_policy.calls.import_only_action must be allow, downgrade, or reject")
+    downgrade_to = str(calls.get("downgrade_to") or "imports").strip()
+    if downgrade_to and downgrade_to not in EDGE_ALLOWLIST:
+        raise ValueError("graph_structure_ops.evidence_policy.calls.downgrade_to must be a supported edge")
+    calls["import_only_action"] = action
+    calls["downgrade_to"] = downgrade_to
+    calls["require_call_evidence"] = bool(calls.get("require_call_evidence", True))
+    policy["calls"] = dict(calls)
+    policy["dedupe_operations"] = bool(policy.get("dedupe_operations", True))
+    return policy
+
+
 def _validate_contract(contract: dict[str, Any]) -> dict[str, Any]:
     if contract.get("schema_version") != SCHEMA_VERSION:
         raise ValueError("graph_structure_ops.schema_version must be graph_structure_ops.v1")
@@ -571,6 +792,8 @@ def _validate_contract(contract: dict[str, Any]) -> dict[str, Any]:
     operations = contract.get("operations")
     if not isinstance(operations, Mapping):
         raise ValueError("graph_structure_ops.operations must be a mapping")
+    if not isinstance(contract.get("evidence_policy"), Mapping):
+        raise ValueError("graph_structure_ops.evidence_policy must be a mapping")
     for name, spec in operations.items():
         if name not in SUPPORTED_HINT_OPS:
             raise ValueError(f"graph_structure_ops operation has no source_hint handler: {name}")

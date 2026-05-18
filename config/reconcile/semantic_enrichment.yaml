@@ -68,6 +68,12 @@ automation_policy:
 graph_structure_ops:
   schema_version: graph_structure_ops.v1
   analyzer_role: reconcile_graph_structure_analyzer
+  evidence_policy:
+    dedupe_operations: true
+    calls:
+      require_call_evidence: true
+      import_only_action: downgrade
+      downgrade_to: imports
   operations:
     move_file:
       enabled: true

@@ -41,6 +41,12 @@ def test_default_semantic_config_loads_state_only_profile():
         "tests",
         "uses",
     ]
+    assert config.graph_structure_ops.evidence_policy["dedupe_operations"] is True
+    assert config.graph_structure_ops.evidence_policy["calls"] == {
+        "require_call_evidence": True,
+        "import_only_action": "downgrade",
+        "downgrade_to": "imports",
+    }
     assert config.job_profiles["retry"].analyzer_role == "reconcile_semantic_retry_reviewer"
     assert config.job_profiles["dry_run"].analyzer_role == "reconcile_semantic_dry_run"
     assert config.executables["anthropic"] == "claude"

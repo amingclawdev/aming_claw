@@ -93,6 +93,7 @@ class GraphStructureOpsConfig:
     schema_version: str = "graph_structure_ops.v1"
     analyzer_role: str = "reconcile_graph_structure_analyzer"
     operations: dict[str, dict[str, Any]] = field(default_factory=dict)
+    evidence_policy: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -545,6 +546,7 @@ def _parse_graph_structure_ops_config(raw: Any) -> GraphStructureOpsConfig:
             for name, spec in (contract.get("operations") or {}).items()
             if isinstance(spec, dict)
         },
+        evidence_policy=dict(contract.get("evidence_policy") or {}),
     )
 
 

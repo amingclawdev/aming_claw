@@ -5818,6 +5818,7 @@ def handle_graph_governance_snapshot_graph_structure_ops_dry_run(ctx: RequestCon
             snapshot_id=snapshot_id,
             base_commit=str(snapshot.get("commit_sha") or ""),
             operation_contract=_graph_structure_ops_contract_for_project(project_id, body),
+            project_root=body.get("project_root") or "",
         )
         status_code = 200 if result["ok"] else 422
         return status_code, {
@@ -5861,6 +5862,7 @@ def handle_graph_governance_snapshot_graph_structure_ops_accept(ctx: RequestCont
             snapshot_id=snapshot_id,
             base_commit=str(snapshot.get("commit_sha") or ""),
             operation_contract=_graph_structure_ops_contract_for_project(project_id, body),
+            project_root=root,
         )
         if not dry_run["ok"]:
             return 422, {
@@ -5936,6 +5938,36 @@ def handle_graph_governance_snapshot_graph_structure_ops_ai_output(ctx: RequestC
             "project_id": project_id,
             "snapshot_id": snapshot_id,
             "commit_sha": snapshot.get("commit_sha", ""),
+            "dry_run": mode in {"dry_run", "dryrun", "preview"},
+            **result,
+        }
+    finally:
+        conn.close()
+
+
+@route("POST", "/api/graph-governance/{project_id}/graph-enrich-config-ops/ai-output")
+def handle_graph_governance_graph_enrich_config_ops_ai_output(ctx: RequestContext):
+    """Parse AI graph/enrich config JSON output and run dry-run or accept."""
+    project_id = ctx.get_project_id()
+    body = ctx.body
+    mode = str(body.get("mode") or "dry_run").strip().lower().replace("-", "_")
+    raw_output = body.get("ai_output") if "ai_output" in body else body.get("output")
+    from .graph_enrich_config_ops import run_graph_enrich_config_ai_output_pipeline
+
+    conn = get_connection(project_id)
+    try:
+        _require_graph_governance_operator(ctx, conn, "graph-governance.graph-enrich-config-ops.ai-output")
+        root = _graph_governance_project_root(project_id, body)
+        result = run_graph_enrich_config_ai_output_pipeline(
+            raw_output=raw_output,
+            mode=mode,
+            project_root=root,
+        )
+        status_code = 200 if result["ok"] else 422
+        return status_code, {
+            "ok": result["ok"],
+            "project_id": project_id,
+            "project_root": str(root),
             "dry_run": mode in {"dry_run", "dryrun", "preview"},
             **result,
         }
