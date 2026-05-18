@@ -139,6 +139,9 @@ ALLOWED_EVENT_TYPES = {
     "semantic_projection_generated",
     "edge_semantic_requested",
     "edge_semantic_enriched",
+    "graph_structure_requested",
+    "graph_structure_completed",
+    "graph_structure_failed",
     "graph_correction_proposed",
     "graph_correction_accepted",
     "graph_correction_rejected",
@@ -462,6 +465,8 @@ def _semantic_operation_type(
         return "ai_enrich"
     if event_type in {"semantic_job_requested", "semantic_retry_requested", "edge_semantic_requested"}:
         return "retry" if "retry" in event_type else "ai_enrich"
+    if event_type.startswith("graph_structure_"):
+        return "graph_structure"
     if event_type == "semantic_projection_generated":
         return "projection_build"
     return event_type

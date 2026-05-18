@@ -155,6 +155,184 @@ def _drain(project_id: str, snapshot_id: str) -> None:
     _drain_node(project_id, snapshot_id)
 
 
+def _drain_graph_structure(project_id: str, snapshot_id: str) -> None:
+    """Drain queued graph-structure AI-output events for one snapshot.
+
+    The model call is intentionally out of scope here. This worker consumes raw
+    AI output already attached to a `graph_structure_requested` event, runs the
+    graph-structure gate/pipeline, and records a completion or failure event.
+    """
+    lock = _drain_lock_for(project_id, snapshot_id + ":graph_structure")
+    if not lock.acquire(blocking=False):
+        log.debug("semantic_worker: graph-structure drain skipped (busy) %s/%s",
+                  project_id, snapshot_id)
+        return
+    try:
+        from . import db as governance_db
+        from . import graph_events
+        from .db import sqlite_write_lock
+
+        conn = governance_db.get_connection(project_id)
+        try:
+            graph_events.ensure_schema(conn)
+            queued = graph_events.list_events(
+                conn,
+                project_id,
+                snapshot_id,
+                event_types=["graph_structure_requested"],
+                statuses=[graph_events.EVENT_STATUS_OBSERVED],
+                limit=_DRAIN_BATCH_SIZE,
+            )
+            if not queued:
+                log.info("semantic_worker: no graph-structure jobs to drain for %s/%s",
+                         project_id, snapshot_id)
+                return
+            for event in queued:
+                event_id = str(event.get("event_id") or "")
+                if not event_id:
+                    continue
+                payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+                mode = str(payload.get("mode") or "dry_run").strip().lower().replace("-", "_")
+                raw_output = (
+                    payload.get("ai_output")
+                    if "ai_output" in payload
+                    else payload.get("output")
+                )
+                project_root = payload.get("project_root") if mode in {"accept", "apply", "write"} else None
+                try:
+                    with sqlite_write_lock():
+                        graph_events.update_event_status(
+                            conn,
+                            project_id,
+                            snapshot_id,
+                            event_id,
+                            status=graph_events.EVENT_STATUS_AI_REVIEWING,
+                            actor="semantic_worker_inproc_graph_structure",
+                            operation_type="graph_structure",
+                            evidence={"source": "semantic_worker_inproc_graph_structure"},
+                        )
+                        conn.commit()
+                    result = handle_graph_structure_ai_output(
+                        project_id,
+                        snapshot_id,
+                        raw_output=raw_output,
+                        mode=mode,
+                        project_root=project_root,
+                    )
+                    if result.get("ok"):
+                        with sqlite_write_lock():
+                            graph_events.create_event(
+                                conn,
+                                project_id,
+                                snapshot_id,
+                                event_type="graph_structure_completed",
+                                event_kind="semantic_job",
+                                target_type="snapshot",
+                                target_id=snapshot_id,
+                                status=graph_events.EVENT_STATUS_OBSERVED,
+                                operation_type="graph_structure",
+                                source_event_id=event_id,
+                                payload={"result": result},
+                                evidence={
+                                    "source": "semantic_worker_inproc_graph_structure",
+                                    "mode": mode,
+                                },
+                                created_by="semantic_worker_inproc",
+                            )
+                            graph_events.update_event_status(
+                                conn,
+                                project_id,
+                                snapshot_id,
+                                event_id,
+                                status=graph_events.EVENT_STATUS_MATERIALIZED,
+                                actor="semantic_worker_inproc_graph_structure",
+                                operation_type="graph_structure",
+                                evidence={
+                                    "source": "semantic_worker_inproc_graph_structure",
+                                    "completed": True,
+                                    "mode": mode,
+                                },
+                            )
+                            conn.commit()
+                    else:
+                        errors = result.get("errors") or result.get("parse", {}).get("errors") or []
+                        with sqlite_write_lock():
+                            graph_events.create_event(
+                                conn,
+                                project_id,
+                                snapshot_id,
+                                event_type="graph_structure_failed",
+                                event_kind="semantic_job",
+                                target_type="snapshot",
+                                target_id=snapshot_id,
+                                status=graph_events.EVENT_STATUS_FAILED,
+                                operation_type="graph_structure",
+                                source_event_id=event_id,
+                                payload={"result": result},
+                                evidence={
+                                    "source": "semantic_worker_inproc_graph_structure",
+                                    "errors": errors,
+                                    "mode": mode,
+                                },
+                                created_by="semantic_worker_inproc",
+                            )
+                            graph_events.update_event_status(
+                                conn,
+                                project_id,
+                                snapshot_id,
+                                event_id,
+                                status=graph_events.EVENT_STATUS_FAILED,
+                                actor="semantic_worker_inproc_graph_structure",
+                                operation_type="graph_structure",
+                                evidence={
+                                    "source": "semantic_worker_inproc_graph_structure",
+                                    "errors": errors,
+                                    "mode": mode,
+                                },
+                            )
+                            conn.commit()
+                except Exception as exc:  # noqa: BLE001 - record and continue
+                    log.exception("semantic_worker: graph-structure job failed %s: %s",
+                                  event_id, exc)
+                    with sqlite_write_lock():
+                        graph_events.create_event(
+                            conn,
+                            project_id,
+                            snapshot_id,
+                            event_type="graph_structure_failed",
+                            event_kind="semantic_job",
+                            target_type="snapshot",
+                            target_id=snapshot_id,
+                            status=graph_events.EVENT_STATUS_FAILED,
+                            operation_type="graph_structure",
+                            source_event_id=event_id,
+                            payload={},
+                            evidence={
+                                "source": "semantic_worker_inproc_graph_structure",
+                                "errors": [str(exc)],
+                            },
+                            created_by="semantic_worker_inproc",
+                        )
+                        graph_events.update_event_status(
+                            conn,
+                            project_id,
+                            snapshot_id,
+                            event_id,
+                            status=graph_events.EVENT_STATUS_FAILED,
+                            actor="semantic_worker_inproc_graph_structure",
+                            operation_type="graph_structure",
+                            evidence={
+                                "source": "semantic_worker_inproc_graph_structure",
+                                "errors": [str(exc)],
+                            },
+                        )
+                        conn.commit()
+        finally:
+            conn.close()
+    finally:
+        lock.release()
+
+
 def _drain_node(project_id: str, snapshot_id: str) -> None:
     """Drain ai_pending semantic jobs for one snapshot.
 
@@ -720,6 +898,8 @@ def on_semantic_job_enqueued(payload: Any) -> None:
         )
         if target_scope == "edge":
             _get_executor().submit(_drain_edge, project_id, snapshot_id)
+        elif target_scope in {"graph_structure", "graph-structure"}:
+            _get_executor().submit(_drain_graph_structure, project_id, snapshot_id)
         else:
             _get_executor().submit(_drain_node, project_id, snapshot_id)
     except Exception as exc:  # noqa: BLE001 - listener must not raise
@@ -808,7 +988,23 @@ def on_governance_startup(payload: Any = None) -> None:
                             project_id, sid, en,
                         )
                         _get_executor().submit(_drain_edge, project_id, sid)
-                    if n <= 0 and en <= 0:
+                    graph_structure_pending = conn.execute(
+                        """
+                        SELECT COUNT(*) AS n FROM graph_events
+                        WHERE project_id = ? AND snapshot_id = ?
+                          AND event_type = 'graph_structure_requested'
+                          AND status = 'observed'
+                        """,
+                        (project_id, sid),
+                    ).fetchone()
+                    gn = int(graph_structure_pending["n"] if graph_structure_pending else 0)
+                    if gn > 0:
+                        log.info(
+                            "semantic_worker: startup catchup %s/%s graph_structure=%d",
+                            project_id, sid, gn,
+                        )
+                        _get_executor().submit(_drain_graph_structure, project_id, sid)
+                    if n <= 0 and en <= 0 and gn <= 0:
                         continue
                 finally:
                     conn.close()

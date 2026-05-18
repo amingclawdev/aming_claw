@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from agent.governance import graph_snapshot_store as store
+from agent.governance import graph_events
 from agent.governance import semantic_worker
 from agent.governance import state_reconcile
 from agent.governance.db import _ensure_schema
@@ -154,6 +155,132 @@ def test_semantic_worker_graph_structure_bridge_accepts_generated_project_output
         and edge.get("direction") == "source_hint"
         for edge in state_reconcile._deps_graph_edges(graph)
     )
+
+
+def test_semantic_worker_drains_graph_structure_accept_job_generated_project(conn, tmp_path):
+    project = tmp_path / "generated-project"
+    _write_generated_project(project)
+    base = run_state_only_full_reconcile(
+        conn,
+        PID,
+        project,
+        run_id="worker-graph-structure-queue-base",
+        commit_sha="workerqueuebase",
+        snapshot_id="worker-graph-structure-queue-base",
+        created_by="test",
+    )
+    assert base["ok"] is True
+    service_id = _service_node_id("worker-graph-structure-queue-base")
+    raw_output = json.dumps(
+        _payload("worker-graph-structure-queue-base", "workerqueuebase", service_id)
+    )
+    request = graph_events.create_event(
+        conn,
+        PID,
+        "worker-graph-structure-queue-base",
+        event_type="graph_structure_requested",
+        event_kind="semantic_job",
+        target_type="snapshot",
+        target_id="worker-graph-structure-queue-base",
+        status=graph_events.EVENT_STATUS_OBSERVED,
+        operation_type="graph_structure",
+        payload={
+            "mode": "accept",
+            "ai_output": raw_output,
+            "project_root": str(project),
+        },
+        created_by="test",
+    )
+    conn.commit()
+
+    semantic_worker._drain_graph_structure(PID, "worker-graph-structure-queue-base")
+
+    request_after = graph_events.get_event(
+        conn,
+        PID,
+        "worker-graph-structure-queue-base",
+        request["event_id"],
+    )
+    assert request_after["status"] == graph_events.EVENT_STATUS_MATERIALIZED
+    completed = graph_events.list_events(
+        conn,
+        PID,
+        "worker-graph-structure-queue-base",
+        event_types=["graph_structure_completed"],
+    )
+    assert len(completed) == 1
+    result = completed[0]["payload"]["result"]
+    assert result["ok"] is True
+    assert result["mutated"] is True
+    assert "worker-generated-test-edge" in (
+        project / "agent" / "tests" / "test_service.py"
+    ).read_text(encoding="utf-8")
+
+    materialized = run_state_only_full_reconcile(
+        conn,
+        PID,
+        project,
+        run_id="worker-graph-structure-queue-materialized",
+        commit_sha="workerqueuehead",
+        snapshot_id="worker-graph-structure-queue-materialized",
+        created_by="test",
+    )
+    assert materialized["ok"] is True
+    graph = state_reconcile._read_snapshot_graph(PID, "worker-graph-structure-queue-materialized")
+    assert any(
+        edge.get("src") == "agent/tests/test_service.py"
+        and edge.get("dst") == service_id
+        and edge.get("edge_type") == "tests"
+        and edge.get("direction") == "source_hint"
+        for edge in state_reconcile._deps_graph_edges(graph)
+    )
+
+
+def test_semantic_worker_drains_graph_structure_invalid_job_as_failed(conn, tmp_path):
+    project = tmp_path / "generated-project"
+    _write_generated_project(project)
+    base = run_state_only_full_reconcile(
+        conn,
+        PID,
+        project,
+        run_id="worker-graph-structure-failed-base",
+        commit_sha="workerfailedbase",
+        snapshot_id="worker-graph-structure-failed-base",
+        created_by="test",
+    )
+    assert base["ok"] is True
+    request = graph_events.create_event(
+        conn,
+        PID,
+        "worker-graph-structure-failed-base",
+        event_type="graph_structure_requested",
+        event_kind="semantic_job",
+        target_type="snapshot",
+        target_id="worker-graph-structure-failed-base",
+        status=graph_events.EVENT_STATUS_OBSERVED,
+        operation_type="graph_structure",
+        payload={"mode": "dry_run", "ai_output": "not json"},
+        created_by="test",
+    )
+    conn.commit()
+
+    semantic_worker._drain_graph_structure(PID, "worker-graph-structure-failed-base")
+
+    request_after = graph_events.get_event(
+        conn,
+        PID,
+        "worker-graph-structure-failed-base",
+        request["event_id"],
+    )
+    assert request_after["status"] == graph_events.EVENT_STATUS_FAILED
+    failed = graph_events.list_events(
+        conn,
+        PID,
+        "worker-graph-structure-failed-base",
+        event_types=["graph_structure_failed"],
+    )
+    assert len(failed) == 1
+    assert failed[0]["evidence"]["errors"] == ["ai_output_json_invalid"]
 
 
 def test_semantic_worker_graph_structure_bridge_rejects_missing_snapshot(conn):

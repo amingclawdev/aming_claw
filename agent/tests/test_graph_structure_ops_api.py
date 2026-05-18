@@ -40,6 +40,19 @@ def _ctx(snapshot_id: str, body: dict):
     )
 
 
+def _get_ctx(body: dict | None = None, query: dict | None = None):
+    return server.RequestContext(
+        None,
+        "GET",
+        {"project_id": PID},
+        query or {},
+        body or {},
+        "req-graph-structure-ops-api-test",
+        "",
+        "",
+    )
+
+
 @pytest.fixture()
 def conn(tmp_path, monkeypatch):
     monkeypatch.setattr("agent.governance.db._governance_root", lambda: tmp_path / "state")
@@ -225,6 +238,47 @@ def test_graph_structure_ops_ai_output_dry_run_accepts_raw_json(conn):
     assert result["dry_run"] is True
     assert result["mutated"] is False
     assert result["gate"]["accepted_count"] == 1
+
+
+def test_graph_structure_ops_jobs_enqueue_surfaces_in_operations_queue(conn, monkeypatch):
+    snapshot_id = _create_snapshot(conn)
+    published: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "agent.governance.event_bus.publish",
+        lambda topic, payload: published.append((topic, payload)),
+    )
+
+    status, result = server.handle_graph_governance_snapshot_graph_structure_ops_jobs_create(
+        _ctx(snapshot_id, {"mode": "dry_run", "ai_output": json.dumps(_payload(snapshot_id))})
+    )
+
+    assert status == 202
+    assert result["ok"] is True
+    assert result["queued"] is True
+    assert result["event"]["event_type"] == "graph_structure_requested"
+    assert published == [
+        (
+            "semantic_job.enqueued",
+            {
+                "project_id": PID,
+                "snapshot_id": snapshot_id,
+                "target_scope": "graph_structure",
+                "event_id": result["event"]["event_id"],
+            },
+        )
+    ]
+
+    queue = server.handle_graph_governance_operations_queue(
+        _get_ctx(query={"snapshot_id": snapshot_id})
+    )
+    graph_ops = [
+        op for op in queue["operations"]
+        if op["operation_type"] == "graph_structure"
+    ]
+    assert len(graph_ops) == 1
+    assert graph_ops[0]["status"] == "queued"
+    assert queue["summary"]["by_type"]["graph_structure"] == 1
+    assert queue["summary"]["graph_structure_jobs"]["by_status"]["observed"] == 1
 
 
 def test_graph_structure_ops_accept_writes_hint_in_generated_project_and_reconcile_materializes(

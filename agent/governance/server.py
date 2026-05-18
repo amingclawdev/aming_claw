@@ -4904,6 +4904,7 @@ def handle_graph_governance_operations_queue(ctx: RequestContext):
     """Return a unified dashboard queue for active governance operations."""
     project_id = ctx.get_project_id()
     from . import graph_correction_patches
+    from . import graph_events
     from . import graph_snapshot_store as store
     from . import reconcile_feedback
 
@@ -4924,6 +4925,21 @@ def handle_graph_governance_operations_queue(ctx: RequestContext):
         include_terminal = _query_bool(ctx.query, "include_terminal", False)
         node_jobs = _semantic_job_rows(conn, project_id, snapshot_id, limit=job_limit) if snapshot_id else []
         edge_jobs = _edge_semantic_job_rows(conn, project_id, snapshot_id, limit=job_limit) if snapshot_id else []
+        graph_structure_jobs = (
+            graph_events.list_events(
+                conn,
+                project_id,
+                snapshot_id,
+                event_types=[
+                    "graph_structure_requested",
+                    "graph_structure_completed",
+                    "graph_structure_failed",
+                ],
+                limit=job_limit,
+            )
+            if snapshot_id
+            else []
+        )
         if not include_terminal:
             node_jobs = [
                 j for j in node_jobs
@@ -4932,6 +4948,11 @@ def handle_graph_governance_operations_queue(ctx: RequestContext):
             edge_jobs = [
                 j for j in edge_jobs
                 if _semantic_cancel_status_bucket(str(j.get("status") or "")) != "terminal"
+            ]
+            graph_structure_jobs = [
+                j for j in graph_structure_jobs
+                if _normalize_operation_status(str(j.get("status") or "")) not in {"complete", "cancelled", "failed"}
+                or str(j.get("event_type") or "") == "graph_structure_requested"
             ]
         node_job_counts = _semantic_job_status_counts(conn, project_id, snapshot_id) if snapshot_id else {}
         edge_job_counts = _edge_semantic_job_status_counts(conn, project_id, snapshot_id) if snapshot_id else {}
@@ -5068,6 +5089,41 @@ def handle_graph_governance_operations_queue(ctx: RequestContext):
                 "supported_actions": supported_actions,
             })
 
+        for job in graph_structure_jobs:
+            event_type = str(job.get("event_type") or "")
+            raw_status = str(job.get("status") or "")
+            op_status = "queued" if event_type == "graph_structure_requested" and raw_status == "observed" else _normalize_operation_status(raw_status)
+            payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+            result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+            evidence = job.get("evidence") if isinstance(job.get("evidence"), dict) else {}
+            errors = evidence.get("errors") or result.get("errors") or []
+            if isinstance(errors, list):
+                last_error = "; ".join(str(item) for item in errors if str(item))
+            else:
+                last_error = str(errors or "")
+            supported_actions = ["view_trace", "file_backlog"]
+            if op_status in {"failed", "cancelled"}:
+                supported_actions.insert(0, "retry")
+            operations.append({
+                "operation_id": f"graph-structure:{job.get('event_id')}",
+                "operation_type": "graph_structure",
+                "target_scope": job.get("target_type") or "snapshot",
+                "target_id": job.get("target_id") or snapshot_id,
+                "target_label": event_type.replace("graph_structure_", "graph structure "),
+                "status": op_status,
+                "progress": _operation_unit_progress(op_status),
+                "created_at": job.get("created_at", ""),
+                "updated_at": job.get("updated_at", ""),
+                "claimed_by": job.get("updated_by", ""),
+                "worker_id": "semantic_worker_inproc_graph_structure" if op_status == "running" else "",
+                "lease_expires_at": "",
+                "last_error": last_error,
+                "last_result": event_type,
+                "trace_id": job.get("event_id", ""),
+                "source_event_id": job.get("source_event_id", ""),
+                "supported_actions": supported_actions,
+            })
+
         semantic_health = (
             (snapshot_summary.get("health") or {}).get("semantic_health")
             if isinstance(snapshot_summary.get("health"), dict)
@@ -5192,6 +5248,10 @@ def handle_graph_governance_operations_queue(ctx: RequestContext):
                 "edge_semantic_jobs": {
                     "by_status": edge_job_counts,
                     "progress": _semantic_job_progress(edge_job_counts),
+                },
+                "graph_structure_jobs": {
+                    "by_status": _count_by(graph_structure_jobs, "status"),
+                    "progress": _semantic_job_progress(_count_by(graph_structure_jobs, "status")),
                 },
                 "semantic_denominators": {
                     "node_current": semantic_health.get("semantic_current_count", 0),
@@ -5778,6 +5838,74 @@ def handle_graph_governance_snapshot_graph_structure_ops_ai_output(ctx: RequestC
             "commit_sha": snapshot.get("commit_sha", ""),
             "dry_run": mode in {"dry_run", "dryrun", "preview"},
             **result,
+        }
+    finally:
+        conn.close()
+
+
+@route("POST", "/api/graph-governance/{project_id}/snapshots/{snapshot_id}/graph-structure-ops/jobs")
+def handle_graph_governance_snapshot_graph_structure_ops_jobs_create(ctx: RequestContext):
+    """Queue a graph-structure AI-output task as an auditable event."""
+    project_id = ctx.get_project_id()
+    raw_snapshot_id = ctx.path_params["snapshot_id"]
+    body = ctx.body
+    mode = str(body.get("mode") or "dry_run").strip().lower().replace("-", "_")
+    raw_output = body.get("ai_output") if "ai_output" in body else body.get("output")
+    from . import event_bus
+    from . import graph_events
+    from . import graph_snapshot_store as store
+    from .db import sqlite_write_lock
+    from .errors import ValidationError
+
+    conn = get_connection(project_id)
+    try:
+        _require_graph_governance_operator(ctx, conn, "graph-governance.snapshot.graph-structure-ops.jobs.create")
+        snapshot_id = _resolve_graph_snapshot_id(conn, project_id, raw_snapshot_id)
+        snapshot = store.get_graph_snapshot(conn, project_id, snapshot_id)
+        if not snapshot:
+            raise ValidationError(f"graph snapshot not found: {snapshot_id}")
+        payload = {
+            "mode": mode,
+            "ai_output": raw_output,
+        }
+        if body.get("project_root"):
+            payload["project_root"] = str(body.get("project_root") or "")
+        with sqlite_write_lock():
+            event = graph_events.create_event(
+                conn,
+                project_id,
+                snapshot_id,
+                event_type="graph_structure_requested",
+                event_kind="semantic_job",
+                target_type="snapshot",
+                target_id=snapshot_id,
+                status=graph_events.EVENT_STATUS_OBSERVED,
+                operation_type="graph_structure",
+                payload=payload,
+                evidence={
+                    "source": "graph_structure_ops_jobs_api",
+                    "mode": mode,
+                },
+                created_by=str(body.get("actor") or "dashboard_user"),
+            )
+            conn.commit()
+        try:
+            event_bus.publish("semantic_job.enqueued", {
+                "project_id": project_id,
+                "snapshot_id": snapshot_id,
+                "target_scope": "graph_structure",
+                "event_id": event.get("event_id", ""),
+            })
+        except Exception:
+            pass
+        return 202, {
+            "ok": True,
+            "project_id": project_id,
+            "snapshot_id": snapshot_id,
+            "commit_sha": snapshot.get("commit_sha", ""),
+            "queued": True,
+            "operation_type": "graph_structure",
+            "event": event,
         }
     finally:
         conn.close()
