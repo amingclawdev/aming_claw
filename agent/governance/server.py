@@ -15250,6 +15250,8 @@ def handle_backlog_upsert(ctx: RequestContext):
         if not body.get("force_admit"):
             try:
                 from .backlog_triage import triage_backlog_insert
+                explicit_triage_action = str(body.get("triage_action") or "").strip()
+                explicit_target_id = str(body.get("triage_target_bug_id") or "").strip()
                 open_rows = conn.execute(
                     "SELECT bug_id, title, target_files FROM backlog_bugs WHERE status='OPEN'"
                 ).fetchall()
@@ -15262,19 +15264,84 @@ def handle_backlog_upsert(ctx: RequestContext):
                     conn.commit()
                 except Exception:
                     pass
+                if explicit_triage_action:
+                    allowed = {"admit", "merge_into", "supersede", "reject_dup"}
+                    if explicit_triage_action not in allowed:
+                        return 400, {
+                            "ok": False,
+                            "error": "invalid_triage_action",
+                            "allowed_actions": sorted(allowed),
+                            "triage": decision,
+                        }
+                    if explicit_triage_action == "admit":
+                        decision = {"action": "admit", "reason": "observer admitted", "related_bug_ids": [], "confidence": 1.0}
+                        action = "admit"
+                    elif explicit_triage_action in {"merge_into", "supersede", "reject_dup"}:
+                        related = list(decision.get("related_bug_ids") or [])
+                        target_id = explicit_target_id or (related[0] if related else "")
+                        if not target_id or target_id not in related:
+                            return 409, {
+                                "ok": False,
+                                "error": "triage_target_not_candidate",
+                                "triage": decision,
+                                "triage_action": explicit_triage_action,
+                                "triage_target_bug_id": target_id,
+                            }
+                        if explicit_triage_action == "merge_into":
+                            conn.execute(
+                                "UPDATE backlog_bugs SET details_md = details_md || ? , updated_at = ? WHERE bug_id = ?",
+                                ("\n\n---\nMerged from %s: %s" % (bug_id, body.get("details_md", "")), now, target_id))
+                            try:
+                                audit_service.record(
+                                    conn, pid, "backlog_triage_decision",
+                                    actor=body.get("actor", "observer"),
+                                    bug_id=bug_id,
+                                    action="merge_into",
+                                    target_bug_id=target_id,
+                                    details=json.dumps(decision),
+                                )
+                            except Exception:
+                                pass
+                            conn.commit()
+                            return {"ok": True, "bug_id": target_id, "action": "merge_into", "merged_from": bug_id, "triage": decision}
+                        if explicit_triage_action == "reject_dup":
+                            try:
+                                audit_service.record(
+                                    conn, pid, "backlog_triage_decision",
+                                    actor=body.get("actor", "observer"),
+                                    bug_id=bug_id,
+                                    action="reject_dup",
+                                    target_bug_id=target_id,
+                                    details=json.dumps(decision),
+                                )
+                            except Exception:
+                                pass
+                            conn.commit()
+                            return {"ok": True, "bug_id": bug_id, "action": "reject_dup", "duplicate_of": target_id, "triage": decision}
+                        decision = dict(decision)
+                        decision["action"] = "supersede"
+                        decision["related_bug_ids"] = [target_id]
+                        action = "supersede"
                 if action == "reject_dup":
                     return 409, {"ok": False, "error": "duplicate", "duplicate_of": decision["related_bug_ids"],
-                                 "reason": decision["reason"]}
+                                 "reason": decision["reason"], "triage": decision}
                 if action == "supersede":
-                    # Insert new row first (fall through), then close old rows
-                    pass  # insert happens below; old rows closed after
+                    if explicit_triage_action != "supersede":
+                        return 409, {
+                            "ok": False,
+                            "error": "triage_review_required",
+                            "recommended_action": "supersede",
+                            "supported_actions": ["admit", "supersede", "reject_dup"],
+                            "triage": decision,
+                        }
                 if action == "merge_into" and decision["related_bug_ids"]:
-                    target_id = decision["related_bug_ids"][0]
-                    conn.execute(
-                        "UPDATE backlog_bugs SET details_md = details_md || ? , updated_at = ? WHERE bug_id = ?",
-                        ("\n\n---\nMerged from %s: %s" % (bug_id, body.get("details_md", "")), now, target_id))
-                    conn.commit()
-                    return {"ok": True, "bug_id": target_id, "action": "merge_into", "merged_from": bug_id}
+                    return 409, {
+                        "ok": False,
+                        "error": "triage_review_required",
+                        "recommended_action": "merge_into",
+                        "supported_actions": ["admit", "merge_into", "reject_dup"],
+                        "triage": decision,
+                    }
             except Exception:
                 try:
                     audit_service.record(conn, pid, "backlog_triage_failed", actor="ai_triage", bug_id=bug_id)
@@ -15362,6 +15429,17 @@ def handle_backlog_upsert(ctx: RequestContext):
         if decision and decision.get("action") == "supersede":
             for old_id in decision.get("related_bug_ids", []):
                 conn.execute("UPDATE backlog_bugs SET status='FIXED', updated_at=? WHERE bug_id=?", (now, old_id))
+            try:
+                audit_service.record(
+                    conn, pid, "backlog_triage_decision",
+                    actor=body.get("actor", "observer"),
+                    bug_id=bug_id,
+                    action="supersede",
+                    target_bug_id=",".join(decision.get("related_bug_ids", [])),
+                    details=json.dumps(decision),
+                )
+            except Exception:
+                pass
             conn.commit()
             return {"ok": True, "bug_id": bug_id, "action": "superseded", "closed_bugs": decision["related_bug_ids"]}
         return {"ok": True, "bug_id": bug_id, "action": "upserted"}

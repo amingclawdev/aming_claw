@@ -51,10 +51,25 @@ def test_admit_when_no_overlap():
         from governance.server import handle_backlog_upsert
         assert handle_backlog_upsert(_ctx(title="Different"))["ok"] is True
 
-def test_supersede_closes_old_row():
+def test_supersede_requires_observer_decision():
     with patch("governance.server.get_connection", return_value=_conn([{"bug_id": "OLD-2", "title": "Diff", "target_files": '["a.py"]'}])):
         from governance.server import handle_backlog_upsert
         r = handle_backlog_upsert(_ctx(title="New", target_files=["a.py"]))
+        assert isinstance(r, tuple) and r[0] == 409
+        assert r[1]["error"] == "triage_review_required"
+        assert r[1]["recommended_action"] == "supersede"
+        assert r[1]["triage"]["evidence"]["candidates"][0]["bug_id"] == "OLD-2"
+
+def test_confirmed_supersede_closes_old_row():
+    with patch("governance.server.get_connection", return_value=_conn([{"bug_id": "OLD-2", "title": "Diff", "target_files": '["a.py"]'}])):
+        from governance.server import handle_backlog_upsert
+        r = handle_backlog_upsert(_ctx(
+            title="New",
+            target_files=["a.py"],
+            triage_action="supersede",
+            triage_target_bug_id="OLD-2",
+            actor="observer",
+        ))
         assert r["action"] == "superseded" and "OLD-2" in r["closed_bugs"]
 
 def test_reject_dup_returns_409():
@@ -63,10 +78,26 @@ def test_reject_dup_returns_409():
         r = handle_backlog_upsert(_ctx(title="Dup Bug"))
         assert isinstance(r, tuple) and r[0] == 409 and "duplicate_of" in r[1]
 
-def test_merge_into_appends_details():
+def test_merge_into_requires_observer_decision():
     with patch("governance.server.get_connection", return_value=_conn([{"bug_id": "OLD-3", "title": "O", "target_files": '["a.py","b.py","c.py"]'}])):
         from governance.server import handle_backlog_upsert
         r = handle_backlog_upsert(_ctx(title="X", target_files=["a.py", "b.py"], details_md="e"))
+        assert isinstance(r, tuple) and r[0] == 409
+        assert r[1]["error"] == "triage_review_required"
+        assert r[1]["recommended_action"] == "merge_into"
+        assert r[1]["triage"]["evidence"]["candidates"][0]["bug_id"] == "OLD-3"
+
+def test_confirmed_merge_into_appends_details():
+    with patch("governance.server.get_connection", return_value=_conn([{"bug_id": "OLD-3", "title": "O", "target_files": '["a.py","b.py","c.py"]'}])):
+        from governance.server import handle_backlog_upsert
+        r = handle_backlog_upsert(_ctx(
+            title="X",
+            target_files=["a.py", "b.py"],
+            details_md="e",
+            triage_action="merge_into",
+            triage_target_bug_id="OLD-3",
+            actor="observer",
+        ))
         assert r["action"] == "merge_into" and r["bug_id"] == "OLD-3"
 
 def test_single_generic_file_overlap_does_not_merge_unrelated_domains():
@@ -100,6 +131,7 @@ def test_merge_into_reports_overlap_evidence():
     assert decision["action"] == "merge_into"
     assert decision["evidence"]["overlap_files"] == ["a.py"]
     assert decision["evidence"]["title_token_overlap"] == ["lease", "queue", "worker"]
+    assert decision["evidence"]["candidates"][0]["bug_id"] == "OLD-1"
 
 def test_force_admit_bypasses_gate():
     with patch("governance.server.get_connection", return_value=_conn([{"bug_id": "OLD-1", "title": "Dup Bug", "target_files": "[]"}])):
