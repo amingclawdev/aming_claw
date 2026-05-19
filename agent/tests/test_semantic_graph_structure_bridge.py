@@ -937,6 +937,54 @@ def test_bridge_skips_graph_enrich_policy_ops_that_gate_would_reject(
     assert audit["payload"]["result"]["converted_count"] == 0
 
 
+def test_bridge_skips_graph_enrich_policy_ops_for_non_calls_edges(
+    conn,
+    tmp_path,
+):
+    project = tmp_path / "generated-project"
+    _write_generated_project(project)
+    snapshot_id = _create_snapshot(conn, project, "semantic-bridge-config-policy-edge-skip")
+    service_id = _node_id_for_primary(snapshot_id, "agent/service.py")
+    event = _semantic_event(
+        conn,
+        snapshot_id,
+        service_id,
+        {
+            "graph_enrich_config_suggestions": [
+                {
+                    "op": "upsert_edge_evidence_policy",
+                    "rule_id": "depends_on.import_only.downgrade",
+                    "edge": "depends_on",
+                    "source_evidence": "import_only",
+                    "action": "downgrade",
+                    "downgrade_to": "imports",
+                    "confidence": 0.55,
+                    "evidence": {
+                        "reason": "Policy ops only materialize calls/import_only evidence policy.",
+                    },
+                }
+            ],
+        },
+        event_id="sem-bridge-config-policy-edge-skip",
+    )
+
+    result = bridge.bridge_semantic_events_to_graph_enrich_config_jobs(
+        conn,
+        PID,
+        snapshot_id,
+        event_ids=[event["event_id"]],
+        actor="test",
+        project_root=str(project),
+    )
+    conn.commit()
+
+    assert result["queued_count"] == 0
+    assert result["audit_event_count"] == 1
+    skip = result["skipped"][0]
+    assert skip["reason"] == "edge_unsupported_for_policy"
+    assert skip["errors"] == ["edge_unsupported_for_policy"]
+
+
 def test_bridge_converts_semantic_rule_config_suggestions_to_dry_run_job(
     conn,
     tmp_path,

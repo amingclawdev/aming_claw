@@ -93,6 +93,7 @@ def test_graph_enrich_config_contract_exposes_policy_op_constraints():
     contract = graph_enrich_config_ops_output_contract()
 
     constraints = contract["operation_constraints"]["upsert_edge_evidence_policy"]
+    assert constraints["edges"] == ["calls"]
     assert constraints["source_evidence"] == ["import_only"]
     assert constraints["actions"] == ["allow", "downgrade", "reject"]
     assert "function_calls" in constraints["note"]
@@ -270,6 +271,27 @@ def test_graph_enrich_config_rule_ops_dry_run_previews_project_override(tmp_path
     assert rules["function_calls.strong_resolved_to_depends_on"]["action"] == "promote"
     assert rules["event_bus.subscribe_to_consumes_event"]["edge"] == "consumes_event"
     assert not (project / PROJECT_OVERRIDE_PATH).exists()
+
+
+def test_graph_enrich_config_rejects_policy_op_for_non_calls_edge(tmp_path):
+    project = tmp_path / "generated-project"
+    project.mkdir()
+    payload = _payload()
+    payload["operations"][0]["edge"] = "depends_on"
+    payload["operations"][0]["rule_id"] = "depends-on-import-only-policy"
+
+    result = run_graph_enrich_config_ai_output_pipeline(
+        raw_output=json.dumps(payload),
+        mode="dry_run",
+        project_root=project,
+    )
+
+    assert result["ok"] is False
+    operation = result["gate"]["operations"][0]
+    assert operation["status"] == "rejected"
+    assert "edge_unsupported_for_policy" in operation["errors"]
+    assert result["preview"]["graph_enrich_config_ops"]["rules"] == {}
+    assert result["preview"]["graph_structure_ops"]["evidence_policy"] == {}
 
 
 def test_graph_enrich_config_flexible_rule_ops_capture_observer_review_rules(tmp_path):

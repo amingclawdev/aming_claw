@@ -229,7 +229,8 @@ job_profiles:
       }
 
       Policy op constraints:
-      - Use upsert_edge_evidence_policy only for source_evidence="import_only".
+      - Use upsert_edge_evidence_policy only for edge="calls" and
+        source_evidence="import_only".
       - For upsert_edge_evidence_policy, action must be one of
         "allow", "downgrade", or "reject".
       - For function_calls, test_import_fanin, weak-call resolver evidence, or

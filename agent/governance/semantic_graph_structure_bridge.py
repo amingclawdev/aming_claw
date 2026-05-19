@@ -27,6 +27,7 @@ from .graph_enrich_config_ops import (
     GRAPH_ENRICH_CONFIG_SELF_PRECHECK_RULES,
     CONFIG_RULE_OPS,
     POLICY_OP_ACTIONS as CONFIG_POLICY_OP_ACTIONS,
+    POLICY_OP_EDGES as CONFIG_POLICY_OP_EDGES,
     POLICY_OP_SOURCE_EVIDENCE as CONFIG_POLICY_OP_SOURCE_EVIDENCE,
     SCHEMA_VERSION as CONFIG_SCHEMA_VERSION,
     SUPPORTED_ACTIONS as CONFIG_SUPPORTED_ACTIONS,
@@ -1132,7 +1133,7 @@ def _convert_config_suggestion(
         return {"reason": "action_unsupported", "suggestion": raw}
     if action == "downgrade" and downgrade_to not in CONFIG_DOWNGRADE_TARGETS and not is_rule_op:
         return {"reason": "downgrade_to_unsupported", "suggestion": raw}
-    policy_errors = _config_policy_errors(op, source_evidence, action)
+    policy_errors = _config_policy_errors(op, edge, source_evidence, action)
     if policy_errors:
         return {
             "reason": policy_errors[0],
@@ -1157,10 +1158,12 @@ def _convert_config_suggestion(
     return {"operation": operation}
 
 
-def _config_policy_errors(op: str, source_evidence: str, action: str) -> list[str]:
+def _config_policy_errors(op: str, edge: str, source_evidence: str, action: str) -> list[str]:
     if op != "upsert_edge_evidence_policy":
         return []
     errors: list[str] = []
+    if edge not in CONFIG_POLICY_OP_EDGES:
+        errors.append("edge_unsupported_for_policy")
     if source_evidence not in CONFIG_POLICY_OP_SOURCE_EVIDENCE:
         errors.append("source_evidence_unsupported_for_policy")
     if action not in CONFIG_POLICY_OP_ACTIONS:

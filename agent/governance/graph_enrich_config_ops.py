@@ -77,6 +77,7 @@ SUPPORTED_ACTIONS = {
 }
 POLICY_OP_SOURCE_EVIDENCE = {"import_only"}
 POLICY_OP_ACTIONS = {"allow", "downgrade", "reject"}
+POLICY_OP_EDGES = {"calls"}
 GRAPH_ENRICH_CONFIG_SELF_PRECHECK_RULES = [
     "schema_version",
     "semantic_bridge_normalized",
@@ -121,6 +122,7 @@ def graph_enrich_config_ops_output_contract() -> dict[str, Any]:
         },
         "operation_constraints": {
             "upsert_edge_evidence_policy": {
+                "edges": sorted(POLICY_OP_EDGES),
                 "source_evidence": sorted(POLICY_OP_SOURCE_EVIDENCE),
                 "actions": sorted(POLICY_OP_ACTIONS),
                 "note": (
@@ -370,6 +372,8 @@ def _validate_operation(
         errors.append("downgrade_to_unsupported")
     elif action == "downgrade" and downgrade_to not in CONFIG_DOWNGRADE_TARGETS and is_rule_op:
         normalizations.append("custom_downgrade_target")
+    if is_policy_op and edge not in POLICY_OP_EDGES:
+        errors.append("edge_unsupported_for_policy")
     if is_policy_op and action not in POLICY_OP_ACTIONS:
         errors.append("action_unsupported_for_policy")
     if is_policy_op and source_evidence not in POLICY_OP_SOURCE_EVIDENCE:
