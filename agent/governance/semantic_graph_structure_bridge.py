@@ -831,9 +831,10 @@ def _has_concrete_call_evidence(
     }
     if evidence_kind and evidence_kind in allowed:
         return True, evidence_kind
-    for key in ("call_site", "callsite", "call_expression", "callee", "callee_symbol"):
-        if str(raw.get(key) or "").strip():
-            return True, evidence_kind or "call_reference"
+    for record in _bridge_evidence_records(raw):
+        for key in ("call_site", "callsite", "call_expression", "callee", "callee_symbol"):
+            if str(record.get(key) or "").strip():
+                return True, evidence_kind or "call_reference"
     text = _bridge_evidence_text(raw)
     if text and _CALL_EXPRESSION_RE.search(text):
         return True, evidence_kind or "call_reference"
@@ -852,18 +853,20 @@ def _bridge_evidence_kind(raw: Mapping[str, Any]) -> str:
         value = _normalize_policy_token(raw.get(key))
         if value:
             return value
-    evidence = raw.get("evidence") if isinstance(raw.get("evidence"), Mapping) else {}
-    for key in (
-        "source_evidence",
-        "evidence_kind",
-        "kind_of_evidence",
-        "evidence_type",
-        "kind",
-        "type",
-    ):
-        value = _normalize_policy_token(evidence.get(key))
-        if value:
-            return value
+    for record in _bridge_evidence_records(raw, include_root=False):
+        for key in (
+            "source_evidence",
+            "evidence_kind",
+            "kind_of_evidence",
+            "evidence_type",
+            "source_evidence_kind",
+            "call_evidence_kind",
+            "kind",
+            "type",
+        ):
+            value = _normalize_policy_token(record.get(key))
+            if value:
+                return value
     return ""
 
 
@@ -881,22 +884,73 @@ def _bridge_evidence_text(raw: Mapping[str, Any]) -> str:
         "rationale",
     ):
         value = raw.get(key)
-        if isinstance(value, Mapping):
-            for nested_key in (
-                "evidence",
-                "line_evidence",
-                "source_ref",
-                "details",
-                "detail",
-                "reason",
-                "summary",
-            ):
-                nested = value.get(nested_key)
-                if nested is not None:
-                    parts.append(str(nested))
-        elif value is not None:
-            parts.append(str(value))
+        _append_bridge_evidence_text(parts, value)
     return "\n".join(part for part in parts if part.strip())
+
+
+def _bridge_evidence_records(
+    raw: Mapping[str, Any],
+    *,
+    include_root: bool = True,
+) -> list[Mapping[str, Any]]:
+    records: list[Mapping[str, Any]] = []
+    if include_root:
+        records.append(raw)
+    for key in (
+        "call_evidence",
+        "evidence",
+        "line_evidence",
+        "source_ref",
+        "details",
+        "detail",
+        "reason",
+        "summary",
+        "rationale",
+    ):
+        records.extend(_nested_bridge_evidence_records(raw.get(key)))
+    return records
+
+
+def _nested_bridge_evidence_records(value: Any, *, depth: int = 0) -> list[Mapping[str, Any]]:
+    if depth > 5:
+        return []
+    if isinstance(value, str):
+        parsed = _parse_structured_string(value)
+        if isinstance(parsed, (dict, list)) and parsed != {"summary": value.strip()}:
+            return _nested_bridge_evidence_records(parsed, depth=depth + 1)
+        return []
+    if isinstance(value, Mapping):
+        records: list[Mapping[str, Any]] = [value]
+        for nested in value.values():
+            records.extend(_nested_bridge_evidence_records(nested, depth=depth + 1))
+        return records
+    if isinstance(value, list):
+        records: list[Mapping[str, Any]] = []
+        for item in value:
+            records.extend(_nested_bridge_evidence_records(item, depth=depth + 1))
+        return records
+    return []
+
+
+def _append_bridge_evidence_text(parts: list[str], value: Any, *, depth: int = 0) -> None:
+    if depth > 5 or value is None:
+        return
+    if isinstance(value, str):
+        parsed = _parse_structured_string(value)
+        if isinstance(parsed, (dict, list)) and parsed != {"summary": value.strip()}:
+            _append_bridge_evidence_text(parts, parsed, depth=depth + 1)
+        else:
+            parts.append(value)
+        return
+    if isinstance(value, Mapping):
+        for nested in value.values():
+            _append_bridge_evidence_text(parts, nested, depth=depth + 1)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _append_bridge_evidence_text(parts, item, depth=depth + 1)
+        return
+    parts.append(str(value))
 
 
 def _operation_evidence(
@@ -905,12 +959,19 @@ def _operation_evidence(
     *,
     fallback_reason: str,
 ) -> dict[str, Any]:
-    evidence = raw.get("evidence") if isinstance(raw.get("evidence"), Mapping) else {}
+    raw_evidence = raw.get("evidence")
+    evidence = raw_evidence if isinstance(raw_evidence, Mapping) else {}
     out = dict(evidence)
     if not out.get("reason") and fallback_reason:
         out["reason"] = fallback_reason
-    raw_evidence = raw.get("evidence")
     if raw_evidence is not None and not isinstance(raw_evidence, Mapping):
+        parsed = (
+            _parse_structured_string(raw_evidence)
+            if isinstance(raw_evidence, str)
+            else raw_evidence
+        )
+        if isinstance(parsed, list):
+            out.setdefault("evidence_items", parsed)
         out.setdefault("evidence", str(raw_evidence))
     out.setdefault("semantic_suggestion_source", raw.get("_semantic_suggestion_source", ""))
     out.setdefault("source_semantic_event_id", semantic_event.get("event_id", ""))

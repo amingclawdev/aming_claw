@@ -381,6 +381,91 @@ def test_bridge_converts_called_by_suggestion_to_calls_from_explicit_source(conn
     assert operation["evidence"]["source_evidence"] == "function_call"
 
 
+@pytest.mark.parametrize(
+    ("evidence", "expected_source_evidence"),
+    [
+        (
+            [
+                {
+                    "kind": "resolved_call",
+                    "caller": "agent.service::service_entry",
+                    "callee": "agent.storage::load_state",
+                    "line_evidence": "return load_state()['status']",
+                }
+            ],
+            "resolved_call",
+        ),
+        (
+            json.dumps(
+                [
+                    {
+                        "type": "function_calls",
+                        "caller": "agent.service::service_entry",
+                        "callee": "agent.storage::load_state",
+                        "line_evidence": "return load_state()['status']",
+                    }
+                ]
+            ),
+            "function_calls",
+        ),
+    ],
+)
+def test_bridge_recognizes_structured_ai_call_evidence_on_direct_ops(
+    conn,
+    tmp_path,
+    evidence,
+    expected_source_evidence,
+):
+    project = tmp_path / "generated-project"
+    _write_generated_project(project)
+    snapshot_id = _create_snapshot(
+        conn,
+        project,
+        f"semantic-bridge-ai-call-{expected_source_evidence}",
+    )
+    service_id = _node_id_for_primary(snapshot_id, "agent/service.py")
+    storage_id = _node_id_for_primary(snapshot_id, "agent/storage.py")
+    event = _semantic_event(
+        conn,
+        snapshot_id,
+        service_id,
+        {
+            "graph_structure_suggestions": [
+                {
+                    "op": "add_edge",
+                    "source_path": "agent/service.py",
+                    "target_node_id": storage_id,
+                    "edge": "calls",
+                    "confidence": 0.89,
+                    "evidence": evidence,
+                }
+            ],
+        },
+        event_id=f"sem-bridge-ai-call-{expected_source_evidence}",
+    )
+
+    result = bridge.bridge_semantic_events_to_graph_structure_jobs(
+        conn,
+        PID,
+        snapshot_id,
+        event_ids=[event["event_id"]],
+        actor="test",
+    )
+
+    assert result["ok"] is True
+    assert result["queued_count"] == 1
+    operation = result["events"][0]["payload"]["ai_output"]["operations"][0]
+    assert operation["source_path"] == "agent/service.py"
+    assert operation["target_node_id"] == storage_id
+    assert operation["edge"] == "calls"
+    assert operation["evidence"]["source_evidence"] == expected_source_evidence
+    assert operation["evidence"]["bridge_policy"] == "calls_concrete_evidence_present"
+    assert (
+        operation["evidence"]["evidence_items"][0]["line_evidence"]
+        == "return load_state()['status']"
+    )
+
+
 def test_bridge_downgrades_weak_called_by_suggestion_before_gate(conn, tmp_path):
     project = tmp_path / "generated-project"
     _write_generated_project(project)
