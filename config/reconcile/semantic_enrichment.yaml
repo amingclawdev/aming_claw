@@ -110,6 +110,10 @@ graph_structure_ops:
       role_allowlist: []
       edge_allowlist: [calls, configures, depends_on, documents, imports, tests, uses]
 
+graph_enrich_config_ops:
+  schema_version: graph_enrich_config_ops.v1
+  rules: {}
+
 job_profiles:
   node:
     analyzer_role: reconcile_node_semantic_analyzer
@@ -236,6 +240,9 @@ job_profiles:
       - For function_calls, test_import_fanin, weak-call resolver evidence, or
         require_direct_symbol_import behavior, use rule operations such as
         tighten_rule, update_rule, promote_rule, review_rule, or downgrade_rule.
+      - Rule operations may include a when.all predicate list. Use only
+        predicates from payload.output_contract.supported_predicates; do not
+        emit executable code or unregistered predicate names.
 
       Before returning JSON, run your own self-precheck against
       payload.output_contract.self_precheck.checked_rules_required. Prefer
@@ -299,7 +306,7 @@ prompt_template: |-
   When a correction requires changing graph-enrichment rules instead of writing
   a source hint, emit it in graph_enrich_config_suggestions using only
   graph_enrich_config_ops.v1-compatible fields: op, rule_id, edge,
-  source_evidence, action, downgrade_to, confidence, and evidence. These
+  source_evidence, action, downgrade_to, confidence, optional when, and evidence. These
   suggestions are never applied directly; they must pass the config gate and
   observer approval before project override config is written. Pick op only
   from payload.instructions.graph_enrich_config_ops.output_contract.supported_operations,
@@ -307,5 +314,7 @@ prompt_template: |-
   corresponding supported_* lists in that same contract. Self-precheck these
   suggestions against the configured operation/edge/action contract; do not
   invent aliases such as ensure_rule or depends_on_config unless the supplied
-  contract explicitly supports them. Prefer config-rule proposals when the
+  contract explicitly supports them. If using when.all, every predicate must be
+  listed in payload.instructions.graph_enrich_config_ops.output_contract.supported_predicates.
+  Prefer config-rule proposals when the
   bottom-up algorithm needs to change rather than a one-off source hint.

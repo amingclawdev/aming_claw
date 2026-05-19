@@ -31,6 +31,8 @@ def test_default_semantic_config_loads_state_only_profile():
     assert config.job_profiles["graph_structure"].analyzer_role == "reconcile_graph_structure_analyzer"
     assert config.graph_structure_ops.schema_version == "graph_structure_ops.v1"
     assert config.graph_structure_ops.analyzer_role == "reconcile_graph_structure_analyzer"
+    assert config.graph_enrich_config_ops.schema_version == "graph_enrich_config_ops.v1"
+    assert config.graph_enrich_config_ops.rules == {}
     assert config.graph_structure_ops.operations["add_edge"]["enabled"] is True
     assert config.graph_structure_ops.operations["add_edge"]["edge_allowlist"] == [
         "calls",
@@ -81,6 +83,7 @@ def test_default_semantic_config_loads_state_only_profile():
     assert payload["graph_structure_ops"]["bridge_policy"]["calls"]["downgrade_to"] == "imports"
     config_contract = payload["graph_enrich_config_ops"]["output_contract"]
     assert payload["graph_enrich_config_ops"]["schema_version"] == "graph_enrich_config_ops.v1"
+    assert payload["graph_enrich_config_ops"]["rules"] == {}
     assert "tighten_rule" in config_contract["supported_operations"]
     assert "ensure_rule" not in config_contract["supported_operations"]
     assert "documents" in config_contract["supported_edges"]
@@ -150,6 +153,55 @@ def test_graph_structure_bridge_policy_can_override_weak_calls(tmp_path):
     assert calls_policy["evidence_kinds"] == ["function_call"]
     structure_ops = config.to_instruction_payload("graph_structure")["graph_structure_ops"]
     assert structure_ops["bridge_policy"]["calls"]["downgrade_to"] == "depends_on"
+
+
+def test_graph_enrich_config_ops_rules_load_into_instruction_payload(tmp_path):
+    cfg = tmp_path / "semantic-graph-enrich-rules.yaml"
+    cfg.write_text(
+        "\n".join(
+            [
+                'version: "1.0"',
+                "analyzer: reconcile_semantic",
+                "prompt_template: semantic prompt",
+                "graph_enrich_config_ops:",
+                "  rules:",
+                "    python.container_attribute_add_not_cross_module_call:",
+                "      op: tighten_rule",
+                "      edge: calls",
+                "      source_evidence: weak_call_resolver_ambiguous_add",
+                "      action: ignore",
+                "      when:",
+                "        all:",
+                "          - predicate: language_is",
+                "            value: python",
+                "          - predicate: call_syntax_is",
+                "            value: attribute_call",
+                "          - predicate: receiver_kind_in",
+                "            values: [builtin_collection, local_collection]",
+                "          - predicate: raw_target_in",
+                "            values: [add]",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_semantic_enrichment_config(config_path=cfg)
+
+    rule = config.graph_enrich_config_ops.rules[
+        "python.container_attribute_add_not_cross_module_call"
+    ]
+    assert rule["when"]["all"][1] == {
+        "predicate": "call_syntax_is",
+        "value": "attribute_call",
+    }
+    payload_rule = config.to_instruction_payload()["graph_enrich_config_ops"]["rules"][
+        "python.container_attribute_add_not_cross_module_call"
+    ]
+    assert payload_rule["action"] == "ignore"
+    assert payload_rule["when"]["all"][2]["values"] == [
+        "builtin_collection",
+        "local_collection",
+    ]
 
 
 def test_semantic_worker_execution_policy_invalid_values_fall_back(tmp_path):

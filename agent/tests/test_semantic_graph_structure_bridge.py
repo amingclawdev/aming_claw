@@ -1174,6 +1174,28 @@ def test_bridge_converts_flexible_config_rule_ops_and_ignores_empty_ops_object(
                         "reason": "Direct from-imports should normalize to the standard imports edge.",
                     },
                 },
+                {
+                    "op": "tighten_rule",
+                    "rule_id": "python.container_attribute_add_not_cross_module_call",
+                    "edge": "calls",
+                    "source_evidence": "weak_call_resolver_ambiguous_add",
+                    "action": "ignore",
+                    "confidence": 0.78,
+                    "when": {
+                        "all": [
+                            {"predicate": "language_is", "value": "python"},
+                            {"predicate": "call_syntax_is", "value": "attribute_call"},
+                            {
+                                "predicate": "receiver_kind_in",
+                                "values": ["builtin_collection", "local_collection"],
+                            },
+                            {"predicate": "raw_target_in", "values": ["add"]},
+                        ]
+                    },
+                    "evidence": {
+                        "reason": "Container .add() weak calls should not become module calls.",
+                    },
+                },
             ],
         },
         event_id="sem-bridge-config-flex",
@@ -1205,8 +1227,10 @@ def test_bridge_converts_flexible_config_rule_ops_and_ignores_empty_ops_object(
         "downgrade_relation_confidence",
         "tighten_rule",
         "update_rule",
+        "tighten_rule",
     ]
     assert operations[2]["edge"] == "imports"
+    assert operations[3]["when"]["all"][0] == {"predicate": "language_is", "value": "python"}
 
     semantic_worker._drain_graph_enrich_config(PID, snapshot_id)
 
@@ -1222,6 +1246,10 @@ def test_bridge_converts_flexible_config_rule_ops_and_ignores_empty_ops_object(
     assert rules["emits_event.string_literal"]["downgrade_to"] == "references_schema"
     assert rules["tests_edge_from_filename_match"]["action"] == "require_direct_symbol_import"
     assert rules["imports_module_from_top_level_from_import"]["edge"] == "imports"
+    assert rules["python.container_attribute_add_not_cross_module_call"]["when"]["all"][2] == {
+        "predicate": "receiver_kind_in",
+        "values": ["builtin_collection", "local_collection"],
+    }
 
 
 def test_semantic_worker_drains_graph_enrich_config_accept_job_generated_project(

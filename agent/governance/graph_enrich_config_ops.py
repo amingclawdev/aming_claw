@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import yaml
 
@@ -78,6 +78,7 @@ SUPPORTED_ACTIONS = {
 POLICY_OP_SOURCE_EVIDENCE = {"import_only"}
 POLICY_OP_ACTIONS = {"allow", "downgrade", "reject"}
 POLICY_OP_EDGES = {"calls"}
+CONFIG_RULE_PREDICATES: dict[str, Callable[[Mapping[str, Any], Mapping[str, Any]], bool]] = {}
 GRAPH_ENRICH_CONFIG_SELF_PRECHECK_RULES = [
     "schema_version",
     "semantic_bridge_normalized",
@@ -106,6 +107,14 @@ _REQUIRED_OPERATION_FIELDS.update({
 })
 
 
+def _register_rule_predicate(name: str):
+    def decorator(func: Callable[[Mapping[str, Any], Mapping[str, Any]], bool]):
+        CONFIG_RULE_PREDICATES[name] = func
+        return func
+
+    return decorator
+
+
 def graph_enrich_config_ops_output_contract() -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
@@ -115,6 +124,11 @@ def graph_enrich_config_ops_output_contract() -> dict[str, Any]:
         "supported_downgrade_targets": sorted(CONFIG_DOWNGRADE_TARGETS),
         "supported_source_evidence": sorted(SUPPORTED_SOURCE_EVIDENCE),
         "supported_actions": sorted(SUPPORTED_ACTIONS),
+        "supported_predicates": sorted(CONFIG_RULE_PREDICATES),
+        "predicate_contract": {
+            "shape": {"predicate": "<registered predicate>", "value": "...", "values": ["..."]},
+            "composition": "Use when.all for conjunction. Unknown predicates are rejected.",
+        },
         "custom_rule_tokens": {
             "source_evidence": "Rule ops accept non-empty custom evidence tokens; policy ops remain strict.",
             "action": "Rule ops accept non-empty custom actions for observer-reviewed config proposals.",
@@ -341,6 +355,7 @@ def _validate_operation(
     source_evidence = _normalize_source_evidence(op.get("source_evidence"))
     action = _normalize_action(op.get("action"))
     downgrade_to = _normalize_edge(op.get("downgrade_to"))
+    when = _normalize_when(op.get("when"))
     if action == "downgrade" and downgrade_to in {"ignore", "ignored"}:
         action = "ignore"
         downgrade_to = ""
@@ -378,6 +393,7 @@ def _validate_operation(
         errors.append("action_unsupported_for_policy")
     if is_policy_op and source_evidence not in POLICY_OP_SOURCE_EVIDENCE:
         errors.append("source_evidence_unsupported_for_policy")
+    errors.extend(when["errors"])
     confidence = op.get("confidence")
     if confidence is not None:
         try:
@@ -398,6 +414,7 @@ def _validate_operation(
         "errors": errors,
         "normalizations": normalizations,
         "reason": _reason(op.get("evidence")),
+        "when": when["when"],
     }
 
 
@@ -426,6 +443,8 @@ def _config_patch_for_operations(operations: list[dict[str, Any]]) -> dict[str, 
             "downgrade_to": op["downgrade_to"],
             "reason": op["reason"],
         }
+        if op.get("when"):
+            rules[op["rule_id"]]["when"] = op["when"]
     patch: dict[str, Any] = {"graph_structure_ops": {"evidence_policy": policy}}
     if rules:
         patch["graph_enrich_config_ops"] = {"rules": rules}
@@ -491,6 +510,149 @@ def _normalize_action(value: Any) -> str:
     if action == "ignored":
         return "ignore"
     return action
+
+
+def _normalize_when(raw: Any) -> dict[str, Any]:
+    if raw in (None, "", {}):
+        return {"when": {}, "errors": []}
+    if not isinstance(raw, Mapping):
+        return {"when": {}, "errors": ["predicate_when_invalid"]}
+    all_items = raw.get("all")
+    if all_items is None:
+        return {"when": {}, "errors": ["predicate_all_missing"]}
+    if not isinstance(all_items, list) or not all_items:
+        return {"when": {}, "errors": ["predicate_all_invalid"]}
+
+    normalized: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for item in all_items:
+        if not isinstance(item, Mapping):
+            errors.append("predicate_invalid")
+            continue
+        predicate = _normalize_edge(item.get("predicate"))
+        if not predicate:
+            errors.append("predicate_missing")
+            continue
+        if predicate not in CONFIG_RULE_PREDICATES:
+            errors.append("predicate_unsupported")
+        values = _predicate_values(item)
+        if not values:
+            errors.append("predicate_value_missing")
+        out: dict[str, Any] = {"predicate": predicate}
+        if len(values) == 1 and "values" not in item:
+            out["value"] = values[0]
+        else:
+            out["values"] = values
+        normalized.append(out)
+    return {"when": {"all": normalized} if normalized else {}, "errors": _dedupe(errors)}
+
+
+def _predicate_values(item: Mapping[str, Any]) -> list[str]:
+    raw_values = item.get("values")
+    if raw_values is None:
+        raw_values = item.get("value")
+    if isinstance(raw_values, str):
+        values = [raw_values]
+    elif isinstance(raw_values, (list, tuple, set)):
+        values = list(raw_values)
+    elif raw_values is None:
+        values = []
+    else:
+        values = [raw_values]
+    return [_normalize_edge(value) for value in values if str(value or "").strip()]
+
+
+def evaluate_graph_enrich_config_rules(
+    rules: Mapping[str, Any],
+    context: Mapping[str, Any],
+) -> dict[str, Any]:
+    normalized_context = _normalize_context(context)
+    for rule_id, raw_rule in sorted((rules or {}).items()):
+        if not isinstance(raw_rule, Mapping):
+            continue
+        rule = dict(raw_rule)
+        rule_edge = _normalize_edge(rule.get("edge"))
+        if rule_edge and rule_edge != normalized_context.get("edge"):
+            continue
+        rule_source = _normalize_source_evidence(rule.get("source_evidence"))
+        if rule_source and rule_source != normalized_context.get("source_evidence"):
+            continue
+        match = _evaluate_when(rule.get("when"), normalized_context)
+        if not match["matched"]:
+            continue
+        return {
+            "matched": True,
+            "rule_id": str(rule_id),
+            "action": _normalize_action(rule.get("action")),
+            "downgrade_to": _normalize_edge(rule.get("downgrade_to")),
+            "errors": [],
+            "matched_predicates": match["matched_predicates"],
+        }
+    return {
+        "matched": False,
+        "rule_id": "",
+        "action": "",
+        "downgrade_to": "",
+        "errors": [],
+        "matched_predicates": [],
+    }
+
+
+def _evaluate_when(raw_when: Any, context: Mapping[str, Any]) -> dict[str, Any]:
+    if raw_when in (None, "", {}):
+        return {"matched": True, "matched_predicates": [], "errors": []}
+    normalized = _normalize_when(raw_when)
+    if normalized["errors"] or not normalized["when"]:
+        return {"matched": False, "matched_predicates": [], "errors": normalized["errors"]}
+    matched_predicates: list[str] = []
+    for item in normalized["when"].get("all") or []:
+        predicate_name = str(item.get("predicate") or "")
+        predicate = CONFIG_RULE_PREDICATES.get(predicate_name)
+        if predicate is None or not predicate(context, item):
+            return {"matched": False, "matched_predicates": matched_predicates, "errors": []}
+        matched_predicates.append(predicate_name)
+    return {"matched": True, "matched_predicates": matched_predicates, "errors": []}
+
+
+def _normalize_context(context: Mapping[str, Any]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for key, value in (context or {}).items():
+        if isinstance(key, str) and not isinstance(value, (dict, list, tuple, set)):
+            out[key] = _normalize_edge(value)
+    return out
+
+
+def _context_value(context: Mapping[str, Any], key: str) -> str:
+    return _normalize_edge(context.get(key))
+
+
+def _predicate_item_values(item: Mapping[str, Any]) -> set[str]:
+    return set(_predicate_values(item))
+
+
+@_register_rule_predicate("language_is")
+def _predicate_language_is(context: Mapping[str, Any], item: Mapping[str, Any]) -> bool:
+    return _context_value(context, "language") in _predicate_item_values(item)
+
+
+@_register_rule_predicate("call_syntax_is")
+def _predicate_call_syntax_is(context: Mapping[str, Any], item: Mapping[str, Any]) -> bool:
+    return _context_value(context, "call_syntax") in _predicate_item_values(item)
+
+
+@_register_rule_predicate("receiver_kind_in")
+def _predicate_receiver_kind_in(context: Mapping[str, Any], item: Mapping[str, Any]) -> bool:
+    return _context_value(context, "receiver_kind") in _predicate_item_values(item)
+
+
+@_register_rule_predicate("raw_target_in")
+def _predicate_raw_target_in(context: Mapping[str, Any], item: Mapping[str, Any]) -> bool:
+    return _context_value(context, "raw_target") in _predicate_item_values(item)
+
+
+@_register_rule_predicate("source_evidence_is")
+def _predicate_source_evidence_is(context: Mapping[str, Any], item: Mapping[str, Any]) -> bool:
+    return _context_value(context, "source_evidence") in _predicate_item_values(item)
 
 
 def _dedupe(values: list[str]) -> list[str]:

@@ -1118,6 +1118,7 @@ def _convert_config_suggestion(
     ).strip().lower().replace("-", "_").replace(".", "_")
     action = _normalize_config_action(raw.get("action") or raw.get("import_only_action"))
     downgrade_to = _normalize_config_token(raw.get("downgrade_to"))
+    when = raw.get("when") if isinstance(raw.get("when"), Mapping) else {}
     if action == "downgrade" and downgrade_to in {"ignore", "ignored"}:
         action = "ignore"
         downgrade_to = ""
@@ -1155,6 +1156,8 @@ def _convert_config_suggestion(
     }
     if downgrade_to:
         operation["downgrade_to"] = downgrade_to
+    if when:
+        operation["when"] = dict(when)
     return {"operation": operation}
 
 

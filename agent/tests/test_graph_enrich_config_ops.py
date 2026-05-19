@@ -9,6 +9,7 @@ from agent.governance import server
 from agent.governance.db import _ensure_schema
 from agent.governance.graph_enrich_config_ops import (
     SCHEMA_VERSION,
+    evaluate_graph_enrich_config_rules,
     graph_enrich_config_ops_output_contract,
     run_graph_enrich_config_ai_output_pipeline,
 )
@@ -97,6 +98,8 @@ def test_graph_enrich_config_contract_exposes_policy_op_constraints():
     assert constraints["source_evidence"] == ["import_only"]
     assert constraints["actions"] == ["allow", "downgrade", "reject"]
     assert "function_calls" in constraints["note"]
+    assert "language_is" in contract["supported_predicates"]
+    assert "receiver_kind_in" in contract["supported_predicates"]
 
 
 def _rule_payload() -> dict:
@@ -199,6 +202,78 @@ def _flexible_rule_payload() -> dict:
             "known_risks": [],
         },
     }
+
+
+def _predicate_rule_payload() -> dict:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "source": {
+            "analyzer_role": "reconcile_graph_enrich_config_analyzer",
+        },
+        "operations": [
+            {
+                "op": "tighten_rule",
+                "rule_id": "python.container_attribute_add_not_cross_module_call",
+                "edge": "calls",
+                "source_evidence": "weak_call_resolver_ambiguous_add",
+                "action": "ignore",
+                "confidence": 0.82,
+                "when": {
+                    "all": [
+                        {"predicate": "language_is", "value": "python"},
+                        {"predicate": "call_syntax_is", "value": "attribute_call"},
+                        {
+                            "predicate": "receiver_kind_in",
+                            "values": ["builtin_collection", "local_collection"],
+                        },
+                        {"predicate": "raw_target_in", "values": ["add"]},
+                    ]
+                },
+                "evidence": {
+                    "reason": "Python container .add() is not a cross-module calls edge.",
+                },
+            },
+        ],
+        "self_check": {
+            "valid": True,
+            "checked_rules": [
+                "op_supported",
+                "predicate_supported",
+                "config_patch_previewed",
+                "observer_approval_required",
+            ],
+            "known_risks": [],
+        },
+    }
+
+
+def _write_generated_add_case_project(project):
+    project.mkdir()
+    (project / "service.py").write_text(
+        "\n".join(
+            [
+                "from math_ops import add",
+                "",
+                "def container_case(value):",
+                "    items = set()",
+                "    items.add(value)",
+                "    return items",
+                "",
+                "def direct_import_case(left, right):",
+                "    return add(left, right)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (project / "math_ops.py").write_text(
+        "\n".join(
+            [
+                "def add(left, right):",
+                "    return left + right",
+            ]
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_graph_enrich_config_ops_dry_run_is_non_mutating_generated_project(tmp_path):
@@ -370,6 +445,78 @@ def test_graph_enrich_config_aliases_update_rule_and_imports_module_edge(tmp_pat
     assert rules["imports_module_from_top_level_from_import"]["edge"] == "imports"
     assert rules["weak_call_resolver.bare_builtin_names"]["action"] == "ignore"
     assert rules["weak_call_resolver.bare_builtin_names"]["downgrade_to"] == ""
+
+
+def test_graph_enrich_config_predicate_rule_orchestrates_generated_add_case(tmp_path):
+    project = tmp_path / "generated-add-case"
+    _write_generated_add_case_project(project)
+
+    result = run_graph_enrich_config_ai_output_pipeline(
+        raw_output=json.dumps(_predicate_rule_payload()),
+        mode="dry_run",
+        project_root=project,
+    )
+
+    assert result["ok"] is True
+    rule = result["preview"]["graph_enrich_config_ops"]["rules"][
+        "python.container_attribute_add_not_cross_module_call"
+    ]
+    assert rule["when"]["all"][0] == {"predicate": "language_is", "value": "python"}
+    assert rule["when"]["all"][2] == {
+        "predicate": "receiver_kind_in",
+        "values": ["builtin_collection", "local_collection"],
+    }
+
+    container_decision = evaluate_graph_enrich_config_rules(
+        result["preview"]["graph_enrich_config_ops"]["rules"],
+        {
+            "edge": "calls",
+            "source_evidence": "weak_call_resolver_ambiguous_add",
+            "language": "python",
+            "call_syntax": "attribute_call",
+            "receiver_kind": "builtin_collection",
+            "raw_target": "add",
+            "source_path": "service.py",
+        },
+    )
+    assert container_decision["matched"] is True
+    assert container_decision["rule_id"] == "python.container_attribute_add_not_cross_module_call"
+    assert container_decision["action"] == "ignore"
+
+    direct_import_decision = evaluate_graph_enrich_config_rules(
+        result["preview"]["graph_enrich_config_ops"]["rules"],
+        {
+            "edge": "calls",
+            "source_evidence": "weak_call_resolver_ambiguous_add",
+            "language": "python",
+            "call_syntax": "name_call",
+            "receiver_kind": "",
+            "raw_target": "add",
+            "source_path": "service.py",
+        },
+    )
+    assert direct_import_decision["matched"] is False
+    assert direct_import_decision["action"] == ""
+
+
+def test_graph_enrich_config_rejects_unknown_rule_predicate(tmp_path):
+    project = tmp_path / "generated-project"
+    project.mkdir()
+    payload = _predicate_rule_payload()
+    payload["operations"][0]["when"]["all"].append(
+        {"predicate": "execute_python", "value": "print('nope')"}
+    )
+
+    result = run_graph_enrich_config_ai_output_pipeline(
+        raw_output=json.dumps(payload),
+        mode="dry_run",
+        project_root=project,
+    )
+
+    assert result["ok"] is False
+    operation = result["gate"]["operations"][0]
+    assert operation["status"] == "rejected"
+    assert "predicate_unsupported" in operation["errors"]
 
 
 def test_graph_enrich_config_ops_precheck_marks_malformed_output_repairable(tmp_path):

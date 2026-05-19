@@ -140,6 +140,12 @@ class GraphStructureOpsConfig:
 
 
 @dataclass
+class GraphEnrichConfigOpsConfig:
+    schema_version: str = "graph_enrich_config_ops.v1"
+    rules: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+
+@dataclass
 class SemanticAnalyzerConfig:
     version: str
     analyzer: str
@@ -162,6 +168,7 @@ class SemanticAnalyzerConfig:
     automation_policy: SemanticAutomationPolicy = field(default_factory=SemanticAutomationPolicy)
     job_profiles: dict[str, SemanticJobProfile] = field(default_factory=dict)
     graph_structure_ops: GraphStructureOpsConfig = field(default_factory=GraphStructureOpsConfig)
+    graph_enrich_config_ops: GraphEnrichConfigOpsConfig = field(default_factory=GraphEnrichConfigOpsConfig)
     output_schema: dict[str, Any] = field(default_factory=dict)
     prompt_template: str = ""
     source_path: str = ""
@@ -326,6 +333,9 @@ class SemanticAnalyzerConfig:
             raise SemanticConfigValidationError("'chain_role' cannot be empty")
         job_profiles = _parse_job_profiles(data.get("job_profiles") or data.get("job_profile") or {})
         graph_structure_ops = _parse_graph_structure_ops_config(data.get("graph_structure_ops"))
+        graph_enrich_config_ops = _parse_graph_enrich_config_ops_config(
+            data.get("graph_enrich_config_ops")
+        )
         return cls(
             version=str(data.get("version") or ""),
             analyzer=analyzer,
@@ -345,6 +355,7 @@ class SemanticAnalyzerConfig:
             automation_policy=automation_policy,
             job_profiles=job_profiles,
             graph_structure_ops=graph_structure_ops,
+            graph_enrich_config_ops=graph_enrich_config_ops,
             output_schema=data.get("output_schema") if isinstance(data.get("output_schema"), dict) else {},
             prompt_template=prompt_template,
             source_path=source_path,
@@ -386,7 +397,10 @@ class SemanticAnalyzerConfig:
             "execution_policy": asdict(self.execution_policy),
             "automation_policy": asdict(self.automation_policy),
             "graph_structure_ops": asdict(self.graph_structure_ops),
-            "graph_enrich_config_ops": _graph_enrich_config_ops_instruction_payload(),
+            "graph_enrich_config_ops": {
+                **asdict(self.graph_enrich_config_ops),
+                **_graph_enrich_config_ops_instruction_payload(),
+            },
             "output_schema": self.output_schema,
             "prompt_template": self.prompt_template,
         }
@@ -413,6 +427,7 @@ class SemanticAnalyzerConfig:
                 for name, profile in sorted(self.job_profiles.items())
             },
             "graph_structure_ops": asdict(self.graph_structure_ops),
+            "graph_enrich_config_ops": asdict(self.graph_enrich_config_ops),
         }
 
 
@@ -605,6 +620,28 @@ def _parse_graph_structure_ops_config(raw: Any) -> GraphStructureOpsConfig:
     )
 
 
+def _parse_graph_enrich_config_ops_config(raw: Any) -> GraphEnrichConfigOpsConfig:
+    if raw in (None, ""):
+        return GraphEnrichConfigOpsConfig()
+    if not isinstance(raw, dict):
+        raise SemanticConfigValidationError("'graph_enrich_config_ops' must be a mapping")
+    schema_version = str(raw.get("schema_version") or "graph_enrich_config_ops.v1").strip()
+    rules_raw = raw.get("rules") or {}
+    if not isinstance(rules_raw, dict):
+        raise SemanticConfigValidationError("'graph_enrich_config_ops.rules' must be a mapping")
+    rules: dict[str, dict[str, Any]] = {}
+    for rule_id, rule in rules_raw.items():
+        normalized_id = str(rule_id or "").strip()
+        if not normalized_id:
+            continue
+        if not isinstance(rule, dict):
+            raise SemanticConfigValidationError(
+                "graph_enrich_config_ops.rules.* must be a mapping"
+            )
+        rules[normalized_id] = dict(rule)
+    return GraphEnrichConfigOpsConfig(schema_version=schema_version, rules=rules)
+
+
 def _normalize_graph_structure_bridge_policy(
     raw: Any,
     *,
@@ -704,6 +741,7 @@ def _default_config_dict() -> dict[str, Any]:
             for name, profile in _default_job_profiles().items()
         },
         "graph_structure_ops": asdict(_parse_graph_structure_ops_config(None)),
+        "graph_enrich_config_ops": asdict(GraphEnrichConfigOpsConfig()),
         "output_schema": {
             "required": [
                 "feature_name",
