@@ -330,6 +330,93 @@ def _path_list(raw: Any) -> list[str]:
     return out
 
 
+NODE_SEMANTIC_SELF_CHECK_RULES = [
+    "required_fields_present",
+    "source_payload_only",
+    "no_project_mutation",
+    "review_feedback_accounted_for",
+    "graph_suggestions_contract_checked",
+]
+
+
+def _safe_int(raw: Any, default: int = 0) -> int:
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _node_semantic_self_check(
+    ai_response: dict[str, Any],
+    *,
+    required: bool,
+) -> dict[str, Any]:
+    if not required:
+        return {
+            "required": False,
+            "valid": True,
+            "status": "not_required",
+            "precheck_status": "not_required",
+            "checked_rules": [],
+            "checked_rules_count": 0,
+            "repair_attempts": 0,
+            "max_repair_attempts": 0,
+            "known_risks": [],
+            "source": "system",
+        }
+    raw = ai_response.get("self_check") or ai_response.get("precheck")
+    if not isinstance(raw, dict):
+        return {
+            "required": True,
+            "valid": False,
+            "status": "missing",
+            "precheck_status": "missing",
+            "checked_rules": [],
+            "checked_rules_count": 0,
+            "repair_attempts": 0,
+            "max_repair_attempts": 1,
+            "known_risks": ["missing_ai_self_check"],
+            "source": "missing_ai_self_check",
+        }
+
+    checked_rules = _path_list(
+        raw.get("checked_rules")
+        or raw.get("rules_checked")
+        or raw.get("rules")
+    )
+    checked_rules_count = _safe_int(raw.get("checked_rules_count"), len(checked_rules))
+    status = str(raw.get("status") or raw.get("precheck_status") or "").strip().lower()
+    valid_raw = raw.get("valid")
+    valid = bool(valid_raw is True or status in {"passed", "pass", "ok", "valid"})
+    if not status:
+        status = "passed" if valid else "failed"
+    known_risks = _path_list(raw.get("known_risks") or raw.get("risks"))
+    missing_rules = [
+        rule for rule in NODE_SEMANTIC_SELF_CHECK_RULES
+        if checked_rules and rule not in checked_rules
+    ]
+    if not checked_rules and checked_rules_count <= 0:
+        known_risks.append("missing_self_check_rules")
+        valid = False
+        status = "failed"
+    if missing_rules:
+        known_risks.extend(f"missing_self_check_rule:{rule}" for rule in missing_rules)
+        valid = False
+        status = "failed"
+    return {
+        "required": True,
+        "valid": valid,
+        "status": status,
+        "precheck_status": str(raw.get("precheck_status") or status),
+        "checked_rules": checked_rules,
+        "checked_rules_count": checked_rules_count,
+        "repair_attempts": _safe_int(raw.get("repair_attempts"), 0),
+        "max_repair_attempts": _safe_int(raw.get("max_repair_attempts"), 1),
+        "known_risks": known_risks,
+        "source": str(raw.get("source") or "ai_self_check"),
+    }
+
+
 def _graph_nodes(graph_json: dict[str, Any]) -> list[dict[str, Any]]:
     deps = graph_json.get("deps_graph") if isinstance(graph_json, dict) else {}
     nodes = deps.get("nodes") if isinstance(deps, dict) else None
@@ -854,6 +941,10 @@ def _heuristic_semantic_entry(
                 f"{feature.get('title') or feature.get('node_id')} is a "
                 f"{feature.get('layer') or 'graph'} structural governance node."
             )
+    self_check = _node_semantic_self_check(
+        ai_response,
+        required=bool(ai_response) and enrichment_status == "ai_complete",
+    )
     return {
         "node_id": feature.get("node_id") or "",
         "source_title": feature.get("title") or "",
@@ -886,6 +977,8 @@ def _heuristic_semantic_entry(
         "dead_code_candidates": ai_response.get("dead_code_candidates") or [],
         "quality_flags": _quality_flags(feature, feedback),
         "health_issues": ai_response.get("health_issues") or [],
+        "self_check": self_check,
+        "semantic_ai_self_check": self_check,
         "applied_feedback_ids": applied,
         "rejected_feedback_ids": rejected,
         "unresolved_feedback_ids": unresolved,
@@ -1021,6 +1114,9 @@ def _extract_batch_ai_responses(
 
     route = response.get("_ai_route")
     elapsed = response.get("_ai_elapsed_ms")
+    top_level_self_check = (
+        response.get("self_check") if isinstance(response.get("self_check"), dict) else None
+    )
     out: dict[str, dict[str, Any]] = {}
     for item in raw_items:
         if not isinstance(item, dict):
@@ -1033,6 +1129,8 @@ def _extract_batch_ai_responses(
             payload["_ai_route"] = route
         if elapsed is not None and payload.get("_ai_elapsed_ms") is None:
             payload["_ai_elapsed_ms"] = elapsed
+        if top_level_self_check and not isinstance(payload.get("self_check"), dict):
+            payload["self_check"] = dict(top_level_self_check)
         out[node_id] = payload
     for node_id in node_ids:
         out.setdefault(node_id, {"_ai_error": "semantic AI batch omitted node_id"})

@@ -262,9 +262,18 @@ def build_semantic_ai_call(
                 "Only use supported operations listed in the supplied payload. "
             )
         else:
+            self_check_instruction = (
+                "Before final output, self-precheck the JSON contract. Include "
+                "self_check with required=true, valid=true or false, status, "
+                "checked_rules, checked_rules_count, repair_attempts, "
+                "max_repair_attempts, and known_risks. Required rules are "
+                "required_fields_present, source_payload_only, no_project_mutation, "
+                "review_feedback_accounted_for, and graph_suggestions_contract_checked. "
+                "For batch mode, include self_check on every features item. "
+            )
             output_instruction = (
                 "Return exactly one JSON object matching the requested semantic fields. "
-                f"{batch_hint}"
+                f"{batch_hint}{self_check_instruction}"
             )
         prompt = (
             f"{prompt_template}\n\n"

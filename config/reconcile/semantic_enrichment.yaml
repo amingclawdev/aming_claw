@@ -265,6 +265,7 @@ output_schema:
     - dependency_patch_suggestions
     - config_coverage_review
     - applied_feedback_ids
+    - self_check
   optional:
     - merge_suggestions
     - split_suggestions

@@ -262,6 +262,88 @@ def test_semantic_enrichment_uses_feedback_on_retry(conn, tmp_path):
     assert notes["semantic_feedback"]["feedback_count"] == 1
 
 
+def test_semantic_enrichment_persists_node_ai_self_check(conn, tmp_path):
+    project = tmp_path / "project"
+    _create_snapshot(conn, project)
+
+    def fake_ai(stage: str, payload: dict) -> dict:
+        return {
+            "feature_name": "Backlog Runtime State Flow",
+            "semantic_summary": "Owns backlog task state transitions.",
+            "intent": "stateful backlog runtime",
+            "domain_label": "state",
+            "applied_feedback_ids": [],
+            "doc_coverage_review": {"bound": True, "action": "keep"},
+            "test_coverage_review": {"bound": True, "action": "keep"},
+            "config_coverage_review": {"bound": True, "action": "keep"},
+            "self_check": {
+                "required": True,
+                "valid": True,
+                "status": "passed",
+                "checked_rules": [
+                    "required_fields_present",
+                    "source_payload_only",
+                    "no_project_mutation",
+                    "review_feedback_accounted_for",
+                    "graph_suggestions_contract_checked",
+                ],
+                "checked_rules_count": 5,
+                "repair_attempts": 0,
+                "max_repair_attempts": 1,
+                "known_risks": [],
+            },
+        }
+
+    result = run_semantic_enrichment(
+        conn,
+        PID,
+        "full-semantic-test",
+        project,
+        use_ai=True,
+        ai_call=fake_ai,
+        created_by="test",
+        trace_dir=project / "semantic-trace",
+    )
+
+    feature = result["semantic_index"]["features"][0]
+    assert feature["self_check"]["required"] is True
+    assert feature["self_check"]["valid"] is True
+    assert feature["self_check"]["checked_rules_count"] == 5
+    output = json.loads((project / "semantic-trace" / "feature-outputs" / "L7.1.json").read_text())
+    assert output["semantic_entry"]["semantic_ai_self_check"]["status"] == "passed"
+
+
+def test_semantic_enrichment_marks_missing_node_ai_self_check(conn, tmp_path):
+    project = tmp_path / "project"
+    _create_snapshot(conn, project)
+
+    def fake_ai(stage: str, payload: dict) -> dict:
+        return {
+            "feature_name": "Backlog Runtime State Flow",
+            "semantic_summary": "Owns backlog task state transitions.",
+            "intent": "stateful backlog runtime",
+            "domain_label": "state",
+            "applied_feedback_ids": [],
+        }
+
+    result = run_semantic_enrichment(
+        conn,
+        PID,
+        "full-semantic-test",
+        project,
+        use_ai=True,
+        ai_call=fake_ai,
+        created_by="test",
+    )
+
+    feature = result["semantic_index"]["features"][0]
+    assert feature["enrichment_status"] == "ai_complete"
+    assert feature["self_check"]["required"] is True
+    assert feature["self_check"]["valid"] is False
+    assert feature["self_check"]["status"] == "missing"
+    assert feature["self_check"]["known_risks"] == ["missing_ai_self_check"]
+
+
 def test_semantic_enrichment_is_snapshot_kind_agnostic(conn, tmp_path):
     project = tmp_path / "project"
     _create_snapshot(conn, project, snapshot_kind="scope")
@@ -502,6 +584,22 @@ def test_semantic_enrichment_can_batch_ai_features(conn, tmp_path):
                 }
                 for item in payload["features"]
             ],
+            "self_check": {
+                "required": True,
+                "valid": True,
+                "status": "passed",
+                "checked_rules": [
+                    "required_fields_present",
+                    "source_payload_only",
+                    "no_project_mutation",
+                    "review_feedback_accounted_for",
+                    "graph_suggestions_contract_checked",
+                ],
+                "checked_rules_count": 5,
+                "repair_attempts": 0,
+                "max_repair_attempts": 1,
+                "known_risks": [],
+            },
             "_ai_route": {"provider": "test", "model": "batch-model"},
             "_ai_elapsed_ms": 42,
         }
@@ -541,6 +639,8 @@ def test_semantic_enrichment_can_batch_ai_features(conn, tmp_path):
     assert by_id["L7.1"]["feature_name"] == "Batch L7.1"
     assert by_id["L7.2"]["feature_name"] == "Batch L7.2"
     assert by_id["L7.1"]["semantic_ai_route"]["model"] == "batch-model"
+    assert by_id["L7.1"]["self_check"]["status"] == "passed"
+    assert by_id["L7.2"]["self_check"]["checked_rules_count"] == 5
     assert Path(result["summary"]["semantic_graph_state"]["state_path"]).exists()
     semantic_graph = json.loads(Path(result["summary"]["semantic_graph_state"]["semantic_graph_path"]).read_text())
     graph_nodes = {node["id"]: node for node in semantic_graph["deps_graph"]["nodes"]}

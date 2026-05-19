@@ -753,6 +753,7 @@ def _default_config_dict() -> dict[str, Any]:
                 "config_coverage_review",
                 "dependency_patch_suggestions",
                 "applied_feedback_ids",
+                "self_check",
             ]
         },
         "prompt_template": "You are the reconcile semantic analyzer. Return structured JSON only.",
