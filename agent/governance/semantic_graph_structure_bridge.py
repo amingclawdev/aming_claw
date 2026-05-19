@@ -26,6 +26,8 @@ from .graph_enrich_config_ops import (
     CONFIG_EDGE_ALLOWLIST,
     GRAPH_ENRICH_CONFIG_SELF_PRECHECK_RULES,
     CONFIG_RULE_OPS,
+    POLICY_OP_ACTIONS as CONFIG_POLICY_OP_ACTIONS,
+    POLICY_OP_SOURCE_EVIDENCE as CONFIG_POLICY_OP_SOURCE_EVIDENCE,
     SCHEMA_VERSION as CONFIG_SCHEMA_VERSION,
     SUPPORTED_ACTIONS as CONFIG_SUPPORTED_ACTIONS,
     SUPPORTED_OPS as CONFIG_SUPPORTED_OPS,
@@ -483,11 +485,14 @@ def semantic_event_to_graph_enrich_config_output(
                 seen_rule_ids.add(rule_id)
             operations.append(operation)
         else:
-            skipped.append({
+            skip = {
                 "index": index,
                 "reason": converted.get("reason") or "unsupported_config_suggestion",
                 "suggestion": converted.get("suggestion", suggestion),
-            })
+            }
+            if isinstance(converted.get("errors"), list):
+                skip["errors"] = list(converted["errors"])
+            skipped.append(skip)
     return {
         "schema_version": CONFIG_SCHEMA_VERSION,
         "source": {
@@ -1127,6 +1132,13 @@ def _convert_config_suggestion(
         return {"reason": "action_unsupported", "suggestion": raw}
     if action == "downgrade" and downgrade_to not in CONFIG_DOWNGRADE_TARGETS and not is_rule_op:
         return {"reason": "downgrade_to_unsupported", "suggestion": raw}
+    policy_errors = _config_policy_errors(op, source_evidence, action)
+    if policy_errors:
+        return {
+            "reason": policy_errors[0],
+            "errors": policy_errors,
+            "suggestion": raw,
+        }
     operation = {
         "op": op,
         "rule_id": str(raw.get("rule_id") or _hint_id(semantic_event, index, raw)).strip(),
@@ -1143,6 +1155,17 @@ def _convert_config_suggestion(
     if downgrade_to:
         operation["downgrade_to"] = downgrade_to
     return {"operation": operation}
+
+
+def _config_policy_errors(op: str, source_evidence: str, action: str) -> list[str]:
+    if op != "upsert_edge_evidence_policy":
+        return []
+    errors: list[str] = []
+    if source_evidence not in CONFIG_POLICY_OP_SOURCE_EVIDENCE:
+        errors.append("source_evidence_unsupported_for_policy")
+    if action not in CONFIG_POLICY_OP_ACTIONS:
+        errors.append("action_unsupported_for_policy")
+    return errors
 
 
 def _normalize_direct_operation(

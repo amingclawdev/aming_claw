@@ -228,6 +228,14 @@ job_profiles:
         }
       }
 
+      Policy op constraints:
+      - Use upsert_edge_evidence_policy only for source_evidence="import_only".
+      - For upsert_edge_evidence_policy, action must be one of
+        "allow", "downgrade", or "reject".
+      - For function_calls, test_import_fanin, weak-call resolver evidence, or
+        require_direct_symbol_import behavior, use rule operations such as
+        tighten_rule, update_rule, promote_rule, review_rule, or downgrade_rule.
+
       Before returning JSON, run your own self-precheck against
       payload.output_contract.self_precheck.checked_rules_required. Prefer
       canonical edge names from payload.output_contract.supported_edges; when

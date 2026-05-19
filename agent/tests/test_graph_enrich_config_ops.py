@@ -9,6 +9,7 @@ from agent.governance import server
 from agent.governance.db import _ensure_schema
 from agent.governance.graph_enrich_config_ops import (
     SCHEMA_VERSION,
+    graph_enrich_config_ops_output_contract,
     run_graph_enrich_config_ai_output_pipeline,
 )
 from agent.governance.reconcile_semantic_config import (
@@ -86,6 +87,15 @@ def _payload() -> dict:
             "known_risks": [],
         },
     }
+
+
+def test_graph_enrich_config_contract_exposes_policy_op_constraints():
+    contract = graph_enrich_config_ops_output_contract()
+
+    constraints = contract["operation_constraints"]["upsert_edge_evidence_policy"]
+    assert constraints["source_evidence"] == ["import_only"]
+    assert constraints["actions"] == ["allow", "downgrade", "reject"]
+    assert "function_calls" in constraints["note"]
 
 
 def _rule_payload() -> dict:

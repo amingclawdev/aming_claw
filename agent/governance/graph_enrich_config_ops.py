@@ -75,6 +75,8 @@ SUPPORTED_ACTIONS = {
     "reject",
     "require_direct_symbol_import",
 }
+POLICY_OP_SOURCE_EVIDENCE = {"import_only"}
+POLICY_OP_ACTIONS = {"allow", "downgrade", "reject"}
 GRAPH_ENRICH_CONFIG_SELF_PRECHECK_RULES = [
     "schema_version",
     "semantic_bridge_normalized",
@@ -116,6 +118,16 @@ def graph_enrich_config_ops_output_contract() -> dict[str, Any]:
             "source_evidence": "Rule ops accept non-empty custom evidence tokens; policy ops remain strict.",
             "action": "Rule ops accept non-empty custom actions for observer-reviewed config proposals.",
             "downgrade_to": "Rule ops accept non-empty custom downgrade targets.",
+        },
+        "operation_constraints": {
+            "upsert_edge_evidence_policy": {
+                "source_evidence": sorted(POLICY_OP_SOURCE_EVIDENCE),
+                "actions": sorted(POLICY_OP_ACTIONS),
+                "note": (
+                    "Use config rule ops such as tighten_rule/update_rule/promote_rule for "
+                    "function_calls, test_import_fanin, or require_direct_symbol_import cases."
+                ),
+            }
         },
         "required_top_level_fields": ["schema_version", "source", "operations", "self_check"],
         "required_operation_fields": {
@@ -358,9 +370,9 @@ def _validate_operation(
         errors.append("downgrade_to_unsupported")
     elif action == "downgrade" and downgrade_to not in CONFIG_DOWNGRADE_TARGETS and is_rule_op:
         normalizations.append("custom_downgrade_target")
-    if is_policy_op and action not in {"allow", "downgrade", "reject"}:
+    if is_policy_op and action not in POLICY_OP_ACTIONS:
         errors.append("action_unsupported_for_policy")
-    if is_policy_op and source_evidence != "import_only":
+    if is_policy_op and source_evidence not in POLICY_OP_SOURCE_EVIDENCE:
         errors.append("source_evidence_unsupported_for_policy")
     confidence = op.get("confidence")
     if confidence is not None:

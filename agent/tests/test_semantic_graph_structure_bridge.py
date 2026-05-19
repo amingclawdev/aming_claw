@@ -880,6 +880,63 @@ def test_bridge_converts_semantic_graph_enrich_config_suggestion_to_dry_run_job(
     assert not (project / PROJECT_OVERRIDE_PATH).exists()
 
 
+def test_bridge_skips_graph_enrich_policy_ops_that_gate_would_reject(
+    conn,
+    tmp_path,
+):
+    project = tmp_path / "generated-project"
+    _write_generated_project(project)
+    snapshot_id = _create_snapshot(conn, project, "semantic-bridge-config-policy-skip")
+    service_id = _node_id_for_primary(snapshot_id, "agent/service.py")
+    event = _semantic_event(
+        conn,
+        snapshot_id,
+        service_id,
+        {
+            "graph_enrich_config_suggestions": [
+                {
+                    "op": "upsert_edge_evidence_policy",
+                    "rule_id": "semantic_bridge.calls.require_concrete_evidence",
+                    "edge": "calls",
+                    "source_evidence": "function_calls",
+                    "action": "require_direct_symbol_import",
+                    "downgrade_to": "imports",
+                    "confidence": 0.55,
+                    "evidence": {
+                        "reason": "Policy ops are strict; this should be proposed as a rule op.",
+                    },
+                }
+            ],
+        },
+        event_id="sem-bridge-config-policy-skip",
+    )
+
+    result = bridge.bridge_semantic_events_to_graph_enrich_config_jobs(
+        conn,
+        PID,
+        snapshot_id,
+        event_ids=[event["event_id"]],
+        actor="test",
+        project_root=str(project),
+    )
+    conn.commit()
+
+    assert result["ok"] is True
+    assert result["queued_count"] == 0
+    assert result["audit_event_count"] == 1
+    assert result["skipped_count"] == 1
+    skip = result["skipped"][0]
+    assert skip["reason"] == "source_evidence_unsupported_for_policy"
+    assert skip["errors"] == [
+        "source_evidence_unsupported_for_policy",
+        "action_unsupported_for_policy",
+    ]
+    audit = result["events"][0]
+    assert audit["event_type"] == "graph_enrich_config_completed"
+    assert audit["payload"]["result"]["status"] == "skipped"
+    assert audit["payload"]["result"]["converted_count"] == 0
+
+
 def test_bridge_converts_semantic_rule_config_suggestions_to_dry_run_job(
     conn,
     tmp_path,
