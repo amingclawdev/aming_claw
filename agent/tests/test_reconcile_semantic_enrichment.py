@@ -11,6 +11,8 @@ from agent.governance import graph_snapshot_store as store
 from agent.governance import reconcile_feedback
 from agent.governance.reconcile_semantic_enrichment import (
     _batch_key,
+    _ensure_semantic_state_schema,
+    _persist_semantic_state_to_db,
     _semantic_batch_memory_summary,
     _upsert_semantic_job,
     append_review_feedback,
@@ -114,6 +116,95 @@ def test_running_claimed_semantic_job_attempt_is_not_double_counted():
     assert job["attempt_count"] == 1
     assert job["worker_id"] == "semantic-worker-1"
     assert job["claim_id"] == "claim-1"
+
+
+def test_persist_semantic_jobs_preserves_claimed_attempt_from_stale_state(conn):
+    _ensure_semantic_state_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO graph_semantic_jobs
+          (project_id, snapshot_id, node_id, status, attempt_count,
+           worker_id, claim_id, claimed_at, lease_expires_at, claimed_by,
+           updated_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            PID,
+            "scope-demo",
+            "L7.1",
+            "running",
+            1,
+            "semantic_worker_inproc",
+            "claim-1",
+            "2026-05-18T00:00:00Z",
+            "2026-05-18T00:10:00Z",
+            "semantic_worker_inproc",
+            "2026-05-18T00:00:00Z",
+            "2026-05-18T00:00:00Z",
+        ),
+    )
+
+    _persist_semantic_state_to_db(
+        conn,
+        PID,
+        "scope-demo",
+        {
+            "semantic_jobs": {
+                "L7.1": {
+                    "node_id": "L7.1",
+                    "status": "running",
+                    "attempt_count": 2,
+                    "updated_at": "2026-05-18T00:01:00Z",
+                }
+            }
+        },
+    )
+
+    row = conn.execute(
+        """
+        SELECT status, attempt_count, worker_id, claim_id
+        FROM graph_semantic_jobs
+        WHERE project_id = ? AND snapshot_id = ? AND node_id = ?
+        """,
+        (PID, "scope-demo", "L7.1"),
+    ).fetchone()
+    assert dict(row) == {
+        "status": "running",
+        "attempt_count": 1,
+        "worker_id": "semantic_worker_inproc",
+        "claim_id": "claim-1",
+    }
+
+    _persist_semantic_state_to_db(
+        conn,
+        PID,
+        "scope-demo",
+        {
+            "semantic_jobs": {
+                "L7.1": {
+                    "node_id": "L7.1",
+                    "status": "ai_complete",
+                    "attempt_count": 2,
+                    "updated_at": "2026-05-18T00:02:00Z",
+                }
+            }
+        },
+    )
+
+    row = conn.execute(
+        """
+        SELECT status, attempt_count, worker_id, claim_id
+        FROM graph_semantic_jobs
+        WHERE project_id = ? AND snapshot_id = ? AND node_id = ?
+        """,
+        (PID, "scope-demo", "L7.1"),
+    ).fetchone()
+    assert dict(row) == {
+        "status": "ai_complete",
+        "attempt_count": 1,
+        "worker_id": "",
+        "claim_id": "",
+    }
 
 
 @pytest.fixture()

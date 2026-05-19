@@ -1594,7 +1594,8 @@ def _persist_semantic_state_to_db(
             continue
         existing_job = conn.execute(
             """
-            SELECT status, updated_at
+            SELECT status, updated_at, attempt_count, worker_id, claim_id,
+                   claimed_at, lease_expires_at, claimed_by
             FROM graph_semantic_jobs
             WHERE project_id = ? AND snapshot_id = ? AND node_id = ?
             """,
@@ -1602,6 +1603,30 @@ def _persist_semantic_state_to_db(
         ).fetchone()
         if _semantic_job_existing_terminal_wins(existing_job, raw_job):
             continue
+        raw_status = str(raw_job.get("status") or "pending_ai")
+        raw_claim_id = str(raw_job.get("claim_id") or "")
+        existing_claim_id = str(existing_job["claim_id"] or "") if existing_job else ""
+        existing_status = str(existing_job["status"] or "") if existing_job else ""
+        preserve_existing_claim_attempt = (
+            bool(existing_claim_id)
+            and existing_status == "running"
+            and not raw_claim_id
+            and raw_status in {"running", "ai_complete", "ai_failed"}
+        )
+        attempt_count = int(raw_job.get("attempt_count") or 0)
+        worker_id = str(raw_job.get("worker_id") or "")
+        claim_id = raw_claim_id
+        claimed_at = str(raw_job.get("claimed_at") or "")
+        lease_expires_at = str(raw_job.get("lease_expires_at") or "")
+        claimed_by = str(raw_job.get("claimed_by") or "")
+        if preserve_existing_claim_attempt:
+            attempt_count = int(existing_job["attempt_count"] or 0)
+            if raw_status == "running":
+                worker_id = str(existing_job["worker_id"] or "")
+                claim_id = existing_claim_id
+                claimed_at = str(existing_job["claimed_at"] or "")
+                lease_expires_at = str(existing_job["lease_expires_at"] or "")
+                claimed_by = str(existing_job["claimed_by"] or "")
         conn.execute(
             """
             INSERT INTO graph_semantic_jobs
@@ -1632,19 +1657,19 @@ def _persist_semantic_state_to_db(
                 project_id,
                 snapshot_id,
                 str(node_id),
-                str(raw_job.get("status") or "pending_ai"),
+                raw_status,
                 str(raw_job.get("feature_hash") or ""),
                 _json(raw_job.get("file_hashes") or {}),
                 str(raw_job.get("branch_ref") or state.get("branch_ref") or ""),
                 str(raw_job.get("operation_type") or "ai_enrich"),
                 int(raw_job.get("feedback_round") or 0),
                 raw_job.get("batch_index"),
-                int(raw_job.get("attempt_count") or 0),
-                str(raw_job.get("worker_id") or ""),
-                str(raw_job.get("claim_id") or ""),
-                str(raw_job.get("claimed_at") or ""),
-                str(raw_job.get("lease_expires_at") or ""),
-                str(raw_job.get("claimed_by") or ""),
+                attempt_count,
+                worker_id,
+                claim_id,
+                claimed_at,
+                lease_expires_at,
+                claimed_by,
                 str(raw_job.get("last_error") or ""),
                 str(raw_job.get("updated_at") or state.get("updated_at") or ""),
                 str(raw_job.get("created_at") or raw_job.get("updated_at") or state.get("updated_at") or ""),
