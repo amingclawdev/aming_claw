@@ -105,6 +105,11 @@ def test_graph_enrich_config_contract_exposes_policy_op_constraints():
     assert constraints["source_evidence"] == ["import_only"]
     assert constraints["actions"] == ["allow", "downgrade", "reject"]
     assert "function_calls" in constraints["note"]
+    assert "register_function" in contract["supported_upstream_proposal_operations"]
+    assert (
+        contract["operation_constraints"]["upstream_proposal_ops"]["recommended_action"]
+        == "propose_upstream_pr"
+    )
     assert "language_is" in contract["supported_predicates"]
     assert "receiver_kind_in" in contract["supported_predicates"]
     must_not_mark_valid = contract["self_precheck"]["must_not_mark_valid_when"]
@@ -382,7 +387,16 @@ def test_graph_enrich_config_rejects_register_function_payload_without_mutation(
     assert result["ok"] is False
     assert result["accepted"] is False
     assert result["mutated"] is False
-    assert result["gate"]["operations"][0]["errors"] == ["unsupported_config_op"]
+    assert result["recommended_action"] == "propose_upstream_pr"
+    assert result["upstream_proposal_count"] == 1
+    assert result["gate"]["upstream_proposal_count"] == 1
+    assert result["gate"]["recommended_action"] == "propose_upstream_pr"
+    operation = result["gate"]["operations"][0]
+    assert operation["errors"] == ["unsupported_config_op"]
+    assert operation["upstream_proposal"]["op"] == "register_function"
+    assert operation["upstream_proposal"]["function_name"] == "resolve_project_specific_calls"
+    assert operation["upstream_proposal"]["proposal_scope"] == "upstream"
+    assert operation["upstream_proposal"]["requires_observer_review"] is True
     assert not scenario.override_path.exists()
     assert core_semantic_config_texts(repo_root) == core_before
 

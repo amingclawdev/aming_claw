@@ -1463,16 +1463,35 @@ def test_bridge_audits_register_function_proposal_without_project_config_mutatio
     assert result["queued_count"] == 0
     assert result["audit_event_count"] == 1
     assert result["skipped_count"] == 1
+    assert result["upstream_proposal_count"] == 1
+    assert result["upstream_proposals"][0]["op"] == "register_function"
     assert not scenario.override_path.exists()
     skip = result["skipped"][0]
-    assert skip["reason"] == "unsupported_config_op"
+    assert skip["reason"] == "upstream_function_proposal"
     assert skip["suggestion"]["op"] == "register_function"
     assert skip["suggestion"]["proposal_scope"] == "upstream"
+    assert skip["upstream_proposal"]["function_name"] == "resolve_project_specific_calls"
+    assert skip["upstream_proposal"]["recommended_action"] == "propose_upstream_pr"
     audit = result["events"][0]
     assert audit["event_type"] == "graph_enrich_config_completed"
+    assert audit["status"] == graph_events.EVENT_STATUS_PROPOSED
     assert audit["payload"]["result"]["status"] == "skipped"
     assert audit["payload"]["result"]["accepted"] is False
     assert audit["payload"]["result"]["mutated"] is False
+    assert audit["payload"]["result"]["upstream_proposal_count"] == 1
+    assert audit["payload"]["result"]["upstream_proposals"][0]["op"] == "register_function"
+    assert audit["payload"]["result"]["recommended_action"] == "propose_upstream_pr"
+    assert audit["evidence"]["upstream_proposal_count"] == 1
+    assert audit["evidence"]["requires_observer_approval"] is True
+
+    queue = server.handle_graph_governance_operations_queue(_get_ctx(snapshot_id))
+    config_ops = [
+        op for op in queue["operations"]
+        if op["operation_type"] == "graph_enrich_config"
+    ]
+    assert len(config_ops) == 1
+    assert config_ops[0]["status"] == "review_required"
+    assert "observer_takeover" in config_ops[0]["supported_actions"]
 
 
 def test_semantic_enrichment_persists_graph_enrich_config_suggestions_for_bridge(

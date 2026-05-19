@@ -32,6 +32,14 @@ SUPPORTED_OPS = {
     *CONFIG_RULE_OPS,
     "upsert_edge_evidence_policy",
 }
+UPSTREAM_PROPOSAL_OPS = {
+    "register_adapter",
+    "register_enrich_function",
+    "register_function",
+    "register_predicate",
+    "register_rule_predicate",
+}
+UPSTREAM_PROPOSAL_RECOMMENDED_ACTION = "propose_upstream_pr"
 CONFIG_EDGE_ALLOWLIST = set(EDGE_ALLOWLIST) | {
     "consumes_event",
     "creates_task",
@@ -122,6 +130,7 @@ def graph_enrich_config_ops_output_contract() -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION,
         "return_exactly_one_json_object": True,
         "supported_operations": sorted(SUPPORTED_OPS),
+        "supported_upstream_proposal_operations": sorted(UPSTREAM_PROPOSAL_OPS),
         "supported_edges": sorted(CONFIG_EDGE_ALLOWLIST),
         "supported_downgrade_targets": sorted(CONFIG_DOWNGRADE_TARGETS),
         "supported_source_evidence": sorted(SUPPORTED_SOURCE_EVIDENCE),
@@ -137,6 +146,15 @@ def graph_enrich_config_ops_output_contract() -> dict[str, Any]:
             "downgrade_to": "Rule ops accept non-empty custom downgrade targets.",
         },
         "operation_constraints": {
+            "upstream_proposal_ops": {
+                "operations": sorted(UPSTREAM_PROPOSAL_OPS),
+                "policy": (
+                    "Executable extension proposals are not project-local config. "
+                    "Emit them as upstream proposals for observer review instead of "
+                    "writing generated code into the governed project."
+                ),
+                "recommended_action": UPSTREAM_PROPOSAL_RECOMMENDED_ACTION,
+            },
             "upsert_edge_evidence_policy": {
                 "edges": sorted(POLICY_OP_EDGES),
                 "source_evidence": sorted(POLICY_OP_SOURCE_EVIDENCE),
@@ -226,6 +244,7 @@ def validate_graph_enrich_config_ops(payload: Mapping[str, Any]) -> dict[str, An
 
     accepted = [item for item in operations if item["status"] == "accepted"]
     rejected_count = len(operations) - len(accepted)
+    upstream_proposals = _upstream_proposals_from_reports(operations)
     patch = _config_patch_for_operations(accepted)
     ok = not global_errors and rejected_count == 0
     report = {
@@ -241,6 +260,13 @@ def validate_graph_enrich_config_ops(payload: Mapping[str, Any]) -> dict[str, An
         "errors": _dedupe(global_errors),
         "accepted_count": len(accepted),
         "rejected_count": rejected_count,
+        "upstream_proposal_count": len(upstream_proposals),
+        "upstream_proposals": upstream_proposals,
+        "recommended_action": (
+            UPSTREAM_PROPOSAL_RECOMMENDED_ACTION
+            if upstream_proposals
+            else ""
+        ),
         "operations": operations,
         "config_patch": patch,
     }
@@ -316,7 +342,7 @@ def run_graph_enrich_config_ai_output_pipeline(
         }
     dry_run = dry_run_graph_enrich_config_ops(parsed["payload"], project_root=project_root)
     if normalized_mode in {"dry_run", "dryrun", "preview"} or not dry_run["ok"]:
-        return {
+        result = {
             **dry_run,
             "mode": normalized_mode,
             "accepted": False,
@@ -324,6 +350,12 @@ def run_graph_enrich_config_ai_output_pipeline(
             "parse": parsed,
             "precheck": dry_run.get("gate", {}).get("precheck"),
         }
+        gate = dry_run.get("gate") if isinstance(dry_run.get("gate"), Mapping) else {}
+        if gate.get("upstream_proposals"):
+            result["upstream_proposal_count"] = int(gate.get("upstream_proposal_count") or 0)
+            result["upstream_proposals"] = list(gate.get("upstream_proposals") or [])
+            result["recommended_action"] = str(gate.get("recommended_action") or "")
+        return result
     write = write_graph_enrich_config(project_root, dry_run["gate"]["config_patch"])
     return {
         "ok": write["ok"],
@@ -391,6 +423,10 @@ def _validate_operation(
         normalizations.append("downgrade_ignored_normalized_to_ignore")
     is_rule_op = op_name in CONFIG_RULE_OPS
     is_policy_op = op_name == "upsert_edge_evidence_policy"
+    upstream_proposal = upstream_proposal_for_config_operation(
+        op,
+        index=index,
+    )
     if op_name not in SUPPORTED_OPS:
         errors.append("unsupported_config_op")
     if not rule_id:
@@ -432,7 +468,7 @@ def _validate_operation(
             confidence_f = -1.0
         if confidence_f < 0.0 or confidence_f > 1.0:
             errors.append("confidence_out_of_range")
-    return {
+    report = {
         "index": index,
         "op": op_name,
         "rule_id": rule_id,
@@ -446,6 +482,87 @@ def _validate_operation(
         "reason": _reason(op.get("evidence")),
         "when": when["when"],
     }
+    if upstream_proposal:
+        report["upstream_proposal"] = upstream_proposal
+        normalizations.append("classified_as_upstream_proposal")
+    return report
+
+
+def upstream_proposal_for_config_operation(
+    operation: Mapping[str, Any],
+    *,
+    index: int = 0,
+) -> dict[str, Any]:
+    """Classify executable extension suggestions that need upstream review."""
+    if not isinstance(operation, Mapping):
+        return {}
+    op_name = str(
+        operation.get("op")
+        or operation.get("operation")
+        or operation.get("kind")
+        or ""
+    ).strip()
+    requested_scope = _normalize_edge(
+        operation.get("proposal_scope")
+        or operation.get("scope")
+        or operation.get("target_scope")
+    )
+    is_upstream_scope = requested_scope in {
+        "upstream",
+        "core",
+        "aming_claw",
+        "aming_claw_core",
+    }
+    if op_name not in UPSTREAM_PROPOSAL_OPS and not is_upstream_scope:
+        return {}
+    if op_name in SUPPORTED_OPS:
+        return {}
+
+    name = str(
+        operation.get("function_name")
+        or operation.get("predicate_name")
+        or operation.get("adapter_name")
+        or operation.get("symbol")
+        or operation.get("rule_id")
+        or ""
+    ).strip()
+    evidence = operation.get("evidence")
+    reason = _reason(evidence) or _reason(operation.get("reason")) or _reason(operation.get("summary"))
+    proposal_scope = requested_scope or "upstream"
+    if proposal_scope in {"core", "aming_claw", "aming_claw_core"}:
+        proposal_scope = "upstream"
+    return {
+        "kind": "executable_extension",
+        "op": op_name,
+        "index": index,
+        "proposal_scope": proposal_scope,
+        "requested_scope": requested_scope,
+        "rule_id": str(operation.get("rule_id") or "").strip(),
+        "function_name": name,
+        "edge": _normalize_edge(operation.get("edge") or operation.get("edge_type")),
+        "source_evidence": _normalize_source_evidence(operation.get("source_evidence")),
+        "action": _normalize_action(operation.get("action")),
+        "reason": reason,
+        "recommended_action": UPSTREAM_PROPOSAL_RECOMMENDED_ACTION,
+        "requires_observer_review": True,
+        "requires_upstream_change": True,
+        "source": "graph_enrich_config_ops_gate",
+    }
+
+
+def _upstream_proposals_from_reports(operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    proposals: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for operation in operations:
+        proposal = operation.get("upstream_proposal")
+        if not isinstance(proposal, Mapping):
+            continue
+        key = json.dumps(proposal, sort_keys=True, default=str)
+        if key in seen:
+            continue
+        seen.add(key)
+        proposals.append(dict(proposal))
+    return proposals
 
 
 def _config_patch_for_operations(operations: list[dict[str, Any]]) -> dict[str, Any]:

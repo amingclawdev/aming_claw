@@ -34,6 +34,8 @@ from .graph_enrich_config_ops import (
     SUPPORTED_ACTIONS as CONFIG_SUPPORTED_ACTIONS,
     SUPPORTED_OPS as CONFIG_SUPPORTED_OPS,
     SUPPORTED_SOURCE_EVIDENCE as CONFIG_SUPPORTED_SOURCE_EVIDENCE,
+    UPSTREAM_PROPOSAL_RECOMMENDED_ACTION,
+    upstream_proposal_for_config_operation,
 )
 
 
@@ -285,6 +287,7 @@ def bridge_semantic_events_to_graph_enrich_config_jobs(
     )
     queued: list[dict[str, Any]] = []
     audited_skips: list[dict[str, Any]] = []
+    audited_upstream_proposals: list[dict[str, Any]] = []
     for semantic_event in semantic_events:
         raw_output = semantic_event_to_graph_enrich_config_output(
             semantic_event,
@@ -292,6 +295,7 @@ def bridge_semantic_events_to_graph_enrich_config_jobs(
             snapshot_id=snapshot_id,
         )
         skipped = raw_output.get("bridge", {}).get("skipped") or []
+        upstream_proposals = raw_output.get("bridge", {}).get("upstream_proposals") or []
         audited_skips.extend([
             {
                 "semantic_event_id": semantic_event.get("event_id", ""),
@@ -299,6 +303,14 @@ def bridge_semantic_events_to_graph_enrich_config_jobs(
             }
             for skip in skipped
             if isinstance(skip, dict)
+        ])
+        audited_upstream_proposals.extend([
+            {
+                "semantic_event_id": semantic_event.get("event_id", ""),
+                **proposal,
+            }
+            for proposal in upstream_proposals
+            if isinstance(proposal, dict)
         ])
         operations = raw_output.get("operations") if isinstance(raw_output.get("operations"), list) else []
         if not operations:
@@ -352,6 +364,7 @@ def bridge_semantic_events_to_graph_enrich_config_jobs(
                 "source_semantic_event_id": semantic_event.get("event_id", ""),
                 "converted_count": len(operations),
                 "skipped_count": len(skipped),
+                "upstream_proposal_count": len(upstream_proposals),
                 "requires_gate": True,
                 "requires_observer_approval": True,
             },
@@ -372,6 +385,8 @@ def bridge_semantic_events_to_graph_enrich_config_jobs(
             if event.get("event_type") == "graph_enrich_config_completed"
         ),
         "skipped_count": len(audited_skips),
+        "upstream_proposal_count": len(audited_upstream_proposals),
+        "upstream_proposals": audited_upstream_proposals,
         "events": queued,
         "skipped": audited_skips,
     }
@@ -465,6 +480,7 @@ def semantic_event_to_graph_enrich_config_output(
     suggestions = _extract_config_suggestions(semantic_payload)
     operations: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
+    upstream_proposals: list[dict[str, Any]] = []
     seen_rule_ids: set[str] = set()
     for index, suggestion in enumerate(suggestions):
         converted = _convert_config_suggestion(
@@ -494,6 +510,10 @@ def semantic_event_to_graph_enrich_config_output(
             }
             if isinstance(converted.get("errors"), list):
                 skip["errors"] = list(converted["errors"])
+            if isinstance(converted.get("upstream_proposal"), Mapping):
+                proposal = dict(converted["upstream_proposal"])
+                skip["upstream_proposal"] = proposal
+                upstream_proposals.append(proposal)
             skipped.append(skip)
     return {
         "schema_version": CONFIG_SCHEMA_VERSION,
@@ -525,6 +545,13 @@ def semantic_event_to_graph_enrich_config_output(
             "source_node_id": semantic_event.get("target_id", ""),
             "converted_count": len(operations),
             "skipped_count": len(skipped),
+            "upstream_proposal_count": len(upstream_proposals),
+            "upstream_proposals": upstream_proposals,
+            "recommended_action": (
+                UPSTREAM_PROPOSAL_RECOMMENDED_ACTION
+                if upstream_proposals
+                else ""
+            ),
             "skipped": skipped,
             "self_precheck": {
                 "status": "passed" if operations else "no_ops",
@@ -1108,6 +1135,13 @@ def _convert_config_suggestion(
         or ""
     ).strip()
     if op not in CONFIG_SUPPORTED_OPS:
+        upstream_proposal = upstream_proposal_for_config_operation(raw, index=index)
+        if upstream_proposal:
+            return {
+                "reason": _upstream_config_skip_reason(upstream_proposal),
+                "suggestion": raw,
+                "upstream_proposal": upstream_proposal,
+            }
         return {"reason": "unsupported_config_op", "suggestion": raw}
     is_rule_op = op in CONFIG_RULE_OPS
     edge = _normalize_config_token(raw.get("edge") or raw.get("edge_type"))
@@ -1181,6 +1215,17 @@ def _config_policy_errors(op: str, edge: str, source_evidence: str, action: str)
     if action not in CONFIG_POLICY_OP_ACTIONS:
         errors.append("action_unsupported_for_policy")
     return errors
+
+
+def _upstream_config_skip_reason(proposal: Mapping[str, Any]) -> str:
+    op = str(proposal.get("op") or "")
+    if op == "register_function":
+        return "upstream_function_proposal"
+    if op in {"register_predicate", "register_rule_predicate"}:
+        return "upstream_predicate_proposal"
+    if op in {"register_adapter", "register_enrich_function"}:
+        return "upstream_adapter_proposal"
+    return "upstream_executable_extension_proposal"
 
 
 def _normalize_direct_operation(
@@ -1448,6 +1493,16 @@ def _create_config_bridge_audit_event(
     actor: str,
 ) -> dict[str, Any]:
     bridge = raw_output.get("bridge") if isinstance(raw_output.get("bridge"), Mapping) else {}
+    upstream_proposals = [
+        dict(item)
+        for item in (bridge.get("upstream_proposals") or [])
+        if isinstance(item, Mapping)
+    ]
+    recommended_action = (
+        str(bridge.get("recommended_action") or UPSTREAM_PROPOSAL_RECOMMENDED_ACTION)
+        if upstream_proposals
+        else ""
+    )
     return graph_events.create_event(
         conn,
         project_id,
@@ -1457,7 +1512,11 @@ def _create_config_bridge_audit_event(
         event_kind="semantic_job",
         target_type="project",
         target_id=project_id,
-        status=graph_events.EVENT_STATUS_MATERIALIZED,
+        status=(
+            graph_events.EVENT_STATUS_PROPOSED
+            if upstream_proposals
+            else graph_events.EVENT_STATUS_MATERIALIZED
+        ),
         operation_type="graph_enrich_config",
         source_event_id=str(semantic_event.get("event_id") or ""),
         payload={
@@ -1469,6 +1528,9 @@ def _create_config_bridge_audit_event(
                 "mutated": False,
                 "converted_count": 0,
                 "skipped": bridge.get("skipped") or [],
+                "upstream_proposal_count": len(upstream_proposals),
+                "upstream_proposals": upstream_proposals,
+                "recommended_action": recommended_action,
             },
             "bridge": bridge,
         },
@@ -1477,6 +1539,9 @@ def _create_config_bridge_audit_event(
             "source_semantic_event_id": semantic_event.get("event_id", ""),
             "converted_count": 0,
             "skipped_count": int(bridge.get("skipped_count") or 0),
+            "upstream_proposal_count": len(upstream_proposals),
+            "recommended_action": recommended_action,
+            "requires_observer_approval": bool(upstream_proposals),
         },
         created_by=actor,
     )
