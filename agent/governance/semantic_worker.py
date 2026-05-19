@@ -1307,9 +1307,8 @@ def _process_node_semantic_job(
             )
             conn.commit()
             return {"ok": False, "status": "failed", "node_id": node_id_s, "error": str(exc)}
-        summary = result.get("summary") if isinstance(result, dict) else {}
-        ai_complete = (summary or {}).get("ai_complete_count", 0)
-        if not ai_complete:
+        if not _node_semantic_run_completed(result if isinstance(result, dict) else {}, node_id_s):
+            last_error = _node_semantic_run_error(result if isinstance(result, dict) else {}, node_id_s)
             log.warning("semantic_worker: enrich returned 0 ai_complete for %s",
                         node_id_s)
             _finalize_node_semantic_job(
@@ -1318,7 +1317,7 @@ def _process_node_semantic_job(
                 snapshot_id,
                 node_id_s,
                 status="ai_failed",
-                last_error="ai_complete_count_zero",
+                last_error=last_error or "ai_complete_count_zero",
             )
             conn.commit()
             return {"ok": False, "status": "ai_incomplete", "node_id": node_id_s}
@@ -1480,6 +1479,43 @@ def _process_node_semantic_job(
         conn.close()
 
 
+def _node_semantic_run_completed(result: Mapping[str, Any], node_id: str) -> bool:
+    """Return True only when the target node produced a real AI proposal."""
+    target = str(node_id or "").strip()
+    semantic_index = result.get("semantic_index") if isinstance(result.get("semantic_index"), Mapping) else {}
+    features = semantic_index.get("features") if isinstance(semantic_index.get("features"), list) else []
+    for feature in features:
+        if not isinstance(feature, Mapping):
+            continue
+        if target and str(feature.get("node_id") or "") != target:
+            continue
+        return (
+            str(feature.get("enrichment_status") or "") == "ai_complete"
+            and not bool(feature.get("semantic_ai_error"))
+        )
+    summary = result.get("summary") if isinstance(result.get("summary"), Mapping) else {}
+    return int(summary.get("ai_complete_count") or 0) > 0
+
+
+def _node_semantic_run_error(result: Mapping[str, Any], node_id: str) -> str:
+    target = str(node_id or "").strip()
+    semantic_index = result.get("semantic_index") if isinstance(result.get("semantic_index"), Mapping) else {}
+    features = semantic_index.get("features") if isinstance(semantic_index.get("features"), list) else []
+    for feature in features:
+        if not isinstance(feature, Mapping):
+            continue
+        if target and str(feature.get("node_id") or "") != target:
+            continue
+        error = feature.get("semantic_ai_error") or feature.get("ai_error")
+        return str(error or feature.get("enrichment_status") or "")
+    summary = result.get("summary") if isinstance(result.get("summary"), Mapping) else {}
+    if int(summary.get("ai_error_count") or 0):
+        return "ai_error"
+    if int(summary.get("ai_unavailable_count") or 0):
+        return "ai_unavailable"
+    return ""
+
+
 def _drain_semantic_bridge_followups(
     project_id: str,
     snapshot_id: str,
@@ -1574,13 +1610,22 @@ def _finalize_completed_node_jobs_from_events(
         placeholders = ",".join("?" for _ in target_ids)
         rows = conn.execute(
             f"""
-            SELECT DISTINCT target_id
-            FROM graph_events
-            WHERE project_id = ?
-              AND snapshot_id = ?
-              AND event_type = 'semantic_node_enriched'
-              AND status = 'proposed'
-              AND target_id IN ({placeholders})
+            SELECT DISTINCT e.target_id
+            FROM graph_events e
+            JOIN graph_semantic_jobs j
+              ON j.project_id = e.project_id
+             AND j.snapshot_id = e.snapshot_id
+             AND j.node_id = e.target_id
+            WHERE e.project_id = ?
+              AND e.snapshot_id = ?
+              AND e.event_type = 'semantic_node_enriched'
+              AND e.status = 'proposed'
+              AND e.target_id IN ({placeholders})
+              AND j.status = 'running'
+              AND (
+                COALESCE(j.claimed_at, '') = ''
+                OR e.created_at >= j.claimed_at
+              )
             """,
             (project_id, snapshot_id, *target_ids),
         ).fetchall()

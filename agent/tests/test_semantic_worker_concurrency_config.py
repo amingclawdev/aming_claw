@@ -476,6 +476,69 @@ def test_semantic_worker_finalize_node_job_clears_claim_state():
     }
 
 
+def test_semantic_worker_process_node_requires_target_ai_complete(monkeypatch, tmp_path):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    semantic._ensure_semantic_state_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO graph_semantic_jobs
+          (project_id, snapshot_id, node_id, status, worker_id, claim_id,
+           claimed_at, lease_expires_at, claimed_by, last_error, updated_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "demo",
+            "scope-demo",
+            "L7.1",
+            "running",
+            "semantic_worker_inproc",
+            "claim-1",
+            "2026-05-19T10:00:00Z",
+            "2026-05-19T10:10:00Z",
+            "semantic_worker_inproc",
+            "",
+            "2026-05-19T10:00:00Z",
+            "2026-05-19T10:00:00Z",
+        ),
+    )
+    monkeypatch.setattr("agent.governance.db.get_connection", lambda project_id: _NoCloseConn(conn))
+    monkeypatch.setattr(
+        semantic,
+        "run_semantic_enrichment",
+        lambda *args, **kwargs: {
+            "summary": {"ai_complete_count": 1},
+            "semantic_index": {
+                "features": [
+                    {
+                        "node_id": "L7.1",
+                        "enrichment_status": "ai_unavailable",
+                        "semantic_ai_error": "socket closed",
+                    },
+                    {"node_id": "L7.2", "enrichment_status": "ai_complete"},
+                ]
+            },
+        },
+    )
+
+    result = semantic_worker._process_node_semantic_job(
+        "demo",
+        "scope-demo",
+        root=tmp_path,
+        ai_call=lambda *_args, **_kwargs: {},
+        node_id="L7.1",
+    )
+
+    row = conn.execute(
+        "SELECT status, last_error, worker_id, claim_id FROM graph_semantic_jobs WHERE node_id='L7.1'"
+    ).fetchone()
+    assert result["status"] == "ai_incomplete"
+    assert row["status"] == "ai_failed"
+    assert row["last_error"] == "socket closed"
+    assert row["worker_id"] == ""
+    assert row["claim_id"] == ""
+
+
 def test_semantic_worker_batch_finalizer_uses_proposed_events(monkeypatch):
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -529,3 +592,78 @@ def test_semantic_worker_batch_finalizer_uses_proposed_events(monkeypatch):
     }
     assert count == 1
     assert rows == {"L7.1": "ai_complete", "L7.2": "running"}
+
+
+def test_semantic_worker_batch_finalizer_ignores_stale_proposed_events(monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    semantic._ensure_semantic_state_schema(conn)
+    graph_events.ensure_schema(conn)
+    for node_id in ["L7.1", "L7.2"]:
+        conn.execute(
+            """
+            INSERT INTO graph_semantic_jobs
+              (project_id, snapshot_id, node_id, status, worker_id, claim_id,
+               claimed_at, lease_expires_at, claimed_by, last_error, updated_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "demo",
+                "scope-demo",
+                node_id,
+                "running",
+                "semantic_worker_inproc",
+                "claim-1",
+                "2026-05-19T10:00:00Z",
+                "2026-05-19T10:10:00Z",
+                "semantic_worker_inproc",
+                "",
+                "2026-05-19T10:00:00Z",
+                "2026-05-19T10:00:00Z",
+            ),
+        )
+    stale = graph_events.create_event(
+        conn,
+        "demo",
+        "scope-demo",
+        event_type="semantic_node_enriched",
+        event_kind="semantic_job",
+        target_type="node",
+        target_id="L7.1",
+        status="proposed",
+        created_by="test",
+    )
+    fresh = graph_events.create_event(
+        conn,
+        "demo",
+        "scope-demo",
+        event_type="semantic_node_enriched",
+        event_kind="semantic_job",
+        target_type="node",
+        target_id="L7.2",
+        status="proposed",
+        created_by="test",
+    )
+    conn.execute(
+        "UPDATE graph_events SET created_at=?, updated_at=? WHERE event_id=?",
+        ("2026-05-19T09:59:59Z", "2026-05-19T09:59:59Z", stale["event_id"]),
+    )
+    conn.execute(
+        "UPDATE graph_events SET created_at=?, updated_at=? WHERE event_id=?",
+        ("2026-05-19T10:00:01Z", "2026-05-19T10:00:01Z", fresh["event_id"]),
+    )
+    conn.commit()
+    monkeypatch.setattr("agent.governance.db.get_connection", lambda project_id: _NoCloseConn(conn))
+
+    count = semantic_worker._finalize_completed_node_jobs_from_events(
+        "demo",
+        "scope-demo",
+        node_ids=["L7.1", "L7.2"],
+    )
+
+    rows = {
+        row["node_id"]: row["status"]
+        for row in conn.execute("SELECT node_id, status FROM graph_semantic_jobs")
+    }
+    assert count == 1
+    assert rows == {"L7.1": "running", "L7.2": "ai_complete"}
