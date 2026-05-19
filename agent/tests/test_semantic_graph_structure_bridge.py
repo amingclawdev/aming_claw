@@ -869,6 +869,70 @@ def test_bridge_converts_semantic_rule_config_suggestions_to_dry_run_job(
     assert rules["event_bus.subscribe_to_consumes_event"]["edge"] == "consumes_event"
 
 
+def test_bridge_dedupes_config_rule_from_ops_and_suggestions(
+    conn,
+    tmp_path,
+):
+    project = tmp_path / "generated-project"
+    _write_generated_project(project)
+    snapshot_id = _create_snapshot(conn, project, "semantic-bridge-config-dedupe")
+    service_id = _node_id_for_primary(snapshot_id, "agent/service.py")
+    operation = {
+        "op": "downgrade_relation_confidence",
+        "rule_id": "calls.weak_resolver.ambiguous_add",
+        "edge": "calls",
+        "source_evidence": "weak_call_resolver_ambiguous_add",
+        "action": "downgrade",
+        "downgrade_to": "weak",
+        "confidence": 0.8,
+        "evidence": {
+            "reason": "Ambiguous weak call resolver additions should not become calls edges.",
+        },
+    }
+    event = _semantic_event(
+        conn,
+        snapshot_id,
+        service_id,
+        {
+            "graph_enrich_config_ops": {"operations": [dict(operation)]},
+            "graph_enrich_config_suggestions": [dict(operation)],
+        },
+        event_id="sem-bridge-config-dedupe",
+    )
+
+    result = bridge.bridge_semantic_events_to_graph_enrich_config_jobs(
+        conn,
+        PID,
+        snapshot_id,
+        event_ids=[event["event_id"]],
+        actor="test",
+        project_root=str(project),
+    )
+    conn.commit()
+
+    assert result["ok"] is True
+    assert result["queued_count"] == 1
+    assert result["skipped_count"] == 1
+    request = result["events"][0]
+    ai_output = request["payload"]["ai_output"]
+    assert len(ai_output["operations"]) == 1
+    assert ai_output["operations"][0]["rule_id"] == "calls.weak_resolver.ambiguous_add"
+    assert ai_output["bridge"]["skipped"][0]["reason"] == "rule_id_duplicate_deduped"
+
+    semantic_worker._drain_graph_enrich_config(PID, snapshot_id)
+
+    completed = graph_events.list_events(
+        conn,
+        PID,
+        snapshot_id,
+        event_types=["graph_enrich_config_completed"],
+    )
+    gate_result = completed[0]["payload"]["result"]
+    assert gate_result["ok"] is True
+    assert gate_result["gate"]["accepted_count"] == 1
+    assert gate_result["gate"]["rejected_count"] == 0
+
+
 def test_bridge_converts_flexible_config_rule_ops_and_ignores_empty_ops_object(
     conn,
     tmp_path,

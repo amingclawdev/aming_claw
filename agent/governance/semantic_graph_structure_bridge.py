@@ -461,6 +461,7 @@ def semantic_event_to_graph_enrich_config_output(
     suggestions = _extract_config_suggestions(semantic_payload)
     operations: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
+    seen_rule_ids: set[str] = set()
     for index, suggestion in enumerate(suggestions):
         converted = _convert_config_suggestion(
             suggestion,
@@ -468,7 +469,19 @@ def semantic_event_to_graph_enrich_config_output(
             semantic_event=semantic_event,
         )
         if converted.get("operation"):
-            operations.append(converted["operation"])
+            operation = converted["operation"]
+            rule_id = str(operation.get("rule_id") or "").strip()
+            if rule_id and rule_id in seen_rule_ids:
+                skipped.append({
+                    "index": index,
+                    "reason": "rule_id_duplicate_deduped",
+                    "suggestion": suggestion,
+                    "operation": operation,
+                })
+                continue
+            if rule_id:
+                seen_rule_ids.add(rule_id)
+            operations.append(operation)
         else:
             skipped.append({
                 "index": index,
