@@ -1,0 +1,384 @@
+{
+  "schema_version": "graph_enrich_config_dogfood_proposals.v1",
+  "project_id": "aming-claw",
+  "snapshot_id": "scope-8652c93-aa17",
+  "source": {
+    "kind": "dogfood",
+    "captured_from": "graph_events.graph_enrich_config_completed",
+    "captured_at": "2026-05-19"
+  },
+  "events": [
+    {
+      "event_id": "ge-feadb0d045f6",
+      "target_id": "aming-claw",
+      "status": "observed",
+      "precheck": "passed",
+      "operations": [
+        {
+          "status": "accepted",
+          "op": "tighten_rule",
+          "rule_id": "test_import_fanin_agent_mcp_executor",
+          "edge": "tests",
+          "source_evidence": "test_import_fanin",
+          "action": "require_direct_symbol_import",
+          "downgrade_to": "",
+          "when": {
+            "all": [
+              {
+                "predicate": "source_evidence_is",
+                "value": "test_import_fanin"
+              },
+              {
+                "predicate": "raw_target_in",
+                "values": [
+                  "agent_mcp_executor",
+                  "agent/mcp/executor_py"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "status": "accepted",
+          "op": "review_rule",
+          "rule_id": "secondary_doc_feature_index_md",
+          "edge": "documents",
+          "source_evidence": "import_only",
+          "action": "ignore",
+          "downgrade_to": "",
+          "when": {}
+        },
+        {
+          "status": "accepted",
+          "op": "downgrade_rule",
+          "rule_id": "consumes_contract_executor_api_md",
+          "edge": "documents",
+          "source_evidence": "import_only",
+          "action": "downgrade",
+          "downgrade_to": "weak",
+          "when": {}
+        }
+      ]
+    },
+    {
+      "event_id": "ge-9b08ce33297c",
+      "target_id": "aming-claw",
+      "status": "observed",
+      "precheck": "passed",
+      "operations": [
+        {
+          "status": "accepted",
+          "op": "tighten_rule",
+          "rule_id": "tests.test_import_fanin.require_direct_symbol_import",
+          "edge": "tests",
+          "source_evidence": "test_import_fanin",
+          "action": "require_direct_symbol_import",
+          "downgrade_to": "",
+          "when": {}
+        }
+      ]
+    },
+    {
+      "event_id": "ge-14036bc70d9f",
+      "target_id": "aming-claw",
+      "status": "observed",
+      "precheck": "passed",
+      "operations": [
+        {
+          "status": "accepted",
+          "op": "tighten_rule",
+          "rule_id": "tests-test_import_fanin-require-direct-symbol",
+          "edge": "tests",
+          "source_evidence": "test_import_fanin",
+          "action": "require_direct_symbol_import",
+          "downgrade_to": "",
+          "when": {}
+        }
+      ]
+    },
+    {
+      "event_id": "ge-cd027948ed37",
+      "target_id": "aming-claw",
+      "status": "observed",
+      "precheck": "passed",
+      "operations": [
+        {
+          "status": "accepted",
+          "op": "tighten_rule",
+          "rule_id": "tests_test_import_fanin_require_direct_symbol_import",
+          "edge": "tests",
+          "source_evidence": "test_import_fanin",
+          "action": "require_direct_symbol_import",
+          "downgrade_to": "",
+          "when": {
+            "all": [
+              {
+                "predicate": "source_evidence_is",
+                "value": "test_import_fanin"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event_id": "ge-4bad53edabc7",
+      "target_id": "aming-claw",
+      "status": "observed",
+      "precheck": "passed",
+      "operations": [
+        {
+          "status": "accepted",
+          "op": "tighten_rule",
+          "rule_id": "emits_event_module_path_false_positive",
+          "edge": "emits_event",
+          "source_evidence": "string_literal",
+          "action": "ignore",
+          "downgrade_to": "",
+          "when": {
+            "all": [
+              {
+                "predicate": "source_evidence_is",
+                "value": "string_literal"
+              },
+              {
+                "predicate": "raw_target_in",
+                "values": [
+                  "governance_db"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event_id": "ge-bdf57b1235f4",
+      "target_id": "aming-claw",
+      "status": "observed",
+      "precheck": "passed",
+      "operations": [
+        {
+          "status": "accepted",
+          "op": "tighten_rule",
+          "rule_id": "drop_weak_call_add_when_local_receiver",
+          "edge": "calls",
+          "source_evidence": "weak_call_resolver_ambiguous_short_name",
+          "action": "drop",
+          "downgrade_to": "",
+          "when": {
+            "all": [
+              {
+                "predicate": "raw_target_in",
+                "values": [
+                  "add"
+                ]
+              },
+              {
+                "predicate": "receiver_kind_in",
+                "values": [
+                  "local_variable",
+                  "attribute"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "status": "accepted",
+          "op": "tighten_rule",
+          "rule_id": "drop_emits_event_for_sqlite_filename_literal",
+          "edge": "emits_event",
+          "source_evidence": "string_literal",
+          "action": "drop",
+          "downgrade_to": "",
+          "when": {
+            "all": [
+              {
+                "predicate": "raw_target_in",
+                "values": [
+                  "governance_db",
+                  "context_store_db"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event_id": "ge-93dcd623b7e5",
+      "target_id": "aming-claw",
+      "status": "observed",
+      "precheck": "passed",
+      "operations": [
+        {
+          "status": "accepted",
+          "op": "review_rule",
+          "rule_id": "consumes_event_string_literal_module_self_governance_db",
+          "edge": "consumes_event",
+          "source_evidence": "string_literal",
+          "action": "downgrade",
+          "downgrade_to": "drop",
+          "when": {
+            "all": [
+              {
+                "predicate": "source_evidence_is",
+                "value": "string_literal"
+              },
+              {
+                "predicate": "raw_target_in",
+                "values": [
+                  "governance_db"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event_id": "ge-4940d8a03106",
+      "target_id": "aming-claw",
+      "status": "observed",
+      "precheck": "passed",
+      "operations": [
+        {
+          "status": "accepted",
+          "op": "add_rule",
+          "rule_id": "string_literal_emits_event_filenames_and_model_ids_v1",
+          "edge": "emits_event",
+          "source_evidence": "string_literal",
+          "action": "drop",
+          "downgrade_to": "",
+          "when": {
+            "all": [
+              {
+                "predicate": "source_evidence_is",
+                "value": "string_literal"
+              },
+              {
+                "predicate": "raw_target_in",
+                "values": [
+                  "agent_governance_dashboard_dist",
+                  "deploy_governance_sh",
+                  "governance_db",
+                  "governance_pid",
+                  "gpt_5_3_codex",
+                  "gpt_5_4",
+                  "gpt_5_4_mini",
+                  "gpt_5_5",
+                  "index_html",
+                  "powershell_exe"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "status": "accepted",
+          "op": "tighten_rule",
+          "rule_id": "string_literal_writes_artifact_docs_and_scripts_v1",
+          "edge": "documents",
+          "source_evidence": "string_literal",
+          "action": "downgrade",
+          "downgrade_to": "documents",
+          "when": {
+            "all": [
+              {
+                "predicate": "source_evidence_is",
+                "value": "string_literal"
+              },
+              {
+                "predicate": "raw_target_in",
+                "values": [
+                  "docs/human_intervention_guide_md",
+                  "scripts/task_templates/telegram_handler_md"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event_id": "ge-396b6e8471b8",
+      "target_id": "aming-claw",
+      "status": "observed",
+      "precheck": "passed",
+      "operations": [
+        {
+          "status": "accepted",
+          "op": "tighten_rule",
+          "rule_id": "tests.test_import_fanin.require_direct_symbol_import",
+          "edge": "tests",
+          "source_evidence": "test_import_fanin",
+          "action": "require_direct_symbol_import",
+          "downgrade_to": "",
+          "when": {}
+        }
+      ]
+    },
+    {
+      "event_id": "ge-0b1f45f3c2f0",
+      "target_id": "aming-claw",
+      "status": "observed",
+      "precheck": "passed",
+      "operations": [
+        {
+          "status": "accepted",
+          "op": "tighten_rule",
+          "rule_id": "tests.test_import_fanin.require_direct_symbol_import",
+          "edge": "tests",
+          "source_evidence": "test_import_fanin",
+          "action": "require_direct_symbol_import",
+          "downgrade_to": "weak_tests",
+          "when": {
+            "all": [
+              {
+                "predicate": "source_evidence_is",
+                "value": "test_import_fanin"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "event_id": "ge-16edc78d5bdd",
+      "target_id": "aming-claw",
+      "status": "observed",
+      "precheck": "passed",
+      "operations": [
+        {
+          "status": "accepted",
+          "op": "downgrade_rule",
+          "rule_id": "tests.test_import_fanin.require_direct_symbol_import",
+          "edge": "tests",
+          "source_evidence": "test_import_fanin",
+          "action": "require_direct_symbol_import",
+          "downgrade_to": "weak_tests",
+          "when": {}
+        }
+      ]
+    },
+    {
+      "event_id": "ge-a657f53a17d2",
+      "target_id": "aming-claw",
+      "status": "observed",
+      "precheck": "passed",
+      "operations": [
+        {
+          "status": "accepted",
+          "op": "tighten_rule",
+          "rule_id": "tests.test_import_fanin.require_direct_symbol_import",
+          "edge": "tests",
+          "source_evidence": "test_import_fanin",
+          "action": "require_direct_symbol_import",
+          "downgrade_to": "weak_tests",
+          "when": {}
+        }
+      ]
+    }
+  ]
+}
