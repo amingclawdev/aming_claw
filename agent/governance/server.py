@@ -4556,6 +4556,8 @@ def _normalize_operation_status(status: str) -> str:
         return "ai_pending"
     if value in {"running", "claimed", "ai_reviewing"}:
         return "running"
+    if value in {"proposed", "review_required"}:
+        return "review_required"
     if value in {"rule_complete", "heuristic_complete"}:
         return "rule_complete"
     if value in {"ai_complete", "complete", "succeeded", "reviewed", "materialized"}:
@@ -5250,7 +5252,6 @@ def handle_graph_governance_operations_queue(ctx: RequestContext):
             event_type = str(job.get("event_type") or "")
             raw_status = str(job.get("status") or "")
             requested_event = event_type in {"graph_structure_requested", "graph_enrich_config_requested"}
-            op_status = "queued" if requested_event and raw_status == "observed" else _normalize_operation_status(raw_status)
             operation_type = (
                 "graph_enrich_config"
                 if event_type.startswith("graph_enrich_config_")
@@ -5259,12 +5260,27 @@ def handle_graph_governance_operations_queue(ctx: RequestContext):
             payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
             result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
             evidence = job.get("evidence") if isinstance(job.get("evidence"), dict) else {}
+            if requested_event and raw_status == "observed":
+                op_status = "queued"
+            elif requested_event and raw_status == "proposed":
+                op_status = "review_required"
+            elif (
+                event_type in {"graph_structure_completed", "graph_enrich_config_completed"}
+                and raw_status == "observed"
+                and result.get("ok") is True
+                and not bool(result.get("accepted"))
+            ):
+                op_status = "review_required"
+            else:
+                op_status = _normalize_operation_status(raw_status)
             errors = evidence.get("errors") or result.get("errors") or []
             if isinstance(errors, list):
                 last_error = "; ".join(str(item) for item in errors if str(item))
             else:
                 last_error = str(errors or "")
             supported_actions = ["view_trace", "file_backlog"]
+            if op_status == "review_required":
+                supported_actions.insert(0, "observer_takeover")
             if op_status in {"failed", "cancelled"}:
                 supported_actions.insert(0, "retry")
             operations.append({

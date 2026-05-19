@@ -864,7 +864,8 @@ def test_bridge_converts_semantic_graph_enrich_config_suggestion_to_dry_run_job(
     semantic_worker._drain_graph_enrich_config(PID, snapshot_id)
 
     request_after = graph_events.get_event(conn, PID, snapshot_id, request["event_id"])
-    assert request_after["status"] == graph_events.EVENT_STATUS_MATERIALIZED
+    assert request_after["status"] == graph_events.EVENT_STATUS_PROPOSED
+    assert request_after["evidence"]["requires_observer_approval"] is True
     completed = graph_events.list_events(
         conn,
         PID,
@@ -878,6 +879,19 @@ def test_bridge_converts_semantic_graph_enrich_config_suggestion_to_dry_run_job(
     assert gate_result["mutated"] is False
     assert gate_result["preview"]["config_path"] == str(project / PROJECT_OVERRIDE_PATH)
     assert not (project / PROJECT_OVERRIDE_PATH).exists()
+
+    queue = server.handle_graph_governance_operations_queue(_get_ctx(snapshot_id))
+    config_ops = [
+        op for op in queue["operations"]
+        if op["operation_type"] == "graph_enrich_config"
+    ]
+    assert {op["status"] for op in config_ops} == {"review_required"}
+    assert all("observer_takeover" in op["supported_actions"] for op in config_ops)
+    assert queue["summary"]["by_status"]["review_required"] == 2
+    assert queue["summary"]["graph_enrich_config_jobs"]["by_status"] == {
+        "observed": 1,
+        "proposed": 1,
+    }
 
 
 def test_bridge_skips_graph_enrich_policy_ops_that_gate_would_reject(

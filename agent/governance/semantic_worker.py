@@ -826,6 +826,14 @@ def _drain_graph_enrich_config(project_id: str, snapshot_id: str) -> None:
                             result = {**result, "repair": repair}
                     if result.get("ok"):
                         precheck = _result_precheck(result)
+                        accepted = bool(result.get("accepted"))
+                        mutated = bool(result.get("mutated"))
+                        review_required = not (accepted and mutated)
+                        request_status = (
+                            graph_events.EVENT_STATUS_PROPOSED
+                            if review_required
+                            else graph_events.EVENT_STATUS_MATERIALIZED
+                        )
                         with sqlite_write_lock():
                             graph_events.create_event(
                                 conn,
@@ -843,6 +851,9 @@ def _drain_graph_enrich_config(project_id: str, snapshot_id: str) -> None:
                                     "source": "semantic_worker_inproc_graph_enrich_config",
                                     "mode": mode,
                                     "precheck": precheck,
+                                    "accepted": accepted,
+                                    "mutated": mutated,
+                                    "requires_observer_approval": review_required,
                                 },
                                 created_by="semantic_worker_inproc",
                             )
@@ -851,7 +862,7 @@ def _drain_graph_enrich_config(project_id: str, snapshot_id: str) -> None:
                                 project_id,
                                 snapshot_id,
                                 event_id,
-                                status=graph_events.EVENT_STATUS_MATERIALIZED,
+                                status=request_status,
                                 actor="semantic_worker_inproc_graph_enrich_config",
                                 operation_type="graph_enrich_config",
                                 evidence={
@@ -859,6 +870,9 @@ def _drain_graph_enrich_config(project_id: str, snapshot_id: str) -> None:
                                     "completed": True,
                                     "mode": mode,
                                     "precheck": precheck,
+                                    "accepted": accepted,
+                                    "mutated": mutated,
+                                    "requires_observer_approval": review_required,
                                 },
                             )
                             conn.commit()
