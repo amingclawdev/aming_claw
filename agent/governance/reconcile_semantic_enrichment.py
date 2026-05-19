@@ -2337,6 +2337,16 @@ def _semantic_state_entry(
         "graph_enrich_config_suggestions": semantic_entry.get("graph_enrich_config_suggestions") or [],
         "graph_enrich_config_candidates": semantic_entry.get("graph_enrich_config_candidates") or [],
         "graph_enrich_config_ops": semantic_entry.get("graph_enrich_config_ops") or {},
+        "self_check": (
+            semantic_entry.get("self_check")
+            if isinstance(semantic_entry.get("self_check"), dict)
+            else {}
+        ),
+        "semantic_ai_self_check": (
+            semantic_entry.get("semantic_ai_self_check")
+            if isinstance(semantic_entry.get("semantic_ai_self_check"), dict)
+            else {}
+        ),
         "open_issues": open_issues,
         "health_issues": health_issues,
         "feedback_round": feedback_round,

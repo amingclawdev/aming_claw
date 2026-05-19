@@ -311,6 +311,16 @@ def test_semantic_enrichment_persists_node_ai_self_check(conn, tmp_path):
     assert feature["self_check"]["checked_rules_count"] == 5
     output = json.loads((project / "semantic-trace" / "feature-outputs" / "L7.1.json").read_text())
     assert output["semantic_entry"]["semantic_ai_self_check"]["status"] == "passed"
+    row = conn.execute(
+        """
+        SELECT semantic_json FROM graph_semantic_nodes
+        WHERE project_id=? AND snapshot_id=? AND node_id=?
+        """,
+        (PID, "full-semantic-test", "L7.1"),
+    ).fetchone()
+    persisted = json.loads(row["semantic_json"])
+    assert persisted["self_check"]["status"] == "passed"
+    assert persisted["semantic_ai_self_check"]["valid"] is True
 
 
 def test_semantic_enrichment_marks_missing_node_ai_self_check(conn, tmp_path):
@@ -342,6 +352,16 @@ def test_semantic_enrichment_marks_missing_node_ai_self_check(conn, tmp_path):
     assert feature["self_check"]["valid"] is False
     assert feature["self_check"]["status"] == "missing"
     assert feature["self_check"]["known_risks"] == ["missing_ai_self_check"]
+    row = conn.execute(
+        """
+        SELECT semantic_json FROM graph_semantic_nodes
+        WHERE project_id=? AND snapshot_id=? AND node_id=?
+        """,
+        (PID, "full-semantic-test", "L7.1"),
+    ).fetchone()
+    persisted = json.loads(row["semantic_json"])
+    assert persisted["self_check"]["status"] == "missing"
+    assert persisted["self_check"]["known_risks"] == ["missing_ai_self_check"]
 
 
 def test_semantic_enrichment_is_snapshot_kind_agnostic(conn, tmp_path):
