@@ -36,6 +36,54 @@ graph_enrich_config_ops:
           - claude_exe
           - codex_cmd
           - codex_ps1
+    emits_event.string_literal.exclude_library_method_and_module_tokens:
+      action: reject
+      downgrade_to: ignore
+      edge: emits_event
+      op: tighten_rule
+      reason: R6 semantic dogfood L7.121 found library method, module, fixture, and
+        config-path string literals materialized as emits_event. These are graph-builder
+        vocabulary tokens, not event names; also covers the L7.142 governance.db observation.
+      source_evidence: string_literal
+      when:
+        all:
+        - predicate: source_evidence_is
+          value: string_literal
+        - predicate: raw_target_in
+          values:
+          - server_tool
+          - server_resource
+          - server_prompt
+          - pytest_fixture
+          - json_dump
+          - os_replace
+          - shutil_copy
+          - conftest_py
+          - governance_db
+          - pipeline_config_yaml_example
+          - agent_core
+          - agent_governance_external_project_governance
+          - agent_governance_mcp_server
+          - agent_governance_reconcile_semantic_config
+          - agent_governance_role_config
+          - agent_pipeline_config
+          - agent_project_config
+    emits_event.string_literal.exclude_subprocess_script_paths:
+      action: reject
+      downgrade_to: ignore
+      edge: emits_event
+      op: add_rule
+      reason: R6 semantic dogfood L7.158 found executor_worker.py materialized as
+        emits_event; it is a subprocess script path used by MCP server startup, not
+        an event topic.
+      source_evidence: string_literal
+      when:
+        all:
+        - predicate: source_evidence_is
+          value: string_literal
+        - predicate: raw_target_in
+          values:
+          - executor_worker_py
     tests.test_import_fanin.require_direct_symbol_import:
       action: require_direct_symbol_import
       downgrade_to: weak_tests
