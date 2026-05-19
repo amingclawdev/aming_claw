@@ -39,6 +39,16 @@ REVIEW_FEEDBACK_NAME = "review-feedback.jsonl"
 
 FeedbackAiCall = Callable[[str, dict[str, Any]], Any]
 
+SEMANTIC_JOB_TERMINAL_STATUSES = {
+    "ai_complete",
+    "complete",
+    "cancelled",
+    "failed",
+    "ai_failed",
+    "rejected",
+    "rule_complete",
+}
+
 SEMANTIC_STATE_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS graph_semantic_nodes (
   project_id TEXT NOT NULL,
@@ -398,6 +408,22 @@ def _load_feature_index(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 def _hash_payload(payload: Any) -> str:
     return hashlib.sha256(_json(payload).encode("utf-8")).hexdigest()
+
+
+def _semantic_job_terminal(status: Any) -> bool:
+    return str(status or "").strip().lower().replace("-", "_") in SEMANTIC_JOB_TERMINAL_STATUSES
+
+
+def _semantic_job_existing_terminal_wins(existing: sqlite3.Row | None, incoming: dict[str, Any]) -> bool:
+    if not existing:
+        return False
+    existing_status = str(existing["status"] or "")
+    incoming_status = str(incoming.get("status") or "pending_ai")
+    if not _semantic_job_terminal(existing_status) or _semantic_job_terminal(incoming_status):
+        return False
+    existing_updated_at = str(existing["updated_at"] or "")
+    incoming_updated_at = str(incoming.get("updated_at") or "")
+    return bool(existing_updated_at and incoming_updated_at and existing_updated_at >= incoming_updated_at)
 
 
 def _node_id(node: dict[str, Any]) -> str:
@@ -1467,6 +1493,16 @@ def _persist_semantic_state_to_db(
     semantic_jobs = state.get("semantic_jobs") if isinstance(state.get("semantic_jobs"), dict) else {}
     for node_id, raw_job in semantic_jobs.items():
         if not isinstance(raw_job, dict):
+            continue
+        existing_job = conn.execute(
+            """
+            SELECT status, updated_at
+            FROM graph_semantic_jobs
+            WHERE project_id = ? AND snapshot_id = ? AND node_id = ?
+            """,
+            (project_id, snapshot_id, str(node_id)),
+        ).fetchone()
+        if _semantic_job_existing_terminal_wins(existing_job, raw_job):
             continue
         conn.execute(
             """

@@ -2013,6 +2013,59 @@ def test_graph_governance_semantic_jobs_endpoint_enqueues_existing_semantic_jobs
     assert events["events"][0]["payload"]["batch_plan"]["target_ids"] == ["L7.1"]
 
 
+def test_semantic_jobs_explicit_node_ids_do_not_expand_by_inferred_layer(conn, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "_require_graph_governance_operator",
+        lambda _ctx, _conn, _action: {"role": "observer"},
+    )
+    monkeypatch.setattr("agent.governance.event_bus.publish", lambda *_args, **_kwargs: None)
+    snapshot = store.create_graph_snapshot(
+        conn,
+        PID,
+        snapshot_id="full-semantic-jobs-explicit-node-scope",
+        commit_sha="head",
+        snapshot_kind="full",
+        graph_json=_graph_with_dependency(),
+    )
+    store.index_graph_snapshot(
+        conn,
+        PID,
+        snapshot["snapshot_id"],
+        nodes=_graph_with_dependency()["deps_graph"]["nodes"],
+        edges=_graph_with_dependency()["deps_graph"]["edges"],
+    )
+    conn.commit()
+
+    status, payload = server.handle_graph_governance_snapshot_semantic_jobs_create(
+        _ctx(
+            {"project_id": PID, "snapshot_id": snapshot["snapshot_id"]},
+            method="POST",
+            body={
+                "project_root": str(tmp_path),
+                "semantic_node_ids": ["L7.1"],
+                "semantic_selector_match": "any",
+                "options": {"skip_current": False},
+                "created_by": "dashboard_user",
+            },
+        )
+    )
+
+    assert status == 202
+    assert payload["queued_count"] == 1
+    assert payload["summary"]["by_status"] == {"ai_pending": 1}
+    rows = conn.execute(
+        """
+        SELECT node_id, status
+        FROM graph_semantic_jobs
+        WHERE project_id = ? AND snapshot_id = ?
+        ORDER BY node_id
+        """,
+        (PID, snapshot["snapshot_id"]),
+    ).fetchall()
+    assert [dict(row) for row in rows] == [{"node_id": "L7.1", "status": "ai_pending"}]
+
+
 def test_semantic_jobs_operator_request_uses_project_ai_routing(conn, tmp_path, monkeypatch):
     monkeypatch.setattr(
         server,

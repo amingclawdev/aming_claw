@@ -328,6 +328,73 @@ def test_a4_run_selected_node_review_does_not_resubmit_existing_memory(conn, tmp
     assert rows["L7.2"] == "pending_review"
 
 
+def test_a5_persist_jobs_preserves_newer_terminal_cancelled_status(conn):
+    """A5: stale worker state must not revive a job cancelled after it loaded."""
+    snap = _create_snapshot_with_node(conn, "job-terminal-preserve")
+    sid = snap["snapshot_id"]
+    conn.execute(
+        """
+        INSERT INTO graph_semantic_jobs
+          (project_id, snapshot_id, node_id, status, feature_hash, file_hashes_json,
+           feedback_round, batch_index, attempt_count, updated_at, created_at)
+        VALUES (?, ?, 'L7.1', 'cancelled', 'sha256:h', '{}',
+                0, 0, 0, '2026-05-19T05:24:00Z', '2026-05-19T05:20:00Z')
+        """,
+        (PID, sid),
+    )
+    conn.commit()
+
+    semantic._persist_semantic_state_to_db(
+        conn,
+        PID,
+        sid,
+        {
+            "semantic_jobs": {
+                "L7.1": {
+                    "status": "ai_pending",
+                    "feature_hash": "sha256:h",
+                    "updated_at": "2026-05-19T05:21:00Z",
+                }
+            }
+        },
+    )
+    row = conn.execute(
+        """
+        SELECT status, updated_at
+        FROM graph_semantic_jobs
+        WHERE project_id = ? AND snapshot_id = ? AND node_id = 'L7.1'
+        """,
+        (PID, sid),
+    ).fetchone()
+    assert row["status"] == "cancelled"
+    assert row["updated_at"] == "2026-05-19T05:24:00Z"
+
+    semantic._persist_semantic_state_to_db(
+        conn,
+        PID,
+        sid,
+        {
+            "semantic_jobs": {
+                "L7.1": {
+                    "status": "pending_ai",
+                    "feature_hash": "sha256:h",
+                    "updated_at": "2026-05-19T05:25:00Z",
+                }
+            }
+        },
+    )
+    row = conn.execute(
+        """
+        SELECT status, updated_at
+        FROM graph_semantic_jobs
+        WHERE project_id = ? AND snapshot_id = ? AND node_id = 'L7.1'
+        """,
+        (PID, sid),
+    ).fetchone()
+    assert row["status"] == "pending_ai"
+    assert row["updated_at"] == "2026-05-19T05:25:00Z"
+
+
 def test_b_backfill_maps_pending_review_to_proposed_event(conn):
     """B: backfill writes PROPOSED event for pending_review rows."""
     snap = _create_snapshot_with_node(conn, "backfill-review")

@@ -9657,10 +9657,12 @@ def _semantic_jobs_enqueue_body(body: dict) -> dict:
         raise ValidationError(f"unsupported semantic job target_scope: {target_scope}")
 
     target_ids = _semantic_jobs_target_ids(
-        body.get("target_ids")
+        body.get("semantic_node_ids")
+        or body.get("target_ids")
         or body.get("target_id")
         or body.get("node_ids")
         or body.get("node_id")
+        or options.get("semantic_node_ids")
         or options.get("target_ids")
         or options.get("node_ids")
         or options.get("node_id")
@@ -9709,6 +9711,8 @@ def _semantic_jobs_enqueue_body(body: dict) -> dict:
         enqueue_body["semantic_ai_scope"] = normalized_scope
     if target_ids:
         enqueue_body["semantic_node_ids"] = target_ids
+        enqueue_body.pop("semantic_layers", None)
+        enqueue_body.pop("layers", None)
     elif layers:
         enqueue_body["semantic_layers"] = layers
     else:
