@@ -394,6 +394,7 @@ def _validate_operation(
     if is_policy_op and source_evidence not in POLICY_OP_SOURCE_EVIDENCE:
         errors.append("source_evidence_unsupported_for_policy")
     errors.extend(when["errors"])
+    errors.extend(_predicate_guard_errors(edge, source_evidence, action, when["when"]))
     confidence = op.get("confidence")
     if confidence is not None:
         try:
@@ -560,6 +561,42 @@ def _predicate_values(item: Mapping[str, Any]) -> list[str]:
     else:
         values = [raw_values]
     return [_normalize_edge(value) for value in values if str(value or "").strip()]
+
+
+def _predicate_names(when: Mapping[str, Any]) -> set[str]:
+    return {
+        str(item.get("predicate") or "")
+        for item in (when.get("all") or [])
+        if isinstance(item, Mapping) and str(item.get("predicate") or "")
+    }
+
+
+def _predicate_guard_errors(
+    edge: str,
+    source_evidence: str,
+    action: str,
+    when: Mapping[str, Any],
+) -> list[str]:
+    if not when:
+        return []
+    names = _predicate_names(when)
+    errors: list[str] = []
+    if (
+        edge == "calls"
+        and source_evidence.startswith("weak_call_resolver")
+        and "raw_target_in" in names
+        and not ({"call_syntax_is", "receiver_kind_in"} & names)
+    ):
+        errors.append("predicate_underconstrained_weak_call")
+    if (
+        edge == "emits_event"
+        and source_evidence == "string_literal"
+        and action in {"downgrade", "drop", "ignore", "reject"}
+        and not ({"raw_target_in"} & names)
+        and ({"source_evidence_is", "language_is"} & names)
+    ):
+        errors.append("predicate_underconstrained_string_literal")
+    return errors
 
 
 def evaluate_graph_enrich_config_rules(

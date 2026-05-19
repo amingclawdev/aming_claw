@@ -519,6 +519,121 @@ def test_graph_enrich_config_rejects_unknown_rule_predicate(tmp_path):
     assert "predicate_unsupported" in operation["errors"]
 
 
+def test_graph_enrich_config_rejects_underconstrained_weak_call_add_rule(tmp_path):
+    project = tmp_path / "generated-project"
+    project.mkdir()
+    payload = _predicate_rule_payload()
+    payload["operations"][0] = {
+        "op": "review_rule",
+        "rule_id": "weak_calls_add_short_name_in_reconcile",
+        "edge": "calls",
+        "source_evidence": "weak_call_resolver_ambiguous_short_name",
+        "action": "downgrade",
+        "downgrade_to": "drop",
+        "confidence": 0.5,
+        "when": {
+            "all": [
+                {"predicate": "raw_target_in", "values": ["add"]},
+                {
+                    "predicate": "source_evidence_is",
+                    "value": "weak_call_resolver_ambiguous_short_name",
+                },
+            ]
+        },
+        "evidence": {
+            "reason": "Dogfood regression: raw add alone also matches direct imported add().",
+        },
+    }
+
+    result = run_graph_enrich_config_ai_output_pipeline(
+        raw_output=json.dumps(payload),
+        mode="dry_run",
+        project_root=project,
+    )
+
+    assert result["ok"] is False
+    operation = result["gate"]["operations"][0]
+    assert operation["status"] == "rejected"
+    assert "predicate_underconstrained_weak_call" in operation["errors"]
+
+
+def test_graph_enrich_config_rejects_broad_string_literal_event_rule(tmp_path):
+    project = tmp_path / "generated-project"
+    project.mkdir()
+    payload = _predicate_rule_payload()
+    payload["operations"][0] = {
+        "op": "tighten_rule",
+        "rule_id": "emits_event.string_literal.executable_extensions",
+        "edge": "emits_event",
+        "source_evidence": "string_literal",
+        "action": "ignore",
+        "confidence": 0.7,
+        "when": {
+            "all": [
+                {"predicate": "source_evidence_is", "value": "string_literal"},
+                {"predicate": "language_is", "value": "python"},
+            ]
+        },
+        "evidence": {
+            "reason": "Dogfood regression: this suppresses every Python string-literal event.",
+        },
+    }
+
+    result = run_graph_enrich_config_ai_output_pipeline(
+        raw_output=json.dumps(payload),
+        mode="dry_run",
+        project_root=project,
+    )
+
+    assert result["ok"] is False
+    operation = result["gate"]["operations"][0]
+    assert operation["status"] == "rejected"
+    assert "predicate_underconstrained_string_literal" in operation["errors"]
+
+
+def test_graph_enrich_config_accepts_precise_string_literal_target_rule(tmp_path):
+    project = tmp_path / "generated-project"
+    project.mkdir()
+    payload = _predicate_rule_payload()
+    payload["operations"][0] = {
+        "op": "tighten_rule",
+        "rule_id": "emits_event.string_literal.cli_binary_filenames",
+        "edge": "emits_event",
+        "source_evidence": "string_literal",
+        "action": "ignore",
+        "confidence": 0.85,
+        "when": {
+            "all": [
+                {"predicate": "source_evidence_is", "value": "string_literal"},
+                {
+                    "predicate": "raw_target_in",
+                    "values": ["claude.cmd", "claude.exe", "codex.cmd", "codex.ps1"],
+                },
+            ]
+        },
+        "evidence": {
+            "reason": "CLI binary filename candidates are not emitted runtime events.",
+        },
+    }
+
+    result = run_graph_enrich_config_ai_output_pipeline(
+        raw_output=json.dumps(payload),
+        mode="dry_run",
+        project_root=project,
+    )
+
+    assert result["ok"] is True
+    rule = result["preview"]["graph_enrich_config_ops"]["rules"][
+        "emits_event.string_literal.cli_binary_filenames"
+    ]
+    assert rule["when"]["all"][1]["values"] == [
+        "claude_cmd",
+        "claude_exe",
+        "codex_cmd",
+        "codex_ps1",
+    ]
+
+
 def test_graph_enrich_config_ops_precheck_marks_malformed_output_repairable(tmp_path):
     project = tmp_path / "generated-project"
     project.mkdir()
