@@ -118,6 +118,36 @@ def test_running_claimed_semantic_job_attempt_is_not_double_counted():
     assert job["claim_id"] == "claim-1"
 
 
+def test_running_semantic_job_without_claim_is_not_double_counted():
+    state = {
+        "semantic_jobs": {
+            "L7.1": {
+                "node_id": "L7.1",
+                "status": "running",
+                "attempt_count": 1,
+                "worker_id": "",
+                "claim_id": "",
+                "created_at": "2026-05-18T00:00:00Z",
+            }
+        }
+    }
+
+    _upsert_semantic_job(
+        state,
+        {"node_id": "L7.1", "feature_hash": "sha256:demo", "file_hashes": {}},
+        status="running",
+        feedback_round=1,
+        batch_index=None,
+        updated_at="2026-05-18T00:01:00Z",
+        increment_attempt=True,
+    )
+
+    job = state["semantic_jobs"]["L7.1"]
+    assert job["attempt_count"] == 1
+    assert job["worker_id"] == ""
+    assert job["claim_id"] == ""
+
+
 def test_persist_semantic_jobs_preserves_claimed_attempt_from_stale_state(conn):
     _ensure_semantic_state_schema(conn)
     conn.execute(
