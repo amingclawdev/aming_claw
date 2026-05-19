@@ -249,6 +249,54 @@ class TestBuildCallGraph:
         assert graph.edges.get("agent.governance.server::handle") == []
         assert graph.weak_edges == []
 
+    def test_build_call_graph_does_not_cross_module_js_ts_local_closures(self):
+        """TS/JS short-name fallback must not bind local closures across modules."""
+        modules = _make_modules({
+            "frontend.dashboard.src.components.InspectorDrawer": {
+                "language": "typescript",
+                "import_map": {},
+                "functions": [
+                    {"name": "InspectorDrawer", "calls": []},
+                    {"name": "setTab", "calls": []},
+                    {"name": "score", "calls": []},
+                    {"name": "importantChildrenOf", "calls": ["score"]},
+                ],
+            },
+            "frontend.dashboard.src.components.ActionPanel": {
+                "language": "typescript",
+                "import_map": {},
+                "functions": [
+                    {"name": "ActionPanel", "calls": ["setTab"]},
+                ],
+            },
+            "frontend.dashboard.src.components.FocusCard": {
+                "language": "typescript",
+                "import_map": {},
+                "functions": [
+                    {"name": "NodeFocusCard", "calls": ["score"]},
+                ],
+            },
+        })
+
+        graph = build_call_graph(modules)
+
+        assert (
+            graph.edges.get("frontend.dashboard.src.components.ActionPanel::ActionPanel")
+            == []
+        )
+        assert (
+            graph.edges.get("frontend.dashboard.src.components.FocusCard::NodeFocusCard")
+            == []
+        )
+        assert (
+            "frontend.dashboard.src.components.InspectorDrawer::score"
+            in graph.edges.get(
+                "frontend.dashboard.src.components.InspectorDrawer::importantChildrenOf",
+                [],
+            )
+        )
+        assert graph.weak_edges == []
+
     def test_build_call_graph_import_resolved(self):
         """Import map resolves call to correct target — not naive match."""
         modules = _make_modules({

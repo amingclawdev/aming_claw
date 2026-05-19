@@ -778,7 +778,17 @@ def _resolve_call(
         if resolved is not None:
             return resolved
 
-    # 3. Conservative fallback for simple names: only consider same top-level
+    # 3. JS/TS has common lexical closures and hook setters whose short names
+    # are intentionally local. Without import evidence, do not cross module
+    # boundaries by short name for these languages.
+    if (
+        "." not in call_target
+        and call_target not in import_map
+        and _requires_import_for_cross_module_short_name(caller_language)
+    ):
+        return None
+
+    # 4. Conservative fallback for simple names: only consider same top-level
     # namespace and same language. This avoids cross-package/cross-language false
     # edges such as Python logger.info resolving to a frontend helper named info.
     if "." not in call_target and call_target not in import_map:
@@ -802,6 +812,14 @@ def _resolve_call(
 
     # Not resolved — external or builtin
     return None
+
+
+def _requires_import_for_cross_module_short_name(language: str) -> bool:
+    return str(language or "").lower() in {
+        "javascript",
+        "typescript",
+        "javascript_typescript",
+    }
 
 
 def _top_level_namespace(module_name: str) -> str:
