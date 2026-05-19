@@ -32,6 +32,13 @@ SUPPORTED_OPS = {
     *CONFIG_RULE_OPS,
     "upsert_edge_evidence_policy",
 }
+RULE_OP_DISALLOWED_ACTIONS = {
+    "downgrade_relation_confidence": {"add", "allow", "promote"},
+    "downgrade_rule": {"add", "allow", "promote"},
+    "review_rule": {"add", "allow", "promote"},
+    "tighten_rule": {"add", "allow", "promote"},
+    "promote_rule": {"downgrade", "drop", "ignore", "reject", "require_direct_symbol_import"},
+}
 UPSTREAM_PROPOSAL_OPS = {
     "register_adapter",
     "register_enrich_function",
@@ -97,6 +104,7 @@ GRAPH_ENRICH_CONFIG_SELF_PRECHECK_RULES = [
     "action_present",
     "predicate_guard_weak_call_requires_call_syntax_or_receiver",
     "predicate_guard_string_literal_requires_raw_target",
+    "op_action_compatible",
     "config_patch_previewed",
     "observer_approval_required",
 ]
@@ -146,6 +154,13 @@ def graph_enrich_config_ops_output_contract() -> dict[str, Any]:
             "downgrade_to": "Rule ops accept non-empty custom downgrade targets.",
         },
         "operation_constraints": {
+            "rule_op_action_compatibility": {
+                op: {
+                    "disallowed_actions": sorted(actions),
+                    "error": "op_action_incompatible",
+                }
+                for op, actions in sorted(RULE_OP_DISALLOWED_ACTIONS.items())
+            },
             "upstream_proposal_ops": {
                 "operations": sorted(UPSTREAM_PROPOSAL_OPS),
                 "policy": (
@@ -452,6 +467,7 @@ def _validate_operation(
         errors.append("downgrade_to_unsupported")
     elif action == "downgrade" and downgrade_to not in CONFIG_DOWNGRADE_TARGETS and is_rule_op:
         normalizations.append("custom_downgrade_target")
+    errors.extend(_op_action_compatibility_errors(op_name, action))
     if is_policy_op and edge not in POLICY_OP_EDGES:
         errors.append("edge_unsupported_for_policy")
     if is_policy_op and action not in POLICY_OP_ACTIONS:
@@ -596,6 +612,17 @@ def _config_patch_for_operations(operations: list[dict[str, Any]]) -> dict[str, 
     if rules:
         patch["graph_enrich_config_ops"] = {"rules": rules}
     return patch
+
+
+def _op_action_compatibility_errors(op_name: str, action: str) -> list[str]:
+    if not op_name or not action:
+        return []
+    disallowed = RULE_OP_DISALLOWED_ACTIONS.get(op_name)
+    if not disallowed:
+        return []
+    if action in disallowed:
+        return ["op_action_incompatible"]
+    return []
 
 
 def _preview(project_root: str | Path, patch: Mapping[str, Any]) -> dict[str, Any]:

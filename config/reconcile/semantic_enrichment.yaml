@@ -222,6 +222,7 @@ job_profiles:
             "edge_supported_or_canonical_alias",
             "source_evidence_present",
             "action_present",
+            "op_action_compatible",
             "config_patch_previewed",
             "observer_approval_required"
           ],
@@ -243,6 +244,13 @@ job_profiles:
       - Rule operations may include a when.all predicate list. Use only
         predicates from payload.output_contract.supported_predicates; do not
         emit executable code or unregistered predicate names.
+      - Rule operation names must match their action direction. For example,
+        tighten_rule, downgrade_rule, downgrade_relation_confidence, and
+        review_rule must not emit action="allow", action="promote", or
+        action="add"; promote_rule must not emit downgrade/drop/ignore/reject
+        actions. Follow payload.output_contract.operation_constraints
+        .rule_op_action_compatibility and mark op_action_compatible in
+        self_check only after verifying it.
 
       Before returning JSON, run your own self-precheck against
       payload.output_contract.self_precheck.checked_rules_required. Prefer

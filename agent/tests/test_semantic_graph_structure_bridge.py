@@ -1160,6 +1160,20 @@ def test_bridge_prechecks_graph_enrich_config_predicate_guards_before_queue(
                         ]
                     },
                 },
+                {
+                    "op": "tighten_rule",
+                    "rule_id": "calls.policy_op.require_import_only_source_evidence",
+                    "edge": "calls",
+                    "source_evidence": "import_only",
+                    "action": "allow",
+                    "downgrade_to": "weak",
+                    "confidence": 0.5,
+                    "when": {
+                        "all": [
+                            {"predicate": "source_evidence_is", "value": "import_only"},
+                        ]
+                    },
+                },
             ],
         },
         event_id="sem-bridge-config-guard-precheck",
@@ -1177,9 +1191,10 @@ def test_bridge_prechecks_graph_enrich_config_predicate_guards_before_queue(
 
     assert result["ok"] is True
     assert result["queued_count"] == 1
-    assert result["skipped_count"] == 2
+    assert result["skipped_count"] == 3
     skipped_reasons = {item["reason"] for item in result["skipped"]}
     assert skipped_reasons == {
+        "op_action_incompatible",
         "predicate_underconstrained_string_literal",
         "predicate_underconstrained_weak_call",
     }
@@ -1190,7 +1205,7 @@ def test_bridge_prechecks_graph_enrich_config_predicate_guards_before_queue(
         "weak_calls_container_add_attr_call",
     ]
     assert "predicate_guard_string_literal_requires_raw_target" in ai_output["self_check"]["checked_rules"]
-    assert ai_output["bridge"]["skipped_count"] == 2
+    assert ai_output["bridge"]["skipped_count"] == 3
 
     semantic_worker._drain_graph_enrich_config(PID, snapshot_id)
 

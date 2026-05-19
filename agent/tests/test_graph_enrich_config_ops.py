@@ -110,6 +110,13 @@ def test_graph_enrich_config_contract_exposes_policy_op_constraints():
         contract["operation_constraints"]["upstream_proposal_ops"]["recommended_action"]
         == "propose_upstream_pr"
     )
+    assert (
+        "allow"
+        in contract["operation_constraints"]["rule_op_action_compatibility"]["tighten_rule"][
+            "disallowed_actions"
+        ]
+    )
+    assert "op_action_compatible" in contract["self_precheck"]["checked_rules_required"]
     assert "language_is" in contract["supported_predicates"]
     assert "receiver_kind_in" in contract["supported_predicates"]
     must_not_mark_valid = contract["self_precheck"]["must_not_mark_valid_when"]
@@ -747,6 +754,41 @@ def test_graph_enrich_config_accepts_precise_string_literal_target_rule(tmp_path
         "codex_cmd",
         "codex_ps1",
     ]
+
+
+def test_graph_enrich_config_rejects_tighten_rule_that_allows_evidence(tmp_path):
+    project = tmp_path / "generated-project"
+    project.mkdir()
+    payload = _predicate_rule_payload()
+    payload["operations"][0] = {
+        "op": "tighten_rule",
+        "rule_id": "calls.policy_op.require_import_only_source_evidence",
+        "edge": "calls",
+        "source_evidence": "import_only",
+        "action": "allow",
+        "downgrade_to": "weak",
+        "confidence": 0.5,
+        "when": {
+            "all": [
+                {"predicate": "source_evidence_is", "value": "import_only"},
+            ]
+        },
+        "evidence": {
+            "reason": "Dogfood regression: tighten_rule must not allow import-only calls evidence.",
+        },
+    }
+
+    result = run_graph_enrich_config_ai_output_pipeline(
+        raw_output=json.dumps(payload),
+        mode="dry_run",
+        project_root=project,
+    )
+
+    assert result["ok"] is False
+    operation = result["gate"]["operations"][0]
+    assert operation["status"] == "rejected"
+    assert "op_action_incompatible" in operation["errors"]
+    assert result["preview"]["graph_enrich_config_ops"]["rules"] == {}
 
 
 def test_graph_enrich_config_ops_precheck_marks_malformed_output_repairable(tmp_path):
