@@ -204,6 +204,52 @@ def test_semantic_worker_node_drain_processes_claimed_nodes_in_parallel(monkeypa
     assert max_active == 3
 
 
+def test_process_node_semantic_job_scopes_persist_and_trace_dir(monkeypatch, tmp_path):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    semantic._ensure_semantic_state_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO graph_semantic_jobs
+          (project_id, snapshot_id, node_id, status, updated_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("demo", "scope-demo", "L7.1", "running", "2026-05-19T00:00:00Z", "2026-05-19T00:00:00Z"),
+    )
+    conn.commit()
+    captured: dict = {}
+
+    monkeypatch.setattr(
+        "agent.governance.db.get_connection",
+        lambda project_id: _NoCloseConn(conn),
+    )
+
+    def fake_run_semantic_enrichment(*args, **kwargs):
+        captured.update(kwargs)
+        return {"summary": {"ai_complete_count": 1}}
+
+    monkeypatch.setattr(semantic, "run_semantic_enrichment", fake_run_semantic_enrichment)
+    monkeypatch.setattr(graph_events, "backfill_existing_semantic_events", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "agent.governance.reconcile_feedback.submit_feedback_item",
+        lambda *args, **kwargs: None,
+    )
+
+    result = semantic_worker._process_node_semantic_job(
+        "demo",
+        "scope-demo",
+        root=tmp_path,
+        ai_call=lambda stage, payload: {},
+        node_id="L7.1",
+    )
+
+    assert result["ok"] is True
+    assert captured["semantic_node_ids"] == ["L7.1"]
+    assert captured["semantic_persist_node_ids"] == ["L7.1"]
+    assert "worker-runs" in str(captured["trace_dir"])
+    assert "L7.1" in str(captured["trace_dir"])
+
+
 def test_semantic_worker_node_drain_retries_empty_claim_with_pending_jobs(monkeypatch):
     fake_conn = _FakeConn()
     processed: list[str] = []

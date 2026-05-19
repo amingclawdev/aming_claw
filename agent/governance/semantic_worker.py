@@ -1276,12 +1276,21 @@ def _process_node_semantic_job(
             log.debug("semantic_worker: node running publish failed for %s: %s",
                       node_id_s, exc)
         try:
+            from uuid import uuid4
+
+            trace_dir = (
+                semantic._semantic_base_dir(project_id, snapshot_id)
+                / "worker-runs"
+                / f"{semantic._safe_node_filename(node_id_s)}-{uuid4().hex[:8]}"
+            )
             result = semantic.run_semantic_enrichment(
                 conn, project_id, snapshot_id, str(root),
                 use_ai=True,
                 ai_call=ai_call,
                 semantic_node_ids=[node_id_s],
                 semantic_skip_completed=False,
+                semantic_persist_node_ids=[node_id_s],
+                trace_dir=trace_dir,
                 submit_for_review=True,
                 created_by="semantic_worker_inproc",
             )

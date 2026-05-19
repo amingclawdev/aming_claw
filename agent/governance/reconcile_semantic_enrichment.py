@@ -332,6 +332,12 @@ def _path_list(raw: Any) -> list[str]:
     return out
 
 
+def _optional_id_set(raw: Any) -> set[str] | None:
+    if raw is None:
+        return None
+    return set(_path_list(raw))
+
+
 NODE_SEMANTIC_SELF_CHECK_RULES = [
     "required_fields_present",
     "source_payload_only",
@@ -1453,6 +1459,8 @@ def _persist_semantic_state_to_db(
     submit_for_review: bool = False,
     review_node_ids: set[str] | None = None,
     review_edge_ids: set[str] | None = None,
+    persist_node_ids: set[str] | None = None,
+    persist_edge_ids: set[str] | None = None,
 ) -> None:
     """Persist node_semantics + semantic_jobs into the per-snapshot tables.
 
@@ -1466,7 +1474,11 @@ def _persist_semantic_state_to_db(
     """
     _ensure_semantic_state_schema(conn)
     node_semantics = state.get("node_semantics") if isinstance(state.get("node_semantics"), dict) else {}
+    node_persist_scope = {str(item) for item in persist_node_ids} if persist_node_ids is not None else None
     for node_id, raw_entry in node_semantics.items():
+        node_id_s = str(node_id)
+        if node_persist_scope is not None and node_id_s not in node_persist_scope:
+            continue
         if not isinstance(raw_entry, dict):
             continue
         # MF-2026-05-10-016 scoping: submit_for_review only affects rows that
@@ -1515,7 +1527,7 @@ def _persist_semantic_state_to_db(
             (
                 project_id,
                 snapshot_id,
-                str(node_id),
+                node_id_s,
                 row_status,
                 str(raw_entry.get("feature_hash") or ""),
                 _json(raw_entry.get("file_hashes") or {}),
@@ -1535,7 +1547,11 @@ def _persist_semantic_state_to_db(
     # keyed by edge_id, drift detector is edge_signature_hash (computed
     # by the adapter, stashed in entry['edge_signature_hash']).
     edge_semantics = state.get("edge_semantics") if isinstance(state.get("edge_semantics"), dict) else {}
+    edge_persist_scope = {str(item) for item in persist_edge_ids} if persist_edge_ids is not None else None
     for edge_id, raw_entry in edge_semantics.items():
+        edge_id_s = str(edge_id)
+        if edge_persist_scope is not None and edge_id_s not in edge_persist_scope:
+            continue
         if not isinstance(raw_entry, dict):
             continue
         is_carried_forward = bool(raw_entry.get("carried_forward_from_snapshot_id"))
@@ -1577,7 +1593,7 @@ def _persist_semantic_state_to_db(
             (
                 project_id,
                 snapshot_id,
-                str(edge_id),
+                edge_id_s,
                 edge_row_status,
                 str(raw_entry.get("edge_signature_hash") or ""),
                 _json(raw_entry),
@@ -1594,6 +1610,9 @@ def _persist_semantic_state_to_db(
         )
     semantic_jobs = state.get("semantic_jobs") if isinstance(state.get("semantic_jobs"), dict) else {}
     for node_id, raw_job in semantic_jobs.items():
+        node_id_s = str(node_id)
+        if node_persist_scope is not None and node_id_s not in node_persist_scope:
+            continue
         if not isinstance(raw_job, dict):
             continue
         existing_job = conn.execute(
@@ -1603,7 +1622,7 @@ def _persist_semantic_state_to_db(
             FROM graph_semantic_jobs
             WHERE project_id = ? AND snapshot_id = ? AND node_id = ?
             """,
-            (project_id, snapshot_id, str(node_id)),
+            (project_id, snapshot_id, node_id_s),
         ).fetchone()
         if _semantic_job_existing_terminal_wins(existing_job, raw_job):
             continue
@@ -1665,7 +1684,7 @@ def _persist_semantic_state_to_db(
             (
                 project_id,
                 snapshot_id,
-                str(node_id),
+                node_id_s,
                 raw_status,
                 str(raw_job.get("feature_hash") or ""),
                 _json(raw_job.get("file_hashes") or {}),
@@ -2736,6 +2755,8 @@ def _write_semantic_graph_state_artifacts(
     submit_for_review: bool = False,
     review_node_ids: set[str] | None = None,
     review_edge_ids: set[str] | None = None,
+    persist_node_ids: set[str] | None = None,
+    persist_edge_ids: set[str] | None = None,
 ) -> tuple[Path, Path, Path, Path]:
     base = _semantic_base_dir(project_id, snapshot_id)
     rdir = _round_dir(project_id, snapshot_id, round_number)
@@ -2749,6 +2770,8 @@ def _write_semantic_graph_state_artifacts(
             submit_for_review=submit_for_review,
             review_node_ids=review_node_ids,
             review_edge_ids=review_edge_ids,
+            persist_node_ids=persist_node_ids,
+            persist_edge_ids=persist_edge_ids,
         )
         _commit_semantic_write(conn)
     semantic_graph = _materialize_semantic_graph(
@@ -2890,6 +2913,8 @@ def run_semantic_enrichment(
     persist_feature_payloads: bool = True,
     submit_for_review: bool = False,
     enqueue_stale: bool = True,
+    semantic_persist_node_ids: Any = None,
+    semantic_persist_edge_ids: Any = None,
 ) -> dict[str, Any]:
     """Create semantic companion artifacts for a graph snapshot.
 
@@ -2913,6 +2938,8 @@ def run_semantic_enrichment(
     work the worker won't auto-drain.
     """
     ensure_schema(conn)
+    persist_node_ids = _optional_id_set(semantic_persist_node_ids)
+    persist_edge_ids = _optional_id_set(semantic_persist_edge_ids)
     snapshot = get_graph_snapshot(conn, project_id, snapshot_id)
     if not snapshot:
         raise KeyError(f"graph snapshot not found: {project_id}/{snapshot_id}")
@@ -3233,6 +3260,8 @@ def run_semantic_enrichment(
                 submit_for_review=submit_for_review,
                 review_node_ids=review_node_ids,
                 review_edge_ids=review_edge_ids,
+                persist_node_ids=persist_node_ids,
+                persist_edge_ids=persist_edge_ids,
             )
         if ai_batch_size <= 1:
             for record in allowed_records:
@@ -3288,6 +3317,8 @@ def run_semantic_enrichment(
                         submit_for_review=submit_for_review,
                         review_node_ids=review_node_ids,
                         review_edge_ids=review_edge_ids,
+                        persist_node_ids=persist_node_ids,
+                        persist_edge_ids=persist_edge_ids,
                     )
                 response = _call_ai(
                     ai_call,
@@ -3358,6 +3389,8 @@ def run_semantic_enrichment(
                         submit_for_review=submit_for_review,
                         review_node_ids=review_node_ids,
                         review_edge_ids=review_edge_ids,
+                        persist_node_ids=persist_node_ids,
+                        persist_edge_ids=persist_edge_ids,
                     )
         else:
             for batch_index, batch in enumerate(
@@ -3459,6 +3492,8 @@ def run_semantic_enrichment(
                         submit_for_review=submit_for_review,
                         review_node_ids=review_node_ids,
                         review_edge_ids=review_edge_ids,
+                        persist_node_ids=persist_node_ids,
+                        persist_edge_ids=persist_edge_ids,
                     )
                 batch_response = _call_ai(
                     ai_call,
@@ -3555,6 +3590,8 @@ def run_semantic_enrichment(
                         submit_for_review=submit_for_review,
                         review_node_ids=review_node_ids,
                         review_edge_ids=review_edge_ids,
+                        persist_node_ids=persist_node_ids,
+                        persist_edge_ids=persist_edge_ids,
                     )
 
     for record in records:
@@ -3691,6 +3728,8 @@ def run_semantic_enrichment(
             submit_for_review=submit_for_review,
             review_node_ids=review_node_ids,
             review_edge_ids=review_edge_ids,
+            persist_node_ids=persist_node_ids,
+            persist_edge_ids=persist_edge_ids,
         )
         semantic_graph_state_report.update({
             "state_path": str(latest_state_path),

@@ -332,6 +332,119 @@ def test_persist_semantic_jobs_preserves_claimed_attempt_from_stale_state(conn):
     }
 
 
+def test_persist_semantic_state_can_scope_node_rows_for_parallel_worker_runs(conn):
+    _ensure_semantic_state_schema(conn)
+
+    def entry(node_id: str, feature_name: str, round_no: int) -> dict:
+        return {
+            "node_id": node_id,
+            "status": "ai_complete",
+            "feature_hash": f"sha256:{node_id}",
+            "file_hashes": {},
+            "feature_name": feature_name,
+            "semantic_summary": f"summary {feature_name}",
+            "feedback_round": round_no,
+            "updated_at": f"2026-05-19T00:0{round_no}:00Z",
+        }
+
+    _persist_semantic_state_to_db(
+        conn,
+        PID,
+        "scope-demo",
+        {
+            "node_semantics": {
+                "L7.1": entry("L7.1", "fresh one", 4),
+            },
+            "semantic_jobs": {
+                "L7.1": {
+                    "node_id": "L7.1",
+                    "status": "ai_complete",
+                    "feature_hash": "sha256:L7.1",
+                    "feedback_round": 4,
+                    "attempt_count": 1,
+                    "updated_at": "2026-05-19T00:04:00Z",
+                },
+            },
+        },
+        submit_for_review=True,
+        review_node_ids={"L7.1"},
+        persist_node_ids={"L7.1"},
+    )
+
+    stale_worker_state = {
+        "node_semantics": {
+            "L7.1": entry("L7.1", "stale one", 2),
+            "L7.2": entry("L7.2", "fresh two", 4),
+        },
+        "semantic_jobs": {
+            "L7.1": {
+                "node_id": "L7.1",
+                "status": "ai_pending",
+                "feature_hash": "sha256:L7.1",
+                "feedback_round": 2,
+                "attempt_count": 0,
+                "updated_at": "2026-05-19T00:02:00Z",
+            },
+            "L7.2": {
+                "node_id": "L7.2",
+                "status": "ai_complete",
+                "feature_hash": "sha256:L7.2",
+                "feedback_round": 4,
+                "attempt_count": 1,
+                "updated_at": "2026-05-19T00:04:00Z",
+            },
+        },
+    }
+    _persist_semantic_state_to_db(
+        conn,
+        PID,
+        "scope-demo",
+        stale_worker_state,
+        submit_for_review=True,
+        review_node_ids={"L7.2"},
+        persist_node_ids={"L7.2"},
+    )
+
+    rows = conn.execute(
+        """
+        SELECT node_id, status, semantic_json, feedback_round
+        FROM graph_semantic_nodes
+        WHERE project_id = ? AND snapshot_id = ?
+        ORDER BY node_id
+        """,
+        (PID, "scope-demo"),
+    ).fetchall()
+    by_node = {
+        row["node_id"]: {
+            "status": row["status"],
+            "feedback_round": row["feedback_round"],
+            "semantic": json.loads(row["semantic_json"]),
+        }
+        for row in rows
+    }
+    assert by_node["L7.1"]["semantic"]["feature_name"] == "fresh one"
+    assert by_node["L7.1"]["feedback_round"] == 4
+    assert by_node["L7.2"]["semantic"]["feature_name"] == "fresh two"
+    assert by_node["L7.2"]["feedback_round"] == 4
+    assert by_node["L7.1"]["status"] == "pending_review"
+    assert by_node["L7.2"]["status"] == "pending_review"
+
+    jobs = conn.execute(
+        """
+        SELECT node_id, status, feedback_round, attempt_count
+        FROM graph_semantic_jobs
+        WHERE project_id = ? AND snapshot_id = ?
+        ORDER BY node_id
+        """,
+        (PID, "scope-demo"),
+    ).fetchall()
+    by_job = {row["node_id"]: dict(row) for row in jobs}
+    assert by_job["L7.1"]["status"] == "ai_complete"
+    assert by_job["L7.1"]["feedback_round"] == 4
+    assert by_job["L7.2"]["status"] == "ai_complete"
+    assert by_job["L7.2"]["feedback_round"] == 4
+
+
 @pytest.fixture()
 def conn(tmp_path, monkeypatch):
     monkeypatch.setattr("agent.governance.db._governance_root", lambda: tmp_path / "state")
