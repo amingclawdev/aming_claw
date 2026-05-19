@@ -12,6 +12,7 @@ from agent.governance import reconcile_feedback
 from agent.governance.reconcile_semantic_enrichment import (
     _batch_key,
     _semantic_batch_memory_summary,
+    _upsert_semantic_job,
     append_review_feedback,
     claim_semantic_jobs,
     load_review_feedback,
@@ -80,6 +81,39 @@ def test_semantic_jobs_can_be_claimed_with_worker_lease(conn, tmp_path):
     assert row["worker_id"] == "semantic-worker-1"
     assert row["claim_id"] == first["claim_id"]
     assert row["attempt_count"] == 1
+
+
+def test_running_claimed_semantic_job_attempt_is_not_double_counted():
+    state = {
+        "semantic_jobs": {
+            "L7.1": {
+                "node_id": "L7.1",
+                "status": "running",
+                "attempt_count": 1,
+                "worker_id": "semantic-worker-1",
+                "claim_id": "claim-1",
+                "claimed_at": "2026-05-18T00:00:00Z",
+                "lease_expires_at": "2026-05-18T00:10:00Z",
+                "claimed_by": "semantic-worker-1",
+                "created_at": "2026-05-18T00:00:00Z",
+            }
+        }
+    }
+
+    _upsert_semantic_job(
+        state,
+        {"node_id": "L7.1", "feature_hash": "sha256:demo", "file_hashes": {}},
+        status="running",
+        feedback_round=1,
+        batch_index=None,
+        updated_at="2026-05-18T00:01:00Z",
+        increment_attempt=True,
+    )
+
+    job = state["semantic_jobs"]["L7.1"]
+    assert job["attempt_count"] == 1
+    assert job["worker_id"] == "semantic-worker-1"
+    assert job["claim_id"] == "claim-1"
 
 
 @pytest.fixture()

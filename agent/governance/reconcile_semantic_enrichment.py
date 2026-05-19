@@ -1694,7 +1694,18 @@ def _upsert_semantic_job(
         jobs = {}
         state["semantic_jobs"] = jobs
     existing = jobs.get(node_id) if isinstance(jobs.get(node_id), dict) else {}
-    attempt_count = int(existing.get("attempt_count") or 0) + (1 if increment_attempt else 0)
+    existing_status = str(existing.get("status") or "")
+    existing_claim_id = str(existing.get("claim_id") or "")
+    existing_attempt_count = int(existing.get("attempt_count") or 0)
+    claimed_running_job = (
+        bool(increment_attempt)
+        and status == "running"
+        and existing_status == "running"
+        and bool(existing_claim_id)
+    )
+    attempt_count = existing_attempt_count + (
+        1 if increment_attempt and not claimed_running_job else 0
+    )
     now = updated_at
     keep_claim = status == "running"
     jobs[node_id] = {
