@@ -1436,9 +1436,22 @@ def _merge_function_facts_for_changed_modules(
     candidate_graph: dict[str, Any],
     modules: dict[str, ModuleInfo],
     changed_modules: set[str],
+    project_root: str | Path | None = None,
 ) -> None:
     call_graph = build_call_graph(modules)
-    facts = build_function_call_facts(modules, call_graph)
+    graph_enrich_config_rules = None
+    if project_root is not None:
+        try:
+            from agent.governance.reconcile_phases.phase_z_v2 import _load_graph_enrich_config_rules
+
+            graph_enrich_config_rules = _load_graph_enrich_config_rules(project_root)
+        except Exception:
+            graph_enrich_config_rules = None
+    facts = build_function_call_facts(
+        modules,
+        call_graph,
+        graph_enrich_config_rules=graph_enrich_config_rules,
+    )
     for node in _deps_graph_nodes(candidate_graph):
         metadata = _node_metadata(node)
         module_name = str(metadata.get("module") or node.get("module") or "")
@@ -1651,7 +1664,7 @@ def _apply_incremental_source_dependency_delta(
         str(item.get("target") or ""),
         str(item.get("type") or ""),
     ))
-    _merge_function_facts_for_changed_modules(candidate_graph, modules, changed_modules)
+    _merge_function_facts_for_changed_modules(candidate_graph, modules, changed_modules, project_root)
     _refresh_candidate_dependency_links(candidate_graph)
     _refresh_relationship_metrics_in_place(candidate_graph)
     if _graph_links_have_cycle(deps_graph.get("links", []) or []):

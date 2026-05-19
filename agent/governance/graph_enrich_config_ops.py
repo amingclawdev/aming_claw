@@ -703,7 +703,10 @@ def _predicate_language_is(context: Mapping[str, Any], item: Mapping[str, Any]) 
 
 @_register_rule_predicate("call_syntax_is")
 def _predicate_call_syntax_is(context: Mapping[str, Any], item: Mapping[str, Any]) -> bool:
-    return _context_value(context, "call_syntax") in _predicate_item_values(item)
+    return _normalize_call_syntax(context.get("call_syntax")) in {
+        _normalize_call_syntax(value)
+        for value in _predicate_values(item)
+    }
 
 
 @_register_rule_predicate("receiver_kind_in")
@@ -719,6 +722,22 @@ def _predicate_raw_target_in(context: Mapping[str, Any], item: Mapping[str, Any]
 @_register_rule_predicate("source_evidence_is")
 def _predicate_source_evidence_is(context: Mapping[str, Any], item: Mapping[str, Any]) -> bool:
     return _context_value(context, "source_evidence") in _predicate_item_values(item)
+
+
+def _normalize_call_syntax(value: Any) -> str:
+    syntax = _normalize_edge(value)
+    aliases = {
+        "attr": "attribute_call",
+        "attribute": "attribute_call",
+        "method": "attribute_call",
+        "method_call": "attribute_call",
+        "bare": "name_call",
+        "bare_call": "name_call",
+        "function": "name_call",
+        "function_call": "name_call",
+        "name": "name_call",
+    }
+    return aliases.get(syntax, syntax)
 
 
 def _dedupe(values: list[str]) -> list[str]:

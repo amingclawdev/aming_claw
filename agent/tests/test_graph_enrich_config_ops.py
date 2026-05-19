@@ -508,6 +508,48 @@ def test_graph_enrich_config_predicate_rule_orchestrates_generated_add_case(tmp_
     assert direct_import_decision["action"] == ""
 
 
+def test_graph_enrich_config_call_syntax_method_alias_matches_attribute_call(tmp_path):
+    project = tmp_path / "generated-add-case"
+    _write_generated_add_case_project(project)
+    payload = _predicate_rule_payload()
+    payload["operations"][0]["rule_id"] = "calls.weak_resolver.short_name_add_method_drop"
+    payload["operations"][0]["source_evidence"] = "weak_call_resolver_ambiguous_short_name"
+    payload["operations"][0]["action"] = "drop"
+    payload["operations"][0]["when"]["all"][0] = {
+        "predicate": "source_evidence_is",
+        "value": "weak_call_resolver_ambiguous_short_name",
+    }
+    payload["operations"][0]["when"]["all"][1] = {
+        "predicate": "raw_target_in",
+        "values": ["add"],
+    }
+    payload["operations"][0]["when"]["all"][2] = {
+        "predicate": "call_syntax_is",
+        "value": "method",
+    }
+    payload["operations"][0]["when"]["all"] = payload["operations"][0]["when"]["all"][:3]
+
+    result = run_graph_enrich_config_ai_output_pipeline(
+        raw_output=json.dumps(payload),
+        mode="dry_run",
+        project_root=project,
+    )
+
+    assert result["ok"] is True
+    rules = result["preview"]["graph_enrich_config_ops"]["rules"]
+    decision = evaluate_graph_enrich_config_rules(
+        rules,
+        {
+            "edge": "calls",
+            "source_evidence": "weak_call_resolver_ambiguous_short_name",
+            "call_syntax": "attribute_call",
+            "raw_target": "add",
+        },
+    )
+    assert decision["matched"] is True
+    assert decision["action"] == "drop"
+
+
 def test_graph_enrich_config_rejects_unknown_rule_predicate(tmp_path):
     project = tmp_path / "generated-project"
     project.mkdir()

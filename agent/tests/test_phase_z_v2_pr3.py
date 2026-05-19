@@ -279,6 +279,61 @@ class TestCoverageLookup:
         rows = {row["path"]: row for row in result["file_inventory"]}
         assert rows["tests/test_core.py"]["scan_status"] == "orphan"
 
+    def test_graph_enrich_config_rule_suppresses_chained_add_weak_call(self):
+        project = _make_temp_project({
+            "agent/service.py": (
+                "def container_case(key, value):\n"
+                "    buckets = {}\n"
+                "    buckets.setdefault(key, set()).add(value)\n"
+                "    return buckets\n\n"
+                "def direct_case(value):\n"
+                "    return add(value)\n"
+            ),
+            "agent/math_a.py": "def add(value):\n    return value\n",
+            "agent/math_b.py": "def add(value):\n    return value\n",
+        })
+
+        baseline = build_graph_v2_from_symbols(project, dry_run=True)
+        service_node = next(node for node in baseline["nodes"] if node["module"] == "agent.service")
+        baseline_weak = service_node["function_weak_calls"]
+        assert any(
+            row["caller_short"] == "container_case"
+            and row["raw_target"] == "add"
+            and row["call_syntax"] == "attribute_call"
+            for row in baseline_weak
+        )
+        assert any(row["caller_short"] == "direct_case" and row["raw_target"] == "add" for row in baseline_weak)
+
+        override_dir = os.path.join(project, ".aming-claw", "reconcile")
+        os.makedirs(override_dir, exist_ok=True)
+        with open(os.path.join(override_dir, "semantic_enrichment.yaml"), "w", encoding="utf-8") as f:
+            f.write(
+                "\n".join([
+                    "graph_enrich_config_ops:",
+                    "  rules:",
+                    "    calls.weak_resolver.short_name_add_method_drop:",
+                    "      op: add_rule",
+                    "      edge: calls",
+                    "      source_evidence: weak_call_resolver_ambiguous_short_name",
+                    "      action: drop",
+                    "      when:",
+                    "        all:",
+                    "          - predicate: source_evidence_is",
+                    "            value: weak_call_resolver_ambiguous_short_name",
+                    "          - predicate: raw_target_in",
+                    "            values: [add]",
+                    "          - predicate: call_syntax_is",
+                    "            value: method",
+                    "",
+                ])
+            )
+
+        filtered = build_graph_v2_from_symbols(project, dry_run=True)
+        service_node = next(node for node in filtered["nodes"] if node["module"] == "agent.service")
+        filtered_weak = service_node["function_weak_calls"]
+        assert not any(row["caller_short"] == "container_case" and row["raw_target"] == "add" for row in filtered_weak)
+        assert any(row["caller_short"] == "direct_case" and row["raw_target"] == "add" for row in filtered_weak)
+
     def test_ac5_find_doc_coverage(self):
         """AC5: find_doc_coverage returns doc_files list + covered_lines int."""
         project = _make_temp_project({

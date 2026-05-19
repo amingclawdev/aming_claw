@@ -55,6 +55,7 @@ class FunctionMeta:
     end_lineno: int
     decorators: List[str] = field(default_factory=list)
     calls: List[str] = field(default_factory=list)
+    call_contexts: List[Dict[str, Any]] = field(default_factory=list)
     is_entry: bool = False
 
 
@@ -101,6 +102,7 @@ class WeakEdge:
     target: str  # the raw call target as written in source
     candidates: List[str] = field(default_factory=list)
     reason: str = ""
+    context: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -201,7 +203,8 @@ class _FunctionExtractor(ast.NodeVisitor):
                 elif isinstance(dec.func, ast.Attribute):
                     decorators.append(dec.func.attr)
 
-        calls = _extract_calls(node)
+        call_records = _extract_call_records(node)
+        calls = [str(record.get("target") or "") for record in call_records]
 
         is_entry = any(d in ("app", "route", "cli", "command", "main")
                        for d in decorators) or name in ("main", "__main__")
@@ -216,6 +219,7 @@ class _FunctionExtractor(ast.NodeVisitor):
             end_lineno=end_lineno,
             decorators=decorators,
             calls=calls,
+            call_contexts=call_records,
             is_entry=is_entry,
         )
         self.functions.append(fm)
@@ -225,13 +229,53 @@ class _FunctionExtractor(ast.NodeVisitor):
 
 def _extract_calls(node: ast.AST) -> List[str]:
     """Extract all function call targets from a function body."""
-    calls: List[str] = []
+    return [str(record.get("target") or "") for record in _extract_call_records(node)]
+
+
+def _extract_call_records(node: ast.AST) -> List[Dict[str, Any]]:
+    """Extract function call targets plus language-neutral call context."""
+    records: List[Dict[str, Any]] = []
     for child in ast.walk(node):
         if isinstance(child, ast.Call):
             target = _call_target_name(child)
             if target:
-                calls.append(target)
-    return calls
+                records.append(_call_record(child, target))
+    return records
+
+
+def _call_record(node: ast.Call, target: str) -> Dict[str, Any]:
+    func = node.func
+    raw_target = target.rsplit(".", 1)[-1]
+    if isinstance(func, ast.Name):
+        call_syntax = "name_call"
+        receiver_kind = ""
+    elif isinstance(func, ast.Attribute):
+        call_syntax = "attribute_call"
+        receiver_kind = _call_receiver_kind(func.value)
+    else:
+        call_syntax = ""
+        receiver_kind = ""
+    return {
+        "target": target,
+        "raw_target": raw_target,
+        "call_syntax": call_syntax,
+        "receiver_kind": receiver_kind,
+    }
+
+
+def _call_receiver_kind(node: ast.AST) -> str:
+    if isinstance(node, ast.Call):
+        called = _call_target_name(node)
+        if called in {"set", "list", "dict"}:
+            return "builtin_collection"
+        return "call_result"
+    if isinstance(node, ast.Name):
+        return "local_name"
+    if isinstance(node, ast.Subscript):
+        return "subscript"
+    if isinstance(node, ast.Attribute):
+        return "attribute"
+    return ""
 
 
 def _call_target_name(node: ast.Call) -> Optional[str]:
@@ -655,7 +699,7 @@ def build_call_graph(modules: Dict[str, ModuleInfo]) -> CallGraph:
             if caller not in graph.edges:
                 graph.edges[caller] = []
 
-            for call_target in func.calls:
+            for call_index, call_target in enumerate(func.calls):
                 resolved = _resolve_call(
                     call_target=call_target,
                     caller_module=mod_name,
@@ -676,11 +720,15 @@ def build_call_graph(modules: Dict[str, ModuleInfo]) -> CallGraph:
                     graph.edges[caller].append(resolved)
                 elif isinstance(resolved, list):
                     # Ambiguous — weak edge
+                    context = {}
+                    if call_index < len(func.call_contexts or []):
+                        context = dict(func.call_contexts[call_index] or {})
                     graph.weak_edges.append(WeakEdge(
                         caller=caller,
                         target=call_target,
                         candidates=resolved,
                         reason=f"ambiguous: {len(resolved)} candidates for '{call_target}'",
+                        context=context,
                     ))
 
     return graph
@@ -2164,6 +2212,8 @@ def _function_line_range(func: FunctionMeta | None) -> List[int]:
 def build_function_call_facts(
     modules: Dict[str, ModuleInfo],
     call_graph: CallGraph,
+    *,
+    graph_enrich_config_rules: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """Build per-module function call facts for graph metadata/query tools.
 
@@ -2214,24 +2264,90 @@ def build_function_call_facts(
         if caller_module not in facts:
             continue
         caller_func = call_graph.all_functions.get(weak.caller)
-        append_unique(facts[caller_module]["weak_calls"], {
+        rule_decision = _graph_enrich_config_rule_decision_for_weak_call(
+            modules,
+            weak,
+            rules=graph_enrich_config_rules,
+        )
+        if _graph_enrich_config_rule_suppresses(rule_decision):
+            continue
+        item = {
             "caller": weak.caller,
             "caller_short": _function_short_name(weak.caller),
             "caller_module": caller_module,
             "caller_file": module_paths.get(caller_module, ""),
             "caller_line": _function_line_range(caller_func),
-            "raw_target": weak.target,
+            "raw_target": str((weak.context or {}).get("raw_target") or weak.target),
             "candidates": list(weak.candidates or []),
             "confidence": "weak",
             "resolution": "ambiguous",
             "reason": weak.reason,
-        })
+        }
+        if isinstance(weak.context, dict):
+            for key in ("call_syntax", "receiver_kind"):
+                if weak.context.get(key):
+                    item[key] = weak.context[key]
+        if rule_decision.get("matched"):
+            item["graph_enrich_config_rule"] = {
+                "rule_id": rule_decision.get("rule_id", ""),
+                "action": rule_decision.get("action", ""),
+                "downgrade_to": rule_decision.get("downgrade_to", ""),
+                "matched_predicates": rule_decision.get("matched_predicates", []),
+            }
+        append_unique(facts[caller_module]["weak_calls"], item)
 
     for bucket in facts.values():
         bucket["calls"].sort(key=lambda item: (item.get("caller", ""), item.get("callee", "")))
         bucket["called_by"].sort(key=lambda item: (item.get("callee", ""), item.get("caller", "")))
         bucket["weak_calls"].sort(key=lambda item: (item.get("caller", ""), item.get("raw_target", "")))
     return facts
+
+
+def _load_graph_enrich_config_rules(project_root: str | Path) -> Dict[str, Any]:
+    try:
+        from agent.governance.reconcile_semantic_config import load_semantic_enrichment_config
+
+        config = load_semantic_enrichment_config(project_root=project_root)
+        return dict(config.graph_enrich_config_ops.rules or {})
+    except Exception:
+        return {}
+
+
+def _graph_enrich_config_rule_decision_for_weak_call(
+    modules: Dict[str, ModuleInfo],
+    weak: WeakEdge,
+    *,
+    rules: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    if not rules:
+        return {"matched": False, "rule_id": "", "action": "", "downgrade_to": "", "errors": []}
+    caller_module = _module_from_qname(weak.caller)
+    module = modules.get(caller_module)
+    context = {
+        "edge": "calls",
+        "source_evidence": "weak_call_resolver_ambiguous_short_name",
+        "language": str((module.language if module else "") or ""),
+        "source_path": str((module.path if module else "") or ""),
+        "raw_target": str((weak.context or {}).get("raw_target") or weak.target),
+    }
+    if isinstance(weak.context, dict):
+        for key in ("call_syntax", "receiver_kind"):
+            if weak.context.get(key):
+                context[key] = weak.context[key]
+    try:
+        from agent.governance.graph_enrich_config_ops import evaluate_graph_enrich_config_rules
+
+        return evaluate_graph_enrich_config_rules(rules, context)
+    except Exception:
+        return {"matched": False, "rule_id": "", "action": "", "downgrade_to": "", "errors": ["rule_eval_failed"]}
+
+
+def _graph_enrich_config_rule_suppresses(decision: Dict[str, Any]) -> bool:
+    if not decision.get("matched"):
+        return False
+    action = str(decision.get("action") or "")
+    downgrade_to = str(decision.get("downgrade_to") or "")
+    return action in {"drop", "ignore", "reject"} or downgrade_to in {"drop", "ignore"}
 
 
 def enrich_nodes_with_function_call_facts(
@@ -4377,7 +4493,11 @@ def build_graph_v2_from_symbols(
         TypedRelation(**rel) if isinstance(rel, dict) else rel
         for rel in typed_relations
     ])]
-    function_call_facts = build_function_call_facts(modules, call_graph)
+    function_call_facts = build_function_call_facts(
+        modules,
+        call_graph,
+        graph_enrich_config_rules=_load_graph_enrich_config_rules(project_root),
+    )
     enrich_nodes_with_function_call_facts(nodes, function_call_facts)
     enrich_nodes_with_architecture_signals(nodes, typed_relations)
     architecture_graph = build_architecture_graph(nodes, typed_relations)

@@ -1,5 +1,22 @@
 graph_enrich_config_ops:
   rules:
+    calls.weak_resolver.short_name_add_method_drop:
+      action: drop
+      downgrade_to: ''
+      edge: calls
+      op: add_rule
+      reason: R4 semantic dogfood L7.121 found false weak-call evidence from chained
+        collection/setdefault .add calls; gate passed in dry-run event ge-791013377fe0.
+      source_evidence: weak_call_resolver_ambiguous_short_name
+      when:
+        all:
+        - predicate: source_evidence_is
+          value: weak_call_resolver_ambiguous_short_name
+        - predicate: raw_target_in
+          values:
+          - add
+        - predicate: call_syntax_is
+          value: method
     tests.test_import_fanin.require_direct_symbol_import:
       action: require_direct_symbol_import
       downgrade_to: weak_tests
