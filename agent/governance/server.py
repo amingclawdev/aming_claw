@@ -6082,6 +6082,63 @@ def handle_graph_governance_graph_enrich_config_ops_ai_output(ctx: RequestContex
         conn.close()
 
 
+@route("POST", "/api/graph-governance/{project_id}/snapshots/{snapshot_id}/graph-enrich-config/observer-override")
+def handle_graph_governance_snapshot_graph_enrich_config_observer_override(ctx: RequestContext):
+    """Apply an observer-authored graph/enrich config override with graph_events audit."""
+    project_id = ctx.get_project_id()
+    raw_snapshot_id = ctx.path_params["snapshot_id"]
+    body = ctx.body
+    mode = str(body.get("mode") or "dry_run").strip().lower().replace("-", "_")
+    raw_output = body.get("ai_output") if "ai_output" in body else body.get("output")
+    cluster = body.get("cluster") if isinstance(body.get("cluster"), dict) else None
+    from . import graph_snapshot_store as store
+    from .db import sqlite_write_lock
+    from .graph_proposal_review import apply_graph_enrich_config_observer_override
+
+    conn = get_connection(project_id)
+    try:
+        _require_graph_governance_operator(
+            ctx,
+            conn,
+            "graph-governance.snapshot.graph-enrich-config.observer-override",
+        )
+        snapshot_id = _resolve_graph_snapshot_id(conn, project_id, raw_snapshot_id)
+        snapshot = store.get_graph_snapshot(conn, project_id, snapshot_id)
+        if not snapshot:
+            raise ValidationError(f"graph snapshot not found: {snapshot_id}")
+        root = _graph_governance_project_root(project_id, body)
+        with sqlite_write_lock():
+            result = apply_graph_enrich_config_observer_override(
+                conn,
+                project_id,
+                snapshot_id,
+                cluster=cluster,
+                cluster_id=str(body.get("cluster_id") or ""),
+                rejected_event_ids=(
+                    _body_string_list(body, "rejected_event_ids")
+                    or _body_string_list(body, "rejected_graph_event_ids")
+                    or []
+                ),
+                raw_output=raw_output,
+                mode=mode,
+                project_root=root,
+                actor=str(body.get("actor") or "dashboard_user"),
+                rationale=str(body.get("rationale") or body.get("reason") or ""),
+            )
+            conn.commit()
+        status_code = 200 if result["ok"] else 422
+        return status_code, {
+            "ok": result["ok"],
+            "project_id": project_id,
+            "snapshot_id": snapshot_id,
+            "commit_sha": snapshot.get("commit_sha", ""),
+            "project_root": str(root),
+            **result,
+        }
+    finally:
+        conn.close()
+
+
 @route("POST", "/api/graph-governance/{project_id}/snapshots/{snapshot_id}/graph-structure-ops/jobs")
 def handle_graph_governance_snapshot_graph_structure_ops_jobs_create(ctx: RequestContext):
     """Queue a graph-structure AI-output task as an auditable event."""
