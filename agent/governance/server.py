@@ -6093,7 +6093,10 @@ def handle_graph_governance_snapshot_graph_enrich_config_observer_override(ctx: 
     cluster = body.get("cluster") if isinstance(body.get("cluster"), dict) else None
     from . import graph_snapshot_store as store
     from .db import sqlite_write_lock
-    from .graph_proposal_review import apply_graph_enrich_config_observer_override
+    from .graph_proposal_review import (
+        apply_graph_enrich_config_observer_override,
+        synthesize_graph_enrich_config_payload_from_cluster,
+    )
 
     conn = get_connection(project_id)
     try:
@@ -6107,6 +6110,26 @@ def handle_graph_governance_snapshot_graph_enrich_config_observer_override(ctx: 
         if not snapshot:
             raise ValidationError(f"graph snapshot not found: {snapshot_id}")
         root = _graph_governance_project_root(project_id, body)
+        synthesis: dict[str, Any] | None = None
+        if _query_bool(body, "synthesize", False) and raw_output in (None, ""):
+            if not cluster:
+                raise ValidationError("cluster is required when synthesize=true")
+            synthesis = synthesize_graph_enrich_config_payload_from_cluster(
+                cluster,
+                actor=str(body.get("actor") or "dashboard_user"),
+                rationale=str(body.get("rationale") or body.get("reason") or ""),
+            )
+            if not synthesis.get("ok"):
+                return 422, {
+                    "ok": False,
+                    "project_id": project_id,
+                    "snapshot_id": snapshot_id,
+                    "commit_sha": snapshot.get("commit_sha", ""),
+                    "project_root": str(root),
+                    "synthesis": synthesis,
+                    "errors": synthesis.get("errors", []),
+                }
+            raw_output = synthesis.get("payload")
         with sqlite_write_lock():
             result = apply_graph_enrich_config_observer_override(
                 conn,
@@ -6133,6 +6156,7 @@ def handle_graph_governance_snapshot_graph_enrich_config_observer_override(ctx: 
             "snapshot_id": snapshot_id,
             "commit_sha": snapshot.get("commit_sha", ""),
             "project_root": str(root),
+            "synthesis": synthesis,
             **result,
         }
     finally:

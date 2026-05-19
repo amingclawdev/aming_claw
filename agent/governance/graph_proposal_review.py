@@ -9,9 +9,97 @@ from typing import Any, Mapping, Sequence
 
 from . import graph_events
 from .graph_enrich_config_ops import (
+    GRAPH_ENRICH_CONFIG_SELF_PRECHECK_RULES,
+    SCHEMA_VERSION,
     parse_graph_enrich_config_ai_output,
     run_graph_enrich_config_ai_output_pipeline,
 )
+from .graph_proposal_index import TEST_IMPORT_FANIN_DIRECT_SYMBOL_RULE
+
+
+TEST_IMPORT_FANIN_SYNTHESIS_STRATEGY = "test_import_fanin_direct_symbol_gate.v1"
+
+
+def synthesize_graph_enrich_config_payload_from_cluster(
+    cluster: Mapping[str, Any],
+    *,
+    actor: str = "observer",
+    rationale: str = "",
+) -> dict[str, Any]:
+    """Synthesize a canonical graph_enrich_config_ops payload from a cluster."""
+
+    issue_family = str(cluster.get("issue_family") or "")
+    canonical_rule_id = str(cluster.get("canonical_rule_id") or "")
+    if (
+        issue_family != "test_import_fanin_direct_symbol_gate"
+        or canonical_rule_id != TEST_IMPORT_FANIN_DIRECT_SYMBOL_RULE
+    ):
+        return {
+            "ok": False,
+            "status": "unsupported_cluster",
+            "errors": ["unsupported_proposal_cluster_family"],
+            "cluster_id": str(cluster.get("cluster_id") or ""),
+            "issue_family": issue_family,
+            "canonical_rule_id": canonical_rule_id,
+        }
+
+    support_event_ids = _string_list(cluster.get("support_event_ids") or [])
+    support_rule_ids = _string_list(cluster.get("support_rule_ids") or [])
+    selected_event_id = str(cluster.get("selected_event_id") or "")
+    cluster_id = str(cluster.get("cluster_id") or "")
+    operation_count = int(cluster.get("operation_count") or len(support_event_ids) or 0)
+    operation = {
+        "op": "tighten_rule",
+        "rule_id": TEST_IMPORT_FANIN_DIRECT_SYMBOL_RULE,
+        "edge": "tests",
+        "source_evidence": "test_import_fanin",
+        "action": "require_direct_symbol_import",
+        "downgrade_to": "weak_tests",
+        "confidence": 0.93,
+        "when": {
+            "all": [{"predicate": "source_evidence_is", "value": "test_import_fanin"}]
+        },
+        "evidence": {
+            "reason": (
+                f"Synthesized from {operation_count} dogfood graph_enrich_config proposals; "
+                "requires direct test symbol import and preserves weak test evidence."
+            ),
+            "cluster_id": cluster_id,
+            "support_event_ids": support_event_ids,
+            "support_rule_ids": support_rule_ids,
+            "selected_event_id": selected_event_id,
+            "synthesis_strategy": TEST_IMPORT_FANIN_SYNTHESIS_STRATEGY,
+        },
+    }
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "source": {
+            "analyzer_role": "reconcile_graph_enrich_config_analyzer",
+            "generator": "graph_proposal_review.synthesize",
+            "cluster_id": cluster_id,
+            "actor": str(actor or "observer"),
+        },
+        "operations": [operation],
+        "self_check": {
+            "valid": True,
+            "checked_rules": list(GRAPH_ENRICH_CONFIG_SELF_PRECHECK_RULES),
+            "known_risks": [],
+        },
+    }
+    if rationale:
+        payload["source"]["rationale"] = str(rationale)
+    return {
+        "ok": True,
+        "status": "synthesized",
+        "strategy": TEST_IMPORT_FANIN_SYNTHESIS_STRATEGY,
+        "cluster_id": cluster_id,
+        "issue_family": issue_family,
+        "canonical_rule_id": canonical_rule_id,
+        "support_event_ids": support_event_ids,
+        "support_rule_ids": support_rule_ids,
+        "selected_event_id": selected_event_id,
+        "payload": payload,
+    }
 
 
 def apply_graph_enrich_config_observer_override(

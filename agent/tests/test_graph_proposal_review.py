@@ -14,6 +14,7 @@ from agent.governance.graph_enrich_config_ops import SCHEMA_VERSION
 from agent.governance.graph_proposal_index import aggregate_graph_enrich_config_proposals
 from agent.governance.graph_proposal_review import (
     apply_graph_enrich_config_observer_override,
+    synthesize_graph_enrich_config_payload_from_cluster,
 )
 from agent.governance.reconcile_semantic_config import PROJECT_OVERRIDE_PATH
 
@@ -187,6 +188,120 @@ def test_observer_override_select_none_writes_config_with_audit(tmp_path, monkey
         conn.close()
 
 
+def test_synthesizes_config_payload_from_dogfood_cluster_and_gate_passes(tmp_path, monkeypatch):
+    monkeypatch.setattr("agent.governance.db._governance_root", lambda: tmp_path / "state")
+    conn = _conn(tmp_path)
+    project = tmp_path / "generated-project"
+    project.mkdir()
+    cluster = _dogfood_cluster()
+
+    try:
+        synthesis = synthesize_graph_enrich_config_payload_from_cluster(
+            cluster,
+            actor="observer_user",
+            rationale="Synthesize canonical config from repeated dogfood variants.",
+        )
+
+        assert synthesis["ok"] is True
+        assert synthesis["strategy"] == "test_import_fanin_direct_symbol_gate.v1"
+        assert synthesis["cluster_id"] == cluster["cluster_id"]
+        assert synthesis["support_event_ids"] == cluster["support_event_ids"]
+        assert synthesis["support_rule_ids"] == cluster["support_rule_ids"]
+        assert synthesis["selected_event_id"] == cluster["selected_event_id"]
+
+        payload = synthesis["payload"]
+        assert payload["schema_version"] == SCHEMA_VERSION
+        assert payload["source"]["analyzer_role"] == "reconcile_graph_enrich_config_analyzer"
+        assert payload["source"]["generator"] == "graph_proposal_review.synthesize"
+        assert payload["source"]["cluster_id"] == cluster["cluster_id"]
+        assert payload["self_check"]["valid"] is True
+        assert "observer_approval_required" in payload["self_check"]["checked_rules"]
+
+        assert len(payload["operations"]) == 1
+        operation = payload["operations"][0]
+        assert operation == {
+            "op": "tighten_rule",
+            "rule_id": "tests.test_import_fanin.require_direct_symbol_import",
+            "edge": "tests",
+            "source_evidence": "test_import_fanin",
+            "action": "require_direct_symbol_import",
+            "downgrade_to": "weak_tests",
+            "confidence": 0.93,
+            "when": {
+                "all": [{"predicate": "source_evidence_is", "value": "test_import_fanin"}]
+            },
+            "evidence": {
+                "reason": (
+                    "Synthesized from 8 dogfood graph_enrich_config proposals; "
+                    "requires direct test symbol import and preserves weak test evidence."
+                ),
+                "cluster_id": cluster["cluster_id"],
+                "support_event_ids": cluster["support_event_ids"],
+                "support_rule_ids": cluster["support_rule_ids"],
+                "selected_event_id": cluster["selected_event_id"],
+                "synthesis_strategy": "test_import_fanin_direct_symbol_gate.v1",
+            },
+        }
+
+        result = apply_graph_enrich_config_observer_override(
+            conn,
+            PID,
+            SNAPSHOT_ID,
+            cluster=cluster,
+            raw_output=json.dumps(payload),
+            mode="dry_run",
+            project_root=project,
+            actor="observer_user",
+            rationale="Dry-run synthesized config before accepting it.",
+        )
+        assert result["ok"] is True
+        assert result["accepted"] is False
+        assert result["gate"]["accepted_count"] == 1
+        assert result["preview"]["graph_enrich_config_ops"]["rules"][
+            "tests.test_import_fanin.require_direct_symbol_import"
+        ]["downgrade_to"] == "weak_tests"
+        assert not (project / PROJECT_OVERRIDE_PATH).exists()
+    finally:
+        conn.close()
+
+
+def test_synthesized_config_payload_accepts_through_observer_override(tmp_path, monkeypatch):
+    monkeypatch.setattr("agent.governance.db._governance_root", lambda: tmp_path / "state")
+    conn = _conn(tmp_path)
+    project = tmp_path / "generated-project"
+    project.mkdir()
+    cluster = _dogfood_cluster()
+    payload = synthesize_graph_enrich_config_payload_from_cluster(cluster)["payload"]
+
+    try:
+        result = apply_graph_enrich_config_observer_override(
+            conn,
+            PID,
+            SNAPSHOT_ID,
+            cluster=cluster,
+            raw_output=json.dumps(payload),
+            mode="accept",
+            project_root=project,
+            actor="observer_user",
+            rationale="Accept synthesized canonical config.",
+        )
+
+        assert result["ok"] is True
+        assert result["accepted"] is True
+        assert result["mutated"] is True
+        config = yaml.safe_load((project / PROJECT_OVERRIDE_PATH).read_text())
+        rule = config["graph_enrich_config_ops"]["rules"][
+            "tests.test_import_fanin.require_direct_symbol_import"
+        ]
+        assert rule["op"] == "tighten_rule"
+        assert rule["downgrade_to"] == "weak_tests"
+        assert rule["when"]["all"] == [
+            {"predicate": "source_evidence_is", "value": "test_import_fanin"}
+        ]
+    finally:
+        conn.close()
+
+
 def test_observer_override_api_accepts_cluster_payload_and_audits(tmp_path, monkeypatch):
     monkeypatch.setattr("agent.governance.db._governance_root", lambda: tmp_path / "state")
     conn = _conn(tmp_path)
@@ -220,6 +335,47 @@ def test_observer_override_api_accepts_cluster_payload_and_audits(tmp_path, monk
         assert result["audit"]["request_event_id"]
         assert result["audit"]["result_event_id"]
         assert (project / PROJECT_OVERRIDE_PATH).exists()
+    finally:
+        conn.close()
+
+
+def test_observer_override_api_can_synthesize_payload_from_cluster(tmp_path, monkeypatch):
+    monkeypatch.setattr("agent.governance.db._governance_root", lambda: tmp_path / "state")
+    conn = _conn(tmp_path)
+    project = tmp_path / "generated-project"
+    project.mkdir()
+    cluster = _dogfood_cluster()
+    monkeypatch.setattr(server, "get_connection", lambda _project_id: _NoCloseConn(conn))
+    monkeypatch.setattr(
+        server,
+        "_require_graph_governance_operator",
+        lambda _ctx, _conn, _action: {"role": "observer"},
+    )
+
+    try:
+        status, result = server.handle_graph_governance_snapshot_graph_enrich_config_observer_override(
+            _ctx(
+                {
+                    "mode": "dry_run",
+                    "project_root": str(project),
+                    "cluster": cluster,
+                    "synthesize": True,
+                    "actor": "observer_user",
+                    "rationale": "Synthesize canonical config from the clustered proposals.",
+                }
+            )
+        )
+
+        assert status == 200
+        assert result["ok"] is True
+        assert result["accepted"] is False
+        assert result["synthesis"]["ok"] is True
+        assert result["synthesis"]["strategy"] == "test_import_fanin_direct_symbol_gate.v1"
+        assert result["gate"]["accepted_count"] == 1
+        assert result["preview"]["graph_enrich_config_ops"]["rules"][
+            "tests.test_import_fanin.require_direct_symbol_import"
+        ]["downgrade_to"] == "weak_tests"
+        assert not (project / PROJECT_OVERRIDE_PATH).exists()
     finally:
         conn.close()
 
