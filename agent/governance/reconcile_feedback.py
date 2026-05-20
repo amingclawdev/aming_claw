@@ -7,9 +7,12 @@ row.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
+import os
 import re
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +23,11 @@ from . import graph_snapshot_store as store
 
 FEEDBACK_EVENTS_NAME = "reconcile-feedback-events.jsonl"
 FEEDBACK_STATE_NAME = "reconcile-feedback-state.json"
+
+try:  # pragma: no cover - exercised through the lock path on Unix runners.
+    import fcntl as _fcntl
+except Exception:  # noqa: BLE001 - Windows fallback keeps the in-process lock.
+    _fcntl = None
 
 KIND_GRAPH_CORRECTION = "graph_correction"
 KIND_PROJECT_IMPROVEMENT = "project_improvement"
@@ -134,6 +142,9 @@ _REVIEW_CARRY_FORWARD_KEYS = {
     "graph_correction_patch_type",
 }
 
+_FEEDBACK_STATE_LOCKS_GUARD = threading.Lock()
+_FEEDBACK_STATE_LOCKS: dict[str, threading.RLock] = {}
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -169,7 +180,28 @@ def _read_json(path: Path, default: Any) -> Any:
 
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_json(payload), encoding="utf-8")
+    tmp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with tmp_path.open("w", encoding="utf-8") as fh:
+            fh.write(_json(payload))
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, path)
+        try:
+            dir_fd = os.open(str(path.parent), os.O_DIRECTORY)
+        except Exception:  # noqa: BLE001 - best-effort directory fsync.
+            dir_fd = None
+        if dir_fd is not None:
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
 
 
 def _append_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -191,6 +223,33 @@ def feedback_state_path(project_id: str, snapshot_id: str) -> Path:
 
 def feedback_events_path(project_id: str, snapshot_id: str) -> Path:
     return feedback_base_dir(project_id, snapshot_id) / FEEDBACK_EVENTS_NAME
+
+
+def _feedback_state_thread_lock(path: Path) -> threading.RLock:
+    key = str(path)
+    with _FEEDBACK_STATE_LOCKS_GUARD:
+        lock = _FEEDBACK_STATE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _FEEDBACK_STATE_LOCKS[key] = lock
+        return lock
+
+
+@contextlib.contextmanager
+def _feedback_state_update_lock(project_id: str, snapshot_id: str):
+    state_path = feedback_state_path(project_id, snapshot_id)
+    thread_lock = _feedback_state_thread_lock(state_path)
+    with thread_lock:
+        lock_path = state_path.with_suffix(state_path.suffix + ".lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+", encoding="utf-8") as fh:
+            if _fcntl is not None:
+                _fcntl.flock(fh.fileno(), _fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if _fcntl is not None:
+                    _fcntl.flock(fh.fileno(), _fcntl.LOCK_UN)
 
 
 def semantic_graph_state_path(project_id: str, snapshot_id: str) -> Path:
@@ -1768,51 +1827,52 @@ def _upsert_items(
     event_type: str,
     actor: str,
 ) -> dict[str, Any]:
-    state = load_feedback_state(project_id, snapshot_id)
-    existing = state.setdefault("items", {})
-    now = _utc_now()
-    events: list[dict[str, Any]] = []
-    created = 0
-    updated = 0
-    for item in items:
-        fid = str(item.get("feedback_id") or "")
-        if not fid:
-            fid = f"rf-{uuid.uuid4().hex[:10]}"
-            item["feedback_id"] = fid
-        previous = existing.get(fid)
-        merged = {**(previous or {}), **item, "updated_at": now}
-        if (
-            event_type == "feedback.classified"
-            and previous
-            and previous.get("status") not in {"", STATUS_CLASSIFIED}
-        ):
-            merged["status"] = previous.get("status")
-        existing[fid] = merged
-        if previous:
-            updated += 1
-        else:
-            created += 1
-        events.append({
-            "event_id": f"rfe-{uuid.uuid4().hex[:10]}",
-            "event_type": event_type,
-            "feedback_id": fid,
-            "actor": actor,
-            "created_at": now,
-            "item": merged,
-        })
-    save_feedback_state(project_id, snapshot_id, state)
-    _append_jsonl(feedback_events_path(project_id, snapshot_id), events)
-    return {
-        "ok": True,
-        "project_id": project_id,
-        "snapshot_id": snapshot_id,
-        "created": created,
-        "updated": updated,
-        "count": len(items),
-        "state_path": str(feedback_state_path(project_id, snapshot_id)),
-        "events_path": str(feedback_events_path(project_id, snapshot_id)),
-        "items": [existing[str(item["feedback_id"])] for item in items],
-    }
+    with _feedback_state_update_lock(project_id, snapshot_id):
+        state = load_feedback_state(project_id, snapshot_id)
+        existing = state.setdefault("items", {})
+        now = _utc_now()
+        events: list[dict[str, Any]] = []
+        created = 0
+        updated = 0
+        for item in items:
+            fid = str(item.get("feedback_id") or "")
+            if not fid:
+                fid = f"rf-{uuid.uuid4().hex[:10]}"
+                item["feedback_id"] = fid
+            previous = existing.get(fid)
+            merged = {**(previous or {}), **item, "updated_at": now}
+            if (
+                event_type == "feedback.classified"
+                and previous
+                and previous.get("status") not in {"", STATUS_CLASSIFIED}
+            ):
+                merged["status"] = previous.get("status")
+            existing[fid] = merged
+            if previous:
+                updated += 1
+            else:
+                created += 1
+            events.append({
+                "event_id": f"rfe-{uuid.uuid4().hex[:10]}",
+                "event_type": event_type,
+                "feedback_id": fid,
+                "actor": actor,
+                "created_at": now,
+                "item": merged,
+            })
+        save_feedback_state(project_id, snapshot_id, state)
+        _append_jsonl(feedback_events_path(project_id, snapshot_id), events)
+        return {
+            "ok": True,
+            "project_id": project_id,
+            "snapshot_id": snapshot_id,
+            "created": created,
+            "updated": updated,
+            "count": len(items),
+            "state_path": str(feedback_state_path(project_id, snapshot_id)),
+            "events_path": str(feedback_events_path(project_id, snapshot_id)),
+            "items": [existing[str(item["feedback_id"])] for item in items],
+        }
 
 
 def carry_forward_feedback_review_state(

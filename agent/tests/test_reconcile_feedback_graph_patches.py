@@ -1,4 +1,7 @@
+from concurrent.futures import ThreadPoolExecutor
 import sqlite3
+import threading
+import time
 
 from agent.governance import graph_correction_patches as patches
 from agent.governance import graph_snapshot_store as store
@@ -19,6 +22,53 @@ def _conn(tmp_path, monkeypatch):
     store.ensure_schema(conn)
     patches.ensure_schema(conn)
     return conn
+
+
+def test_concurrent_feedback_submissions_preserve_all_items(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "agent.governance.db._governance_root",
+        lambda: tmp_path / "state",
+    )
+    snapshot_id = "feedback-concurrent"
+    worker_count = 8
+    barrier = threading.Barrier(worker_count)
+    original_read_json = reconcile_feedback._read_json
+
+    def _slow_read(path, default):
+        data = original_read_json(path, default)
+        time.sleep(0.02)
+        return data
+
+    monkeypatch.setattr(reconcile_feedback, "_read_json", _slow_read)
+
+    def _submit(index: int) -> str:
+        barrier.wait(timeout=5)
+        result = reconcile_feedback.submit_feedback_item(
+            PID,
+            snapshot_id,
+            feedback_kind=reconcile_feedback.KIND_NEEDS_OBSERVER_DECISION,
+            issue={
+                "issue": f"AI semantic enrichment generated for L7.{index}",
+                "source_node_ids": [f"L7.{index}"],
+                "target_id": f"L7.{index}",
+                "target_type": "node",
+                "priority": "P3",
+            },
+            actor="semantic_worker_inproc",
+        )
+        return str(result["items"][0]["feedback_id"])
+
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
+        feedback_ids = list(pool.map(_submit, range(worker_count)))
+
+    state = reconcile_feedback.load_feedback_state(PID, snapshot_id)
+    items = state["items"]
+    assert len(items) == worker_count
+    assert set(items) == set(feedback_ids)
+    assert {
+        item["target_id"]
+        for item in items.values()
+    } == {f"L7.{index}" for index in range(worker_count)}
 
 
 def test_dependency_feedback_promotes_to_accepted_add_edge_patch(tmp_path, monkeypatch):
