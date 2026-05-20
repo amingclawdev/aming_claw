@@ -1648,6 +1648,94 @@ def handle_project_ai_config_update(ctx: RequestContext):
     return payload
 
 
+@route("POST", "/api/ai-output/{project_id}/submit")
+def handle_ai_output_submit(ctx: RequestContext):
+    """Submit one structured AI output envelope for MF/observer processing."""
+    from . import ai_output_intake
+
+    project_id = ctx.get_project_id()
+    conn = get_connection(project_id)
+    try:
+        session = _require_graph_governance_operator(ctx, conn, "ai-output.submit")
+        actor = str(ctx.body.get("actor") or session.get("principal_id") or "observer")
+        result = ai_output_intake.submit_ai_output(
+            conn,
+            project_id,
+            ctx.body,
+            actor=actor,
+            request_id=ctx.request_id,
+            idempotency_key=ctx.idem_key,
+        )
+        conn.commit()
+        return (200 if result.get("idempotent") else 201), result
+    finally:
+        conn.close()
+
+
+@route("GET", "/api/ai-output/{project_id}/outputs")
+def handle_ai_output_list(ctx: RequestContext):
+    """List submitted AI output envelopes for observer inspection."""
+    from . import ai_output_intake
+
+    project_id = ctx.get_project_id()
+    conn = get_connection(project_id)
+    try:
+        _require_graph_governance_operator(ctx, conn, "ai-output.read")
+        outputs = ai_output_intake.list_ai_outputs(
+            conn,
+            project_id,
+            task_type=str(ctx.query.get("task_type") or ""),
+            status=str(ctx.query.get("status") or ""),
+            producer=str(ctx.query.get("producer") or ""),
+            target_id=str(ctx.query.get("target_id") or ""),
+            limit=_query_int(ctx.query, "limit", 50),
+            offset=_query_int(ctx.query, "offset", 0),
+        )
+        return {"ok": True, "project_id": project_id, "outputs": outputs, "count": len(outputs)}
+    finally:
+        conn.close()
+
+
+@route("GET", "/api/ai-output/{project_id}/outputs/{output_id}")
+def handle_ai_output_get(ctx: RequestContext):
+    """Return one submitted AI output envelope by id."""
+    from . import ai_output_intake
+
+    project_id = ctx.get_project_id()
+    output_id = unquote(str(ctx.path_params.get("output_id") or ""))
+    conn = get_connection(project_id)
+    try:
+        _require_graph_governance_operator(ctx, conn, "ai-output.read")
+        output = ai_output_intake.get_ai_output(conn, project_id, output_id)
+        if not output:
+            return 404, {"ok": False, "error": "ai_output_not_found", "output_id": output_id}
+        return {"ok": True, "project_id": project_id, "output": output}
+    finally:
+        conn.close()
+
+
+@route("GET", "/api/ai-output/{project_id}/queue")
+def handle_ai_output_queue(ctx: RequestContext):
+    """List queued AI outputs waiting for downstream processors/gates."""
+    from . import ai_output_intake
+
+    project_id = ctx.get_project_id()
+    conn = get_connection(project_id)
+    try:
+        _require_graph_governance_operator(ctx, conn, "ai-output.read")
+        queue = ai_output_intake.list_ai_output_queue(
+            conn,
+            project_id,
+            task_type=str(ctx.query.get("task_type") or ""),
+            status=str(ctx.query.get("status") or ""),
+            limit=_query_int(ctx.query, "limit", 50),
+            offset=_query_int(ctx.query, "offset", 0),
+        )
+        return {"ok": True, "project_id": project_id, "queue": queue, "count": len(queue)}
+    finally:
+        conn.close()
+
+
 @route("POST", "/api/projects/{project_id}/explain")
 def handle_project_explain(ctx: RequestContext):
     """Dry-run: explain what would happen for given changed files."""

@@ -19,7 +19,7 @@ if _agent_dir not in sys.path:
 from utils import tasks_root
 
 
-SCHEMA_VERSION = 39
+SCHEMA_VERSION = 40
 
 _SQLITE_WRITE_LOCK = threading.RLock()
 
@@ -198,6 +198,79 @@ CREATE TABLE IF NOT EXISTS chain_events (
 );
 CREATE INDEX IF NOT EXISTS idx_chain_events_root ON chain_events(root_task_id, ts);
 CREATE INDEX IF NOT EXISTS idx_chain_events_task ON chain_events(task_id, event_type, ts);
+
+-- Durable intake for structured AI output envelopes.
+CREATE TABLE IF NOT EXISTS ai_outputs (
+    output_id                    TEXT PRIMARY KEY,
+    project_id                   TEXT NOT NULL,
+    snapshot_id                  TEXT NOT NULL DEFAULT '',
+    base_commit                  TEXT NOT NULL DEFAULT '',
+    task_type                    TEXT NOT NULL,
+    target_type                  TEXT NOT NULL DEFAULT '',
+    target_id                    TEXT NOT NULL DEFAULT '',
+    producer                     TEXT NOT NULL DEFAULT '',
+    source_run_id                TEXT NOT NULL DEFAULT '',
+    provider                     TEXT NOT NULL DEFAULT '',
+    model                        TEXT NOT NULL DEFAULT '',
+    prompt_hash                  TEXT NOT NULL DEFAULT '',
+    payload_hash                 TEXT NOT NULL DEFAULT '',
+    dedupe_key                   TEXT NOT NULL,
+    idempotency_key              TEXT NOT NULL DEFAULT '',
+    status                       TEXT NOT NULL DEFAULT 'submitted',
+    route_status                 TEXT NOT NULL DEFAULT 'queued',
+    payload_json                 TEXT NOT NULL DEFAULT '{}',
+    self_precheck_json           TEXT NOT NULL DEFAULT '{}',
+    graph_query_trace_ids_json   TEXT NOT NULL DEFAULT '[]',
+    metadata_json                TEXT NOT NULL DEFAULT '{}',
+    created_by                   TEXT NOT NULL DEFAULT '',
+    created_at                   TEXT NOT NULL,
+    updated_at                   TEXT NOT NULL,
+    UNIQUE(project_id, dedupe_key)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_outputs_project_created
+    ON ai_outputs(project_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_ai_outputs_project_type_status
+    ON ai_outputs(project_id, task_type, status);
+CREATE INDEX IF NOT EXISTS idx_ai_outputs_target
+    ON ai_outputs(project_id, target_type, target_id);
+
+CREATE TABLE IF NOT EXISTS ai_output_events (
+    id                           INTEGER PRIMARY KEY AUTOINCREMENT,
+    output_id                    TEXT NOT NULL,
+    project_id                   TEXT NOT NULL,
+    event_type                   TEXT NOT NULL,
+    actor                        TEXT NOT NULL DEFAULT '',
+    request_id                   TEXT NOT NULL DEFAULT '',
+    payload_json                 TEXT NOT NULL DEFAULT '{}',
+    created_at                   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_output_events_output
+    ON ai_output_events(output_id, id);
+CREATE INDEX IF NOT EXISTS idx_ai_output_events_project
+    ON ai_output_events(project_id, created_at);
+
+CREATE TABLE IF NOT EXISTS ai_output_queue (
+    output_id                    TEXT PRIMARY KEY,
+    project_id                   TEXT NOT NULL,
+    task_type                    TEXT NOT NULL,
+    target_type                  TEXT NOT NULL DEFAULT '',
+    target_id                    TEXT NOT NULL DEFAULT '',
+    status                       TEXT NOT NULL DEFAULT 'queued',
+    priority                     INTEGER NOT NULL DEFAULT 0,
+    attempt_count                INTEGER NOT NULL DEFAULT 0,
+    max_attempts                 INTEGER NOT NULL DEFAULT 3,
+    lease_token                  TEXT NOT NULL DEFAULT '',
+    claimed_by                   TEXT NOT NULL DEFAULT '',
+    claimed_at                   TEXT NOT NULL DEFAULT '',
+    lease_expires_at             TEXT NOT NULL DEFAULT '',
+    last_error                   TEXT NOT NULL DEFAULT '',
+    created_at                   TEXT NOT NULL,
+    updated_at                   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_output_queue_project_status
+    ON ai_output_queue(project_id, status, priority, created_at);
+CREATE INDEX IF NOT EXISTS idx_ai_output_queue_project_type
+    ON ai_output_queue(project_id, task_type, status);
 
 -- Gate events audit trail (queryable gate history per task)
 CREATE TABLE IF NOT EXISTS gate_events (
@@ -1240,7 +1313,13 @@ def _run_migrations(conn: sqlite3.Connection, from_version: int, to_version: int
 
         ensure_managed_ref_schema(c)
 
-    MIGRATIONS = {2: _migrate_v1_to_v2, 3: _migrate_v2_to_v3, 4: _migrate_v3_to_v4, 5: _migrate_v4_to_v5, 6: _migrate_v5_to_v6, 7: _migrate_v6_to_v7, 8: _migrate_v7_to_v8, 9: _migrate_v8_to_v9, 10: _migrate_v9_to_v10, 11: _migrate_v10_to_v11, 12: _migrate_v11_to_v12, 13: _migrate_v12_to_v13, 14: _migrate_v13_to_v14, 15: _migrate_v14_to_v15, 16: _migrate_v15_to_v16, 17: _migrate_v16_to_v17, 18: _migrate_v17_to_v18, 19: _migrate_v18_to_v19, 20: _migrate_v19_to_v20, 21: _migrate_v20_to_v21, 22: _migrate_v21_to_v22, 23: _migrate_v22_to_v23, 24: _migrate_v23_to_v24, 25: _migrate_v24_to_v25, 26: _migrate_v25_to_v26, 27: _migrate_v26_to_v27, 28: _migrate_v27_to_v28, 29: _migrate_v28_to_v29, 30: _migrate_v29_to_v30, 31: _migrate_v30_to_v31, 32: _migrate_v31_to_v32, 33: _migrate_v32_to_v33, 34: _migrate_v33_to_v34, 35: _migrate_v34_to_v35, 36: _migrate_v35_to_v36, 37: _migrate_v36_to_v37, 38: _migrate_v37_to_v38, 39: _migrate_v38_to_v39}
+    def _migrate_v39_to_v40(c):
+        """Add durable structured AI output intake tables."""
+        from .ai_output_intake import ensure_schema as ensure_ai_output_intake_schema
+
+        ensure_ai_output_intake_schema(c)
+
+    MIGRATIONS = {2: _migrate_v1_to_v2, 3: _migrate_v2_to_v3, 4: _migrate_v3_to_v4, 5: _migrate_v4_to_v5, 6: _migrate_v5_to_v6, 7: _migrate_v6_to_v7, 8: _migrate_v7_to_v8, 9: _migrate_v8_to_v9, 10: _migrate_v9_to_v10, 11: _migrate_v10_to_v11, 12: _migrate_v11_to_v12, 13: _migrate_v12_to_v13, 14: _migrate_v13_to_v14, 15: _migrate_v14_to_v15, 16: _migrate_v15_to_v16, 17: _migrate_v16_to_v17, 18: _migrate_v17_to_v18, 19: _migrate_v18_to_v19, 20: _migrate_v19_to_v20, 21: _migrate_v20_to_v21, 22: _migrate_v21_to_v22, 23: _migrate_v22_to_v23, 24: _migrate_v23_to_v24, 25: _migrate_v24_to_v25, 26: _migrate_v25_to_v26, 27: _migrate_v26_to_v27, 28: _migrate_v27_to_v28, 29: _migrate_v28_to_v29, 30: _migrate_v29_to_v30, 31: _migrate_v30_to_v31, 32: _migrate_v31_to_v32, 33: _migrate_v32_to_v33, 34: _migrate_v33_to_v34, 35: _migrate_v34_to_v35, 36: _migrate_v35_to_v36, 37: _migrate_v36_to_v37, 38: _migrate_v37_to_v38, 39: _migrate_v38_to_v39, 40: _migrate_v39_to_v40}
     for version in range(from_version + 1, to_version + 1):
         if version in MIGRATIONS:
             MIGRATIONS[version](conn)
