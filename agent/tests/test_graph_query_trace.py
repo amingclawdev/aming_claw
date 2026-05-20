@@ -436,6 +436,22 @@ def test_graph_native_discovery_queries_cover_paths_functions_and_degrees(conn, 
     assert degree["result"]["fan_out"] == 1
     assert degree["result"]["by_type"]["depends_on"]["out"] == 1
 
+    neighbors = graph_query_trace.traced_query(
+        conn,
+        PID,
+        snapshot_id,
+        actor="observer",
+        query_source="observer",
+        query_purpose="prompt_context_build",
+        tool="get_neighbors",
+        args={"node_id": "L7.1", "compact": True},
+        project_root=project_root,
+    )
+    contract = neighbors["result"]["graph_contract"]
+    depends_on = contract["deps_graph"]["depends_on"]
+    assert depends_on["direction"] == "dependency_to_dependent"
+    assert "B -> A" in depends_on["interpretation"]
+
     high_degree = graph_query_trace.traced_query(
         conn,
         PID,

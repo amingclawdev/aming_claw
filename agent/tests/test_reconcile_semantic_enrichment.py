@@ -714,6 +714,12 @@ def test_semantic_enrichment_builds_ai_graph_query_audit_trace(conn, tmp_path):
             "find_node_by_path",
         ]
         assert audit["queries"][0]["ok"] is True
+        contract = payload["instructions"]["graph_contract"]["deps_graph"]["depends_on"]
+        assert contract["direction"] == "dependency_to_dependent"
+        context_contract = payload["graph_query_context"]["graph_contract"]["deps_graph"]["depends_on"]
+        assert context_contract["source_role"] == "dependency_provider_prerequisite"
+        neighbor_contract = payload["graph_query_context"]["neighbors"]["graph_contract"]["deps_graph"]["depends_on"]
+        assert "B -> A" in neighbor_contract["interpretation"]
         return {
             "feature_name": "Audited Backlog Runtime",
             "semantic_summary": "Uses audited graph context before semantic output.",

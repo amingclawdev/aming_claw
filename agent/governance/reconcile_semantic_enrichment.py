@@ -26,6 +26,7 @@ from .graph_snapshot_store import (
     utc_now,
 )
 from .reconcile_semantic_config import load_semantic_enrichment_config
+from .graph_contracts import graph_direction_contract
 
 
 SEMANTIC_ENRICHMENT_SCHEMA_VERSION = 1
@@ -745,6 +746,7 @@ def _semantic_ai_graph_query_context(
         "node": {},
         "neighbors": {},
         "path_bindings": [],
+        "graph_contract": graph_direction_contract(),
     }
     if not node_id:
         audit["status"] = "skipped"

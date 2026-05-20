@@ -8,6 +8,8 @@ from typing import Any
 
 import yaml
 
+from .graph_contracts import graph_direction_contract
+
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = _PROJECT_ROOT / "config" / "reconcile" / "semantic_enrichment.yaml"
@@ -401,6 +403,7 @@ class SemanticAnalyzerConfig:
                 **asdict(self.graph_enrich_config_ops),
                 **_graph_enrich_config_ops_instruction_payload(),
             },
+            "graph_contract": graph_direction_contract(),
             "output_schema": self.output_schema,
             "prompt_template": self.prompt_template,
         }

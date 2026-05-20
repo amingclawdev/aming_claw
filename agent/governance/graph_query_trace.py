@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from . import graph_events
+from .graph_contracts import graph_direction_contract
 from . import graph_snapshot_store as store
 from . import reconcile_feedback
 
@@ -891,6 +892,7 @@ def _query_get_neighbors(conn: sqlite3.Connection, project_id: str, snapshot_id:
         "nodes": nodes,
         "count": len(edges),
         "compact": compact,
+        "graph_contract": graph_direction_contract(),
     }
 
 

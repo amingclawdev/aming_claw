@@ -301,6 +301,14 @@ prompt_template: |-
   corrections as proposals. The caller will store your output as companion
   semantic artifacts for human or observer review.
 
+  Graph direction contract:
+  - Follow payload.instructions.graph_contract and payload.graph_query_context.graph_contract.
+  - In deps_graph, depends_on edges are dependency -> dependent for impact
+    analysis. If module A imports or calls module B, the canonical deps_graph
+    edge is B -> A. Do not report that edge as reversed.
+  - Function call facts remain caller -> callee. Do not confuse function fact
+    direction with collapsed deps_graph depends_on direction.
+
   When a graph correction is concrete and source-hint compatible, also emit it
   in graph_structure_suggestions using only graph_structure_ops.v1-compatible
   fields: op, source_path, target_node_id or target, edge, confidence, and
