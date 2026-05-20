@@ -53,6 +53,9 @@ execution_policy:
   chunk_large_nodes: true
   chunk_function_threshold: 80
   chunk_payload_threshold_chars: 90000
+  # function_index sends bounded function names/lines/hashes plus an audited
+  # retrieval boundary. source_excerpt remains available for explicit fallback.
+  chunk_context_mode: function_index
   chunk_max_slices: 16
   chunk_max_functions_per_slice: 40
   chunk_max_source_chars: 12000

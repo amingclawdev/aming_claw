@@ -1364,6 +1364,22 @@ def _normal_int(raw: Any, default: int, *, minimum: int = 1) -> int:
     return max(minimum, value)
 
 
+def _normal_chunk_context_mode(raw: Any, default: str = "function_index") -> str:
+    value = str(raw or default or "function_index").strip().lower().replace("-", "_")
+    aliases = {
+        "index": "function_index",
+        "indexed": "function_index",
+        "indexed_retrieval": "function_index",
+        "function_indexes": "function_index",
+        "function_index": "function_index",
+        "source": "source_excerpt",
+        "excerpt": "source_excerpt",
+        "source_excerpt": "source_excerpt",
+    }
+    value = aliases.get(value, value)
+    return value if value in {"function_index", "source_excerpt"} else default
+
+
 def _feature_functions(feature: dict[str, Any]) -> list[dict[str, Any]]:
     metadata = feature.get("metadata") if isinstance(feature.get("metadata"), dict) else {}
     raw_functions = metadata.get("functions")
@@ -1495,10 +1511,20 @@ def _compact_feature_for_slice(
     functions: list[dict[str, Any]],
     *,
     source_excerpt: dict[str, str],
+    context_mode: str = "function_index",
 ) -> dict[str, Any]:
     metadata = feature.get("metadata") if isinstance(feature.get("metadata"), dict) else {}
     graph_metrics = metadata.get("graph_metrics") if isinstance(metadata.get("graph_metrics"), dict) else {}
     all_functions = _feature_functions(feature)
+    function_index = [
+        {
+            key: item.get(key)
+            for key in ("name", "path", "lineno", "end_lineno")
+            if item.get(key) not in {None, ""}
+        }
+        for item in functions
+    ]
+    function_hashes = _function_hash_subset(feature, functions)
     compact_metadata = {
         "subsystem": str(metadata.get("subsystem") or metadata.get("subsystem_key") or ""),
         "module": str(metadata.get("module") or ""),
@@ -1509,14 +1535,7 @@ def _compact_feature_for_slice(
         "quality_flags": _path_list(metadata.get("quality_flags") or feature.get("quality_flags")),
         "function_count": len(functions),
         "total_function_count": int(metadata.get("function_count") or len(all_functions) or len(functions)),
-        "functions": [
-            {
-                key: item.get(key)
-                for key in ("name", "path", "lineno", "end_lineno")
-                if item.get(key) not in {None, ""}
-            }
-            for item in functions
-        ],
+        "functions": function_index,
     }
     compact = {
         "node_id": feature.get("node_id") or "",
@@ -1530,11 +1549,21 @@ def _compact_feature_for_slice(
         "config": _path_list(feature.get("config")),
         "feature_hash": feature.get("feature_hash") or "",
         "file_hashes": feature.get("file_hashes") if isinstance(feature.get("file_hashes"), dict) else {},
-        "function_hashes": _function_hash_subset(feature, functions),
+        "function_hashes": function_hashes,
+        "function_index": {
+            "mode": "function_index",
+            "functions": function_index,
+            "function_hashes": function_hashes,
+            "function_count": len(functions),
+            "total_function_count": compact_metadata["total_function_count"],
+        },
         "metadata": compact_metadata,
-        "source_excerpt": source_excerpt,
         "omitted_context": {
             "reason": "large_node_function_slice",
+            "chunk_context_mode": context_mode,
+            "source_excerpt": "omitted_by_function_index_mode"
+            if context_mode == "function_index"
+            else "included",
             "symbol_ref_count": len(feature.get("symbol_refs") or []),
             "test_symbol_ref_count": len(feature.get("test_symbol_refs") or []),
             "test_function_count": len(feature.get("test_functions") or []),
@@ -1545,6 +1574,8 @@ def _compact_feature_for_slice(
             ),
         },
     }
+    if context_mode == "source_excerpt":
+        compact["source_excerpt"] = source_excerpt
     # Drop empty scalar/list/dict fields while keeping an explicit compact shape.
     return {
         key: value for key, value in compact.items()
@@ -1559,10 +1590,12 @@ def _plan_semantic_function_slices(
     max_slices: int,
     max_functions_per_slice: int,
     max_source_chars: int,
+    context_mode: str = "function_index",
 ) -> dict[str, Any]:
     functions = _feature_functions(feature)
     if not functions:
         return {"enabled": False, "reason": "no_functions", "slices": []}
+    context_mode = _normal_chunk_context_mode(context_mode)
     max_slices = _normal_int(max_slices, 16)
     max_functions_per_slice = _normal_int(max_functions_per_slice, 40)
     max_source_chars = _normal_int(max_source_chars, 12000, minimum=500)
@@ -1570,7 +1603,11 @@ def _plan_semantic_function_slices(
         max_functions_per_slice = max(max_functions_per_slice, (len(functions) + max_slices - 1) // max_slices)
     primary_paths = _path_list(feature.get("primary"))
     function_paths = sorted({str(item.get("path") or "") for item in functions if str(item.get("path") or "")})
-    source_lines = _source_lines_by_path(project_root, function_paths or primary_paths)
+    source_lines = (
+        _source_lines_by_path(project_root, function_paths or primary_paths)
+        if context_mode == "source_excerpt"
+        else {}
+    )
     slices: list[dict[str, Any]] = []
     for idx in range(0, len(functions), max_functions_per_slice):
         part = functions[idx: idx + max_functions_per_slice]
@@ -1581,7 +1618,12 @@ def _plan_semantic_function_slices(
             source_lines=source_lines,
             max_chars=max_source_chars,
         )
-        compact_feature = _compact_feature_for_slice(feature, part, source_excerpt=source_excerpt)
+        compact_feature = _compact_feature_for_slice(
+            feature,
+            part,
+            source_excerpt=source_excerpt,
+            context_mode=context_mode,
+        )
         slices.append({
             "slice_id": slice_id,
             "slice_index": slice_index,
@@ -1597,6 +1639,7 @@ def _plan_semantic_function_slices(
             "feature": compact_feature,
             "function_hashes": compact_feature.get("function_hashes") or {},
             "source_excerpt_chars": sum(len(value) for value in source_excerpt.values()),
+            "context_mode": context_mode,
         })
         if len(slices) >= max_slices:
             break
@@ -1607,6 +1650,7 @@ def _plan_semantic_function_slices(
         "slice_count": len(slices),
         "max_functions_per_slice": max_functions_per_slice,
         "max_source_chars": max_source_chars,
+        "context_mode": context_mode,
         "slices": slices,
     }
 
@@ -1664,6 +1708,7 @@ def _aggregate_chunked_semantic_response(
             "semantic_chunking": {
                 "mode": "function_slices",
                 "status": "failed",
+                "context_mode": plan.get("context_mode") or "",
                 "slice_count": len(plan.get("slices") or []),
                 "completed_slice_count": len(ok_responses),
             },
@@ -1722,6 +1767,7 @@ def _aggregate_chunked_semantic_response(
         "semantic_chunking": {
             "mode": "function_slices",
             "status": "complete",
+            "context_mode": plan.get("context_mode") or "",
             "function_count": plan.get("function_count", 0),
             "slice_count": len(slice_records),
             "completed_slice_count": len(slice_records),
@@ -3540,6 +3586,7 @@ def run_semantic_enrichment(
     semantic_ai_chunk_large_nodes: bool | None = None,
     semantic_ai_chunk_function_threshold: int | None = None,
     semantic_ai_chunk_payload_threshold_chars: int | None = None,
+    semantic_ai_chunk_context_mode: str | None = None,
     semantic_ai_chunk_max_slices: int | None = None,
     semantic_ai_chunk_max_functions_per_slice: int | None = None,
     semantic_ai_chunk_max_source_chars: int | None = None,
@@ -3719,6 +3766,10 @@ def run_semantic_enrichment(
         semantic_ai_chunk_payload_threshold_chars,
         semantic_config.execution_policy.chunk_payload_threshold_chars,
         minimum=1000,
+    )
+    chunk_context_mode = _normal_chunk_context_mode(
+        semantic_ai_chunk_context_mode,
+        semantic_config.execution_policy.chunk_context_mode,
     )
     chunk_max_slices = _normal_int(
         semantic_ai_chunk_max_slices,
@@ -3912,6 +3963,7 @@ def run_semantic_enrichment(
             max_slices=chunk_max_slices,
             max_functions_per_slice=chunk_max_functions_per_slice,
             max_source_chars=chunk_max_source_chars,
+            context_mode=chunk_context_mode,
         )
         slices = plan.get("slices") if isinstance(plan.get("slices"), list) else []
         if not plan.get("enabled") or not slices:
@@ -3922,6 +3974,7 @@ def run_semantic_enrichment(
                     "mode": "function_slices",
                     "status": "failed",
                     "reason": plan.get("reason") or "chunk_plan_unavailable",
+                    "context_mode": plan.get("context_mode") or chunk_context_mode,
                 },
             }
         ai_chunked_node_count += 1
@@ -3936,15 +3989,42 @@ def run_semantic_enrichment(
                 "slice_index": slice_plan.get("slice_index", 0),
                 "slice_count": len(slices),
                 "function_count": plan.get("function_count", 0),
+                "context_mode": plan.get("context_mode") or chunk_context_mode,
                 "covered_functions": slice_plan.get("covered_functions") or [],
                 "fallback_error": fallback_error,
+            }
+            slice_payload["semantic_retrieval"] = {
+                "mode": plan.get("context_mode") or chunk_context_mode,
+                "audit_boundary": "payload_only",
+                "source_excerpt_included": (plan.get("context_mode") == "source_excerpt"),
+                "allowed_inputs": [
+                    "payload.feature.function_index",
+                    "payload.feature.function_hashes",
+                    "payload.semantic_chunk.covered_functions",
+                    "payload.graph_query_audit",
+                    "payload.graph_query_context",
+                    "payload.review_feedback",
+                ],
+                "disallowed_inputs": [
+                    "project_file_reads",
+                    "database_reads",
+                    "unaudited_graph_queries",
+                    "source_files_outside_payload",
+                ],
+                "if_insufficient_evidence": (
+                    "State uncertainty in self_check.known_risks or propose an evidence request; "
+                    "do not inspect files outside this payload."
+                ),
             }
             slice_payload["instructions"] = {
                 **slice_payload.get("instructions", {}),
                 "chunk_mode": True,
+                "chunk_context_mode": plan.get("context_mode") or chunk_context_mode,
                 "chunk_output_contract": (
                     "Return one JSON object describing only this function slice. "
-                    "Use the same semantic fields as single-feature enrichment; do not infer beyond covered_functions."
+                    "Use the same semantic fields as single-feature enrichment; do not infer beyond covered_functions. "
+                    "When semantic_retrieval.mode is function_index, reason from function names, line ranges, "
+                    "hashes, audited graph context, and review feedback only."
                 ),
             }
             slice_name = f"{record['node_name']}-slice-{int(slice_plan.get('slice_index') or 0):03d}"
@@ -4591,6 +4671,7 @@ def run_semantic_enrichment(
             "enabled": bool(chunk_large_nodes),
             "function_threshold": chunk_function_threshold,
             "payload_threshold_chars": chunk_payload_threshold_chars,
+            "context_mode": chunk_context_mode,
             "max_slices": chunk_max_slices,
             "max_functions_per_slice": chunk_max_functions_per_slice,
             "max_source_chars": chunk_max_source_chars,
@@ -4641,6 +4722,7 @@ def run_semantic_enrichment(
             "enabled": bool(chunk_large_nodes),
             "function_threshold": chunk_function_threshold,
             "payload_threshold_chars": chunk_payload_threshold_chars,
+            "context_mode": chunk_context_mode,
             "max_slices": chunk_max_slices,
             "max_functions_per_slice": chunk_max_functions_per_slice,
             "max_source_chars": chunk_max_source_chars,

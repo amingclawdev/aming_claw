@@ -1096,9 +1096,15 @@ def test_semantic_enrichment_chunks_large_function_node_and_aggregates(conn, tmp
         assert stage == "reconcile_semantic_feature_slice"
         chunk = payload["semantic_chunk"]
         assert chunk["mode"] == "function_slice"
+        assert chunk["context_mode"] == "function_index"
         assert len(chunk["covered_functions"]) <= 2
         assert len(payload["feature"]["metadata"]["functions"]) <= 2
         assert payload["feature"]["metadata"]["total_function_count"] == 6
+        assert "source_excerpt" not in payload["feature"]
+        assert payload["feature"]["function_index"]["mode"] == "function_index"
+        assert payload["semantic_retrieval"]["mode"] == "function_index"
+        assert payload["semantic_retrieval"]["source_excerpt_included"] is False
+        assert payload["semantic_retrieval"]["audit_boundary"] == "payload_only"
         assert "symbol_refs" not in payload["feature"]
         assert "test_symbol_refs" not in payload["feature"]
         assert "test_functions" not in payload["feature"]
@@ -1163,8 +1169,101 @@ def test_semantic_enrichment_chunks_large_function_node_and_aggregates(conn, tmp
         (project / "semantic-trace" / "chunk-inputs" / "L7.large-slice-000.json").read_text()
     )
     assert len(json.dumps(chunk_payload, sort_keys=True)) < 50000
+    assert "source_excerpt" not in chunk_payload["feature"]
+    assert chunk_payload["semantic_retrieval"]["mode"] == "function_index"
     output = json.loads((project / "semantic-trace" / "feature-outputs" / "L7.large.json").read_text())
     assert output["semantic_entry"]["semantic_chunking"]["mode"] == "function_slices"
+
+
+def test_semantic_enrichment_source_excerpt_chunk_mode_remains_available(conn, tmp_path):
+    project = tmp_path / "project"
+    source = "\n\n".join(
+        f"def generated_{idx}():\n    return {idx}\n"
+        for idx in range(4)
+    )
+    _write(project / "agent" / "governance" / "large_excerpt.py", source)
+    functions = [
+        {
+            "name": f"generated_{idx}",
+            "path": "agent/governance/large_excerpt.py",
+            "lineno": idx * 3 + 1,
+        }
+        for idx in range(4)
+    ]
+    graph = {
+        "deps_graph": {
+            "nodes": [
+                {
+                    "id": "L7.excerpt",
+                    "layer": "L7",
+                    "title": "Large Excerpt Node",
+                    "primary": ["agent/governance/large_excerpt.py"],
+                    "metadata": {
+                        "function_count": len(functions),
+                        "functions": functions,
+                    },
+                }
+            ],
+            "edges": [],
+        }
+    }
+    store.create_graph_snapshot(
+        conn,
+        PID,
+        snapshot_id="full-semantic-test",
+        commit_sha="abc1234",
+        snapshot_kind="full",
+        graph_json=graph,
+        notes=json.dumps({"state_only": True}),
+    )
+    store.index_graph_snapshot(
+        conn,
+        PID,
+        "full-semantic-test",
+        nodes=graph["deps_graph"]["nodes"],
+        edges=[],
+    )
+    conn.commit()
+
+    def fake_ai(stage: str, payload: dict) -> dict:
+        assert stage == "reconcile_semantic_feature_slice"
+        assert payload["semantic_chunk"]["context_mode"] == "source_excerpt"
+        assert payload["semantic_retrieval"]["mode"] == "source_excerpt"
+        assert payload["semantic_retrieval"]["source_excerpt_included"] is True
+        excerpt = payload["feature"]["source_excerpt"]["agent/governance/large_excerpt.py"]
+        assert "def generated_0" in excerpt or "def generated_2" in excerpt
+        return {
+            "feature_name": "Excerpt slice",
+            "semantic_summary": "Excerpt-backed bounded function slice.",
+            "self_check": {
+                "required": True,
+                "valid": True,
+                "status": "passed",
+                "checked_rules": ["required_fields_present"],
+                "checked_rules_count": 1,
+                "repair_attempts": 0,
+                "max_repair_attempts": 1,
+                "known_risks": [],
+            },
+        }
+
+    result = run_semantic_enrichment(
+        conn,
+        PID,
+        "full-semantic-test",
+        project,
+        use_ai=True,
+        ai_call=fake_ai,
+        semantic_ai_scope="selected",
+        semantic_node_ids=["L7.excerpt"],
+        semantic_ai_chunk_function_threshold=3,
+        semantic_ai_chunk_max_functions_per_slice=2,
+        semantic_ai_chunk_context_mode="source_excerpt",
+        created_by="semantic-worker-test",
+    )
+
+    assert result["summary"]["ai_complete_count"] == 1
+    assert result["semantic_index"]["features"][0]["semantic_chunking"]["context_mode"] == "source_excerpt"
 
 
 def test_semantic_enrichment_retries_prompt_too_long_with_function_slices(conn, tmp_path):

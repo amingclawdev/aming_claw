@@ -63,6 +63,7 @@ def test_default_semantic_config_loads_state_only_profile():
     assert config.execution_policy.chunk_large_nodes is True
     assert config.execution_policy.chunk_function_threshold == 80
     assert config.execution_policy.chunk_payload_threshold_chars == 90000
+    assert config.execution_policy.chunk_context_mode == "function_index"
     assert config.execution_policy.chunk_max_slices == 16
     assert config.execution_policy.chunk_max_functions_per_slice == 40
     assert config.execution_policy.chunk_max_source_chars == 12000
@@ -84,6 +85,7 @@ def test_default_semantic_config_loads_state_only_profile():
     assert payload["job_type"] == "node"
     assert payload["execution_policy"]["ai_input_mode"] == "feature"
     assert payload["execution_policy"]["chunk_large_nodes"] is True
+    assert payload["execution_policy"]["chunk_context_mode"] == "function_index"
     assert payload["execution_policy"]["chunk_max_slices"] == 16
     assert payload["execution_policy"]["worker_max_concurrency"] == 10
     assert payload["execution_policy"]["worker_claim_batch_size"] == 10

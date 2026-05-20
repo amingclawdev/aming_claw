@@ -110,6 +110,7 @@ class SemanticExecutionPolicy:
     chunk_large_nodes: bool = True
     chunk_function_threshold: int = 80
     chunk_payload_threshold_chars: int = 90000
+    chunk_context_mode: str = "function_index"
     chunk_max_slices: int = 16
     chunk_max_functions_per_slice: int = 40
     chunk_max_source_chars: int = 12000
@@ -260,6 +261,14 @@ class SemanticAnalyzerConfig:
                 default=90000,
                 min_value=1000,
                 max_value=5_000_000,
+            ),
+            chunk_context_mode=_normalize_chunk_context_mode(
+                _first_present(
+                    execution_policy_raw,
+                    "chunk_context_mode",
+                    "semantic_chunk_context_mode",
+                    "chunk_input_mode",
+                )
             ),
             chunk_max_slices=_bounded_int(
                 _first_present(
@@ -499,6 +508,26 @@ def _normalize_ai_input_mode(value: Any) -> str:
         return "batch"
     raise SemanticConfigValidationError(
         "execution_policy.ai_input_mode must be 'feature' or 'batch'"
+    )
+
+
+def _normalize_chunk_context_mode(value: Any) -> str:
+    raw = str(value or "function_index").strip().lower().replace("-", "_")
+    aliases = {
+        "index": "function_index",
+        "indexed": "function_index",
+        "indexed_retrieval": "function_index",
+        "function_indexes": "function_index",
+        "function_index": "function_index",
+        "source": "source_excerpt",
+        "excerpt": "source_excerpt",
+        "source_excerpt": "source_excerpt",
+    }
+    normalized = aliases.get(raw, raw)
+    if normalized in {"function_index", "source_excerpt"}:
+        return normalized
+    raise SemanticConfigValidationError(
+        "execution_policy.chunk_context_mode must be 'function_index' or 'source_excerpt'"
     )
 
 
