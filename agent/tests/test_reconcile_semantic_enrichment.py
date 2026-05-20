@@ -10,9 +10,11 @@ from agent.governance import reconcile_batch_memory as bm
 from agent.governance import graph_snapshot_store as store
 from agent.governance import reconcile_feedback
 from agent.governance.reconcile_semantic_enrichment import (
+    NODE_SEMANTIC_SELF_CHECK_RULES,
     _batch_key,
     _ensure_semantic_state_schema,
     _persist_semantic_state_to_db,
+    _slice_response_self_check,
     _semantic_state_validation,
     _semantic_batch_memory_summary,
     _upsert_semantic_job,
@@ -35,6 +37,36 @@ def test_semantic_batch_key_prefers_hierarchy_parent_for_feature_groups():
     }
 
     assert _batch_key(feature, "subsystem") == "L3.19"
+
+
+def test_slice_response_self_check_preserves_required_contract_rules():
+    result = _slice_response_self_check([
+        {
+            "self_check": {
+                "valid": True,
+                "status": "passed",
+                "checked_rules": NODE_SEMANTIC_SELF_CHECK_RULES,
+                "known_risks": ["source_excerpt_omitted"],
+            }
+        }
+    ])
+
+    assert result["valid"] is True
+    assert result["status"] == "passed"
+    assert result["checked_rules"] == [
+        *NODE_SEMANTIC_SELF_CHECK_RULES,
+        "chunk_slices_accounted_for",
+    ]
+    assert result["checked_rules_count"] == len(result["checked_rules"])
+    assert "source_excerpt_omitted" in result["known_risks"]
+
+
+def test_slice_response_self_check_fails_when_chunk_self_check_missing():
+    result = _slice_response_self_check([{"semantic_summary": "chunk without self-check"}])
+
+    assert result["valid"] is False
+    assert result["status"] == "failed"
+    assert "missing_chunk_self_check" in result["known_risks"]
 
 
 def test_semantic_jobs_can_be_claimed_with_worker_lease(conn, tmp_path):

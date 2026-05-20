@@ -1904,29 +1904,42 @@ def _slice_response_self_check(responses: list[dict[str, Any]]) -> dict[str, Any
         for item in responses
         if isinstance(item, dict) and isinstance(item.get("self_check"), dict)
     ]
-    valid = bool(responses) and all(not item.get("_ai_error") for item in responses)
+    chunk_rule = "chunk_slices_accounted_for"
+    checked_rules = [*NODE_SEMANTIC_SELF_CHECK_RULES, chunk_rule]
+    valid = (
+        bool(responses)
+        and all(not item.get("_ai_error") for item in responses)
+        and len(checks) == len(responses)
+        and all(
+            bool(
+                check.get("valid") is True
+                or str(check.get("status") or "").lower()
+                in {"passed", "pass", "ok", "valid"}
+            )
+            for check in checks
+            if isinstance(check, dict)
+        )
+    )
+    risks = [
+        "Node semantic payload was deterministically aggregated from function-slice AI outputs."
+    ]
+    if len(checks) != len(responses):
+        risks.append("missing_chunk_self_check")
+    risks.extend([
+        risk
+        for check in checks
+        for risk in (check.get("known_risks") or [])[:2]
+        if isinstance(check, dict)
+    ][:6])
     return {
         "required": True,
         "valid": valid,
         "status": "passed" if valid else "failed",
-        "checked_rules": [
-            "required_fields_present",
-            "source_payload_only",
-            "no_project_mutation",
-            "review_feedback_accounted_for",
-            "chunk_slices_accounted_for",
-        ],
-        "checked_rules_count": 5,
+        "checked_rules": checked_rules,
+        "checked_rules_count": len(checked_rules),
         "repair_attempts": 0,
         "max_repair_attempts": 1,
-        "known_risks": [
-            "Node semantic payload was deterministically aggregated from function-slice AI outputs."
-        ] + [
-            risk
-            for check in checks
-            for risk in (check.get("known_risks") or [])[:2]
-            if isinstance(check, dict)
-        ][:6],
+        "known_risks": risks,
     }
 
 
