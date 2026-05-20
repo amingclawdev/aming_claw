@@ -213,6 +213,45 @@ def _changed_functions_for_line_ranges(
     nodes: list[dict[str, Any]],
     changed_line_ranges_by_path: dict[str, list[list[int]]],
 ) -> dict[str, Any]:
+    return _changed_symbols_for_line_ranges(
+        nodes,
+        changed_line_ranges_by_path,
+        node_path_role="primary",
+        metadata_symbols_key="functions",
+        metadata_lines_key="function_lines",
+        changed_ids_key="changed_function_ids",
+        changed_by_node_key="changed_functions_by_node",
+        changed_count_key="changed_function_count",
+    )
+
+
+def _changed_test_functions_for_line_ranges(
+    nodes: list[dict[str, Any]],
+    changed_line_ranges_by_path: dict[str, list[list[int]]],
+) -> dict[str, Any]:
+    return _changed_symbols_for_line_ranges(
+        nodes,
+        changed_line_ranges_by_path,
+        node_path_role="test",
+        metadata_symbols_key="test_functions",
+        metadata_lines_key="test_function_lines",
+        changed_ids_key="changed_test_function_ids",
+        changed_by_node_key="changed_test_functions_by_node",
+        changed_count_key="changed_test_function_count",
+    )
+
+
+def _changed_symbols_for_line_ranges(
+    nodes: list[dict[str, Any]],
+    changed_line_ranges_by_path: dict[str, list[list[int]]],
+    *,
+    node_path_role: str,
+    metadata_symbols_key: str,
+    metadata_lines_key: str,
+    changed_ids_key: str,
+    changed_by_node_key: str,
+    changed_count_key: str,
+) -> dict[str, Any]:
     changed_by_node: dict[str, list[str]] = {}
     changed_ids: set[str] = set()
     changed_paths = {
@@ -223,9 +262,9 @@ def _changed_functions_for_line_ranges(
     for node in nodes:
         node_id = _node_id(node)
         metadata = _node_metadata(node)
-        functions = metadata.get("functions") if isinstance(metadata.get("functions"), list) else []
-        line_index = metadata.get("function_lines") if isinstance(metadata.get("function_lines"), dict) else {}
-        node_paths = set(_path_values(node, "primary"))
+        functions = metadata.get(metadata_symbols_key) if isinstance(metadata.get(metadata_symbols_key), list) else []
+        line_index = metadata.get(metadata_lines_key) if isinstance(metadata.get(metadata_lines_key), dict) else {}
+        node_paths = set(_path_values(node, node_path_role))
         node_changed: set[str] = set()
         for path in node_paths.intersection(changed_paths):
             ranges = changed_paths.get(path) or []
@@ -233,8 +272,7 @@ def _changed_functions_for_line_ranges(
                 function_id = str(raw_function or "")
                 if not function_id:
                     continue
-                function_name = function_id.rsplit("::", 1)[-1]
-                lines = line_index.get(function_name) if isinstance(line_index.get(function_name), list) else []
+                lines = _function_line_range(line_index, function_id)
                 if not lines:
                     continue
                 start = int(lines[0] or 0)
@@ -248,10 +286,19 @@ def _changed_functions_for_line_ranges(
         if node_changed:
             changed_by_node[node_id] = sorted(node_changed)
     return {
-        "changed_function_ids": sorted(changed_ids),
-        "changed_functions_by_node": dict(sorted(changed_by_node.items())),
-        "changed_function_count": len(changed_ids),
+        changed_ids_key: sorted(changed_ids),
+        changed_by_node_key: dict(sorted(changed_by_node.items())),
+        changed_count_key: len(changed_ids),
     }
+
+
+def _function_line_range(line_index: dict[str, Any], function_id: str) -> list[Any]:
+    lines = line_index.get(function_id)
+    if isinstance(lines, list):
+        return lines
+    function_name = function_id.rsplit("::", 1)[-1]
+    lines = line_index.get(function_name)
+    return lines if isinstance(lines, list) else []
 
 
 def _git_dirty_files(project_root: str | Path) -> list[str]:
@@ -3496,6 +3543,12 @@ def _finalize_scope_reconcile_candidate(
     )
     if scope_function_delta.get("changed_function_ids"):
         scope_file_delta["scope_function_delta"] = scope_function_delta
+    scope_test_function_delta = _changed_test_functions_for_line_ranges(
+        _deps_graph_nodes(new_graph_json),
+        changed_line_ranges,
+    )
+    if scope_test_function_delta.get("changed_test_function_ids"):
+        scope_file_delta["scope_test_function_delta"] = scope_test_function_delta
     scope_graph_delta = _build_scope_graph_delta(
         old_graph_json=old_graph_json,
         new_graph_json=new_graph_json,

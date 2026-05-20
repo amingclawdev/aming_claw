@@ -220,7 +220,18 @@ def merge_feature_hashes_into_graph_nodes(
         feature_hash = str(feature.get("feature_hash") or "")
         file_hashes = feature.get("file_hashes") if isinstance(feature.get("file_hashes"), dict) else {}
         function_hashes = feature.get("function_hashes") if isinstance(feature.get("function_hashes"), dict) else {}
-        if not feature_hash and not file_hashes and not function_hashes:
+        test_function_hashes = (
+            feature.get("test_function_hashes")
+            if isinstance(feature.get("test_function_hashes"), dict)
+            else {}
+        )
+        test_functions = feature.get("test_functions") if isinstance(feature.get("test_functions"), list) else []
+        test_function_lines = (
+            feature.get("test_function_lines")
+            if isinstance(feature.get("test_function_lines"), dict)
+            else {}
+        )
+        if not feature_hash and not file_hashes and not function_hashes and not test_function_hashes:
             missing += 1
             continue
         metadata = dict(node.get("metadata") or {}) if isinstance(node.get("metadata"), dict) else {}
@@ -238,6 +249,20 @@ def merge_feature_hashes_into_graph_nodes(
                 str(function_id): str(value)
                 for function_id, value in function_hashes.items()
                 if str(function_id) and str(value)
+            }
+        if test_function_hashes:
+            metadata["test_function_hashes"] = {
+                str(function_id): str(value)
+                for function_id, value in test_function_hashes.items()
+                if str(function_id) and str(value)
+            }
+        if test_functions:
+            metadata["test_functions"] = sorted(str(function_id) for function_id in test_functions if str(function_id))
+        if test_function_lines:
+            metadata["test_function_lines"] = {
+                str(function_name): list(value)
+                for function_name, value in test_function_lines.items()
+                if str(function_name) and isinstance(value, list)
             }
         node["metadata"] = metadata
         updated += 1
@@ -417,8 +442,14 @@ def build_feature_index(
                 "headings": doc.get("headings") or [],
             })
         test_symbol_refs = []
+        test_function_hashes: dict[str, str] = {}
+        test_function_lines: dict[str, list[int]] = {}
+        test_functions: list[str] = []
         for path in tests:
             for symbol in symbols_by_path.get(path, []):
+                symbol_id = str(symbol.get("id") or "")
+                symbol_hash = str(symbol.get("source_hash") or "")
+                symbol_kind = str(symbol.get("kind") or "")
                 test_symbol_refs.append({
                     "id": symbol.get("id") or "",
                     "kind": symbol.get("kind") or "",
@@ -427,6 +458,17 @@ def build_feature_index(
                     "line_end": symbol.get("line_end", 0),
                     "source_hash": symbol.get("source_hash") or "",
                 })
+                if symbol_kind == "test_function" and symbol_id:
+                    test_functions.append(symbol_id)
+                    if symbol_hash:
+                        test_function_hashes[symbol_id] = symbol_hash
+                    function_name = symbol_id.rsplit("::", 1)[-1]
+                    line_start = int(symbol.get("line_start", 0) or 0)
+                    line_end = int(symbol.get("line_end", line_start) or line_start)
+                    if function_name and line_start > 0:
+                        line_range = [line_start, max(line_start, line_end)]
+                        test_function_lines[symbol_id] = line_range
+                        test_function_lines[function_name] = line_range
         config_refs = [
             {
                 "path": path,
@@ -444,6 +486,9 @@ def build_feature_index(
             "config": config,
             "file_hashes": {path: file_hashes.get(path, "") for path in primary + secondary + tests + config},
             "function_hashes": function_hashes,
+            "test_function_hashes": test_function_hashes,
+            "test_functions": sorted(set(test_functions)),
+            "test_function_lines": dict(sorted(test_function_lines.items())),
             "symbol_ids": [ref["id"] for ref in symbol_refs],
             "test_symbol_ids": [ref["id"] for ref in test_symbol_refs],
             "doc_paths": [ref["path"] for ref in doc_refs],

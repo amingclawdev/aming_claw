@@ -7,6 +7,7 @@ materializes scan artifacts there without mutating the canonical graph.
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import os
 import re
@@ -352,6 +353,16 @@ def _count_lines(path: Path) -> int:
     return max(1, count)
 
 
+def _source_span_hash(lines: list[str], node: ast.AST) -> str:
+    start = int(getattr(node, "lineno", 0) or 0)
+    end = int(getattr(node, "end_lineno", start) or start)
+    if start <= 0:
+        return ""
+    end = max(start, end)
+    snippet = "\n".join(lines[start - 1 : min(len(lines), end)])
+    return f"sha256:{hashlib.sha256(snippet.encode('utf-8')).hexdigest()}"
+
+
 def _module_name_from_rel(rel_path: str) -> str:
     rel = str(rel_path or "").replace("\\", "/").strip("/")
     if rel.endswith(".py"):
@@ -421,6 +432,7 @@ def _parse_python_file_symbols(root: Path, rel_path: str, file_kind: str) -> lis
         return []
 
     module = _module_name_from_rel(rel_path)
+    lines = text.splitlines()
     symbols: list[dict[str, Any]] = []
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -433,6 +445,7 @@ def _parse_python_file_symbols(root: Path, rel_path: str, file_kind: str) -> lis
                 "path": rel_path,
                 "line_start": int(getattr(node, "lineno", 1) or 1),
                 "line_end": int(getattr(node, "end_lineno", getattr(node, "lineno", 1)) or 1),
+                "source_hash": _source_span_hash(lines, node),
                 "decorators": [
                     name for name in (_decorator_name(item) for item in node.decorator_list) if name
                 ],

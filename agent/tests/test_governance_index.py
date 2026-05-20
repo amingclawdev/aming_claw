@@ -50,7 +50,9 @@ def _write_project(root: Path) -> None:
     (root / "tests" / "test_service.py").write_text(
         "from src.demo_app.service import calculate_total\n\n"
         "def test_calculate_total():\n"
-        "    assert calculate_total([1, 2]) == 3\n",
+        "    assert calculate_total([1, 2]) == 3\n\n"
+        "def test_calculate_total_empty():\n"
+        "    assert calculate_total([]) == 0\n",
         encoding="utf-8",
     )
 
@@ -148,11 +150,12 @@ def test_build_and_persist_governance_index_maps_hashes_symbols_docs_and_graph(c
         item["id"] == "src.demo_app.service::STATUS_READY" and item["kind"] == "constant"
         for item in symbol_index["symbols"]
     )
-    assert any(
-        item["id"] == "tests.test_service::test_calculate_total"
-        and item["kind"] == "test_function"
-        for item in symbol_index["symbols"]
+    test_symbol = next(
+        item for item in symbol_index["symbols"]
+        if item["id"] == "tests.test_service::test_calculate_total"
     )
+    assert test_symbol["kind"] == "test_function"
+    assert test_symbol["source_hash"].startswith("sha256:")
 
     doc_index = index["doc_index"]
     readme = next(item for item in doc_index["documents"] if item["path"] == "README.md")
@@ -164,7 +167,18 @@ def test_build_and_persist_governance_index_maps_hashes_symbols_docs_and_graph(c
     assert function_ref["line_start"] == 1
     assert function_ref["source_hash"].startswith("sha256:")
     assert feature["function_hashes"][function_ref["id"]] == function_ref["source_hash"]
-    assert feature["test_symbol_refs"][0]["id"] == "tests.test_service::test_calculate_total"
+    test_ref = next(
+        item for item in feature["test_symbol_refs"]
+        if item["id"] == "tests.test_service::test_calculate_total"
+    )
+    assert test_ref["source_hash"] == test_symbol["source_hash"]
+    assert feature["test_function_hashes"][test_ref["id"]] == test_ref["source_hash"]
+    assert feature["test_functions"] == [
+        "tests.test_service::test_calculate_total",
+        "tests.test_service::test_calculate_total_empty",
+    ]
+    assert feature["test_function_lines"]["test_calculate_total"] == [3, 4]
+    assert feature["test_function_lines"]["tests.test_service::test_calculate_total"] == [3, 4]
     assert feature["doc_refs"][0]["path"] in {"README.md", "docs/usage.md"}
     graph_payload = {
         "deps_graph": {
@@ -179,6 +193,8 @@ def test_build_and_persist_governance_index_maps_hashes_symbols_docs_and_graph(c
     merge = merge_feature_hashes_into_graph_nodes(graph_payload, index)
     assert merge["nodes_updated"] == 1
     assert graph_payload["deps_graph"]["nodes"][0]["metadata"]["function_hashes"] == feature["function_hashes"]
+    assert graph_payload["deps_graph"]["nodes"][0]["metadata"]["test_function_hashes"] == feature["test_function_hashes"]
+    assert graph_payload["deps_graph"]["nodes"][0]["metadata"]["test_function_lines"] == feature["test_function_lines"]
     assert index["coverage_state"]["active_snapshot_id"] == "imported-abc1234-index"
     assert index["coverage_state"]["feature_count"] == 1
     assert index["coverage_state"]["file_states"]["src/demo_app/service.py"]["file_hash"]

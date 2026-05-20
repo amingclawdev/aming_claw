@@ -7039,6 +7039,69 @@ def test_git_diff_changed_line_ranges_map_to_node_functions(tmp_path):
     assert function_delta["changed_functions_by_node"] == {"L7.service": ["src.service::serve"]}
 
 
+def test_git_diff_changed_line_ranges_map_to_node_test_functions(tmp_path):
+    project = tmp_path / "test-function-delta"
+    project.mkdir()
+    subprocess.run(["git", "init"], cwd=project, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=project, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=project, check=True)
+    tests = project / "tests"
+    tests.mkdir()
+    test_service = tests / "test_service.py"
+    test_service.write_text(
+        "def test_keep():\n"
+        "    assert 'stable'\n\n"
+        "def test_serve():\n"
+        "    value = 'old'\n"
+        "    assert value == 'old'\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "."], cwd=project, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=project, check=True, capture_output=True, text=True)
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=project,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    test_service.write_text(
+        "def test_keep():\n"
+        "    assert 'stable'\n\n"
+        "def test_serve():\n"
+        "    value = 'new'\n"
+        "    assert value == 'new'\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "."], cwd=project, check=True)
+    subprocess.run(["git", "commit", "-m", "change test serve"], cwd=project, check=True, capture_output=True, text=True)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=project,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    ranges = state_reconcile._git_changed_line_ranges(project, base, head, ["tests/test_service.py"])
+    node = {
+        "id": "L7.service",
+        "test": ["tests/test_service.py"],
+        "metadata": {
+            "test_functions": [
+                "tests.test_service::test_keep",
+                "tests.test_service::test_serve",
+            ],
+            "test_function_lines": {"test_keep": [1, 2], "test_serve": [4, 6]},
+        },
+    }
+    test_delta = state_reconcile._changed_test_functions_for_line_ranges([node], ranges)
+
+    assert ranges == {"tests/test_service.py": [[5, 6]]}
+    assert test_delta["changed_test_function_ids"] == ["tests.test_service::test_serve"]
+    assert test_delta["changed_test_functions_by_node"] == {"L7.service": ["tests.test_service::test_serve"]}
+
+
 def test_semantic_projection_reports_changed_function_hashes_for_stale_node(conn):
     base_graph = _graph("L7.1")
     base_node = base_graph["deps_graph"]["nodes"][0]
