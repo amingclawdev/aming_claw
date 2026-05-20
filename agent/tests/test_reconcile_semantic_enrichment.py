@@ -13,6 +13,7 @@ from agent.governance.reconcile_semantic_enrichment import (
     _batch_key,
     _ensure_semantic_state_schema,
     _persist_semantic_state_to_db,
+    _semantic_state_validation,
     _semantic_batch_memory_summary,
     _upsert_semantic_job,
     append_review_feedback,
@@ -1633,6 +1634,38 @@ def test_semantic_graph_state_hash_mismatch_forces_resemanticization(conn, tmp_p
     assert second["summary"]["semantic_hash_mismatch_count"] == 1
     assert second["summary"]["ai_complete_count"] == 1
     assert second["semantic_index"]["features"][0]["feature_name"] == "Run 2"
+
+
+def test_semantic_state_validation_marks_test_function_hash_mismatch_stale():
+    feature = {
+        "feature_hash": "sha256:feature-a",
+        "file_hashes": {"agent/governance/backlog_runtime.py": "sha256:file-a"},
+        "function_hashes": {
+            "agent.governance.backlog_runtime::claim_next": "sha256:source-a",
+        },
+        "test_function_hashes": {
+            "agent.tests.test_backlog_runtime::test_claim_next": "sha256:test-b",
+        },
+    }
+    state_entry = {
+        "feature_hash": "sha256:feature-a",
+        "file_hashes": {"agent/governance/backlog_runtime.py": "sha256:file-a"},
+        "function_hashes": {
+            "agent.governance.backlog_runtime::claim_next": "sha256:source-a",
+        },
+        "test_function_hashes": {
+            "agent.tests.test_backlog_runtime::test_claim_next": "sha256:test-a",
+        },
+    }
+
+    validation = _semantic_state_validation(feature, state_entry)
+
+    assert validation["status"] == "stale_hash_mismatch"
+    assert validation["valid"] is False
+    assert validation["feature_hash_match"] is True
+    assert validation["file_hash_match"] is True
+    assert validation["function_hash_match"] is True
+    assert validation["test_function_hash_match"] is False
 
 
 def test_semantic_graph_state_carries_forward_unchanged_snapshot_entries(conn, tmp_path):

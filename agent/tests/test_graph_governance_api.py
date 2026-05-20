@@ -7190,6 +7190,100 @@ def test_semantic_projection_reports_changed_function_hashes_for_stale_node(conn
     assert projection["health"]["semantic_stale_count"] == 1
 
 
+def test_semantic_projection_reports_changed_test_function_hashes_for_stale_node(conn):
+    base_graph = _graph("L7.1")
+    base_node = base_graph["deps_graph"]["nodes"][0]
+    base_node["metadata"].update({
+        "module": "agent.governance.server",
+        "feature_hash": "sha256:feature-v1",
+        "functions": ["agent.governance.server::serve"],
+        "function_hashes": {
+            "agent.governance.server::serve": "sha256:serve-v1",
+        },
+        "test_functions": [
+            "agent.tests.test_graph_governance_api::test_serve",
+        ],
+        "test_function_hashes": {
+            "agent.tests.test_graph_governance_api::test_serve": "sha256:test-v1",
+        },
+    })
+    base_snapshot = store.create_graph_snapshot(
+        conn,
+        PID,
+        snapshot_id="semantic-test-function-hash-base",
+        commit_sha="commit-a",
+        snapshot_kind="full",
+        graph_json=base_graph,
+    )
+    store.index_graph_snapshot(
+        conn,
+        PID,
+        base_snapshot["snapshot_id"],
+        nodes=base_graph["deps_graph"]["nodes"],
+        edges=base_graph["deps_graph"]["edges"],
+    )
+    graph_events.create_event(
+        conn,
+        PID,
+        base_snapshot["snapshot_id"],
+        event_type="semantic_node_enriched",
+        event_kind="semantic",
+        target_type="node",
+        target_id="L7.1",
+        status=graph_events.EVENT_STATUS_OBSERVED,
+        stable_node_key=graph_events.stable_node_key_for_node(base_node),
+        feature_hash=graph_events.feature_hash_for_node(base_node),
+        payload={
+            "semantic_payload": {"summary": "ok", "open_issues": []},
+            "function_hashes": base_node["metadata"]["function_hashes"],
+            "test_function_hashes": base_node["metadata"]["test_function_hashes"],
+        },
+        created_by="test",
+    )
+
+    current_graph = json.loads(json.dumps(base_graph))
+    current_node = current_graph["deps_graph"]["nodes"][0]
+    current_node["metadata"]["feature_hash"] = "sha256:feature-v2"
+    current_node["metadata"]["test_function_hashes"][
+        "agent.tests.test_graph_governance_api::test_serve"
+    ] = "sha256:test-v2"
+    current_snapshot = store.create_graph_snapshot(
+        conn,
+        PID,
+        snapshot_id="semantic-test-function-hash-current",
+        commit_sha="commit-b",
+        snapshot_kind="scope",
+        parent_snapshot_id=base_snapshot["snapshot_id"],
+        graph_json=current_graph,
+    )
+    store.index_graph_snapshot(
+        conn,
+        PID,
+        current_snapshot["snapshot_id"],
+        nodes=current_graph["deps_graph"]["nodes"],
+        edges=current_graph["deps_graph"]["edges"],
+    )
+
+    projection = graph_events.build_semantic_projection(
+        conn,
+        PID,
+        current_snapshot["snapshot_id"],
+        actor="test",
+        backfill_existing=False,
+    )
+
+    validity = projection["projection"]["node_semantics"]["L7.1"]["validity"]
+    assert validity["status"] == "semantic_stale_feature_hash"
+    assert validity["hash_validation"] == "test_function_hash_mismatch"
+    assert validity["function_hash_status"] == "match"
+    assert validity["test_function_hash_status"] == "mismatch"
+    assert validity["test_function_hash_match"] is False
+    assert validity["changed_test_function_ids"] == [
+        "agent.tests.test_graph_governance_api::test_serve",
+    ]
+    assert projection["health"]["semantic_stale_count"] == 1
+
+
 def test_semantic_projection_uses_indexed_hash_metadata(conn):
     graph = _graph("L7.1")
     merge = merge_feature_hashes_into_graph_nodes(

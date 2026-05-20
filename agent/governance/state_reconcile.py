@@ -54,6 +54,8 @@ from agent.governance.graph_hint_projection import build_hint_projection
 from agent.governance.graph_rule_fingerprint import (
     build_full_reconcile_anchor,
     build_graph_rule_fingerprint,
+    compare_rule_fingerprint,
+    snapshot_rule_fingerprint,
 )
 from agent.governance.graph_structure_hints import load_graph_structure_hints
 from agent.governance.db import sqlite_write_lock
@@ -3776,6 +3778,25 @@ def run_pending_scope_reconcile_candidate(
 
     ref_active = get_active_graph_snapshot(conn, project_id, ref_name=identity["ref_name"]) or {}
     active = ref_active or get_active_graph_snapshot(conn, project_id) or {}
+    active_rule_fingerprint = snapshot_rule_fingerprint(active)
+    if active_rule_fingerprint:
+        current_rule_fingerprint = build_graph_rule_fingerprint(
+            root,
+            commit_sha=target,
+            semantic_config_path=semantic_config_path,
+            include_source_hints=False,
+        )
+        rule_fingerprint_status = compare_rule_fingerprint(
+            active_rule_fingerprint,
+            current_rule_fingerprint,
+        )
+        if bool(rule_fingerprint_status.get("mismatch")):
+            raise ValueError(
+                "pending scope reconcile requires full reconcile when graph rule fingerprint changed; "
+                "recommended_action=run_full_reconcile; "
+                f"snapshot_fingerprint={rule_fingerprint_status.get('snapshot_fingerprint') or ''}; "
+                f"current_fingerprint={rule_fingerprint_status.get('current_fingerprint') or ''}"
+            )
     expected_old_snapshot_id = str(ref_active.get("snapshot_id") or "")
     if identity["ref_name"] == "active" and not expected_old_snapshot_id:
         expected_old_snapshot_id = str(active.get("snapshot_id") or "")

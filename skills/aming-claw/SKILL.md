@@ -148,6 +148,25 @@ and include precheck evidence in the final result. The system-side gate remains
 authoritative: AI self-precheck cannot bypass parsing, validation, Review
 Queue, or observer approval.
 
+For semantic dogfood findings that suggest graph structure is wrong, classify
+the fix path before editing graph-building code:
+
+- `config_patch`: existing semantic enrichment config plus registered
+  predicates/actions can express the correction.
+- `registered_action_needed`: the config model is right, but a reusable
+  predicate/action/enricher must be added and registered before config can use
+  it.
+- `adapter_evidence_gap`: the bottom algorithm is sound, but a language or
+  file-role adapter must extract more evidence.
+- `core_algorithm_gap`: the generic graph algorithm cannot express the
+  relation correctly even with config, registration, or adapter evidence.
+
+Direct core algorithm edits require a written note explaining why the
+config/registration/adapter path cannot express the issue. If graph rule inputs
+or their fingerprint change, do not use scope reconcile as the recovery path:
+run full reconcile, then let semantic state carry forward only entries whose
+feature, file, source-function, and test-function hashes still match.
+
 ## Governance Hint MVP
 
 Governance Hint is the MVP-safe graph-structure correction path for orphan

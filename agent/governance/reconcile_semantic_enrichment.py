@@ -671,6 +671,7 @@ def _feature_context_from_node(
         "config": config,
         "functions": metadata.get("functions") or [],
         "function_hashes": metadata.get("function_hashes") or {},
+        "test_function_hashes": metadata.get("test_function_hashes") or {},
     }
     indexed_function_hashes = indexed.get("function_hashes") if isinstance(indexed.get("function_hashes"), dict) else {}
     metadata_function_hashes = (
@@ -2741,7 +2742,15 @@ def _semantic_state_validation(feature: dict[str, Any], state_entry: dict[str, A
         feature.get("function_hashes"),
         state_entry.get("function_hashes"),
     )
-    status = "current" if feature_hash_match and file_hash_match and function_hash_match else "stale_hash_mismatch"
+    test_function_hash_match = _file_hashes_match(
+        feature.get("test_function_hashes"),
+        state_entry.get("test_function_hashes"),
+    )
+    status = (
+        "current"
+        if feature_hash_match and file_hash_match and function_hash_match and test_function_hash_match
+        else "stale_hash_mismatch"
+    )
     return {
         "status": status,
         "valid": status == "current",
@@ -2750,6 +2759,7 @@ def _semantic_state_validation(feature: dict[str, Any], state_entry: dict[str, A
         "feature_hash_match": feature_hash_match,
         "file_hash_match": file_hash_match,
         "function_hash_match": function_hash_match,
+        "test_function_hash_match": test_function_hash_match,
     }
 
 

@@ -18,6 +18,7 @@ from agent.governance.state_reconcile import (
     run_pending_scope_reconcile_candidate,
     run_state_only_full_reconcile,
 )
+from agent.tests.fixtures.rule_fingerprint_project import rule_fingerprint_mismatch_pair
 
 
 PID = "state-reconcile-test"
@@ -775,6 +776,56 @@ def test_pending_scope_materializer_rejects_dirty_worktree(conn, tmp_path):
             project,
             target_commit_sha=head_commit,
             run_id="scope-dirty-worktree-test",
+        )
+
+
+def test_pending_scope_materializer_rejects_rule_fingerprint_mismatch(
+    conn,
+    tmp_path,
+    monkeypatch,
+):
+    project = tmp_path / "project"
+    _write_project(project)
+    _init_git(project)
+    _git(project, "add", ".")
+    _git(project, "commit", "-m", "base")
+    head_commit = _git(project, "rev-parse", "HEAD")
+    old_rule, current_rule = rule_fingerprint_mismatch_pair()
+    snapshot = store.create_graph_snapshot(
+        conn,
+        PID,
+        snapshot_id="full-rule-fingerprint-old",
+        commit_sha=head_commit,
+        snapshot_kind="full",
+        graph_json={"deps_graph": {"nodes": [], "edges": []}},
+        notes=json.dumps({
+            "graph_rule_fingerprint": old_rule,
+            "full_reconcile_anchor": {
+                "anchor_commit": head_commit,
+                "snapshot_id": "full-rule-fingerprint-old",
+                "structure_rule_fingerprint": old_rule["fingerprint"],
+                "reconcile_mode": "full",
+            },
+        }),
+    )
+    store.activate_graph_snapshot(conn, PID, snapshot["snapshot_id"])
+    store.queue_pending_scope_reconcile(
+        conn,
+        PID,
+        commit_sha=head_commit,
+        parent_commit_sha=head_commit,
+        evidence={"source": "test"},
+    )
+    conn.commit()
+    monkeypatch.setattr(state_reconcile, "build_graph_rule_fingerprint", lambda *_a, **_k: current_rule)
+
+    with pytest.raises(ValueError, match="run_full_reconcile"):
+        run_pending_scope_reconcile_candidate(
+            conn,
+            PID,
+            project,
+            target_commit_sha=head_commit,
+            run_id="scope-rule-fingerprint-mismatch-test",
         )
 
 

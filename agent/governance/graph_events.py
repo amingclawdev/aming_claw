@@ -525,6 +525,7 @@ def feature_hash_for_node(node: dict[str, Any]) -> str:
         "config": _node_files(node, "config"),
         "functions": metadata.get("functions") or [],
         "function_hashes": metadata.get("function_hashes") or {},
+        "test_function_hashes": metadata.get("test_function_hashes") or {},
     })
 
 
@@ -2310,6 +2311,37 @@ def _event_function_hashes(event: dict[str, Any]) -> dict[str, str]:
     return {}
 
 
+def _node_test_function_hashes(node: dict[str, Any]) -> dict[str, str]:
+    metadata = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
+    raw = metadata.get("test_function_hashes") if isinstance(metadata.get("test_function_hashes"), dict) else {}
+    return {
+        str(function_id): str(value)
+        for function_id, value in raw.items()
+        if str(function_id) and str(value)
+    }
+
+
+def _event_test_function_hashes(event: dict[str, Any]) -> dict[str, str]:
+    payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    candidates = [
+        payload.get("test_function_hashes"),
+        (payload.get("semantic_payload") or {}).get("test_function_hashes")
+        if isinstance(payload.get("semantic_payload"), dict)
+        else {},
+    ]
+    for raw in candidates:
+        if not isinstance(raw, dict):
+            continue
+        out = {
+            str(function_id): str(value)
+            for function_id, value in raw.items()
+            if str(function_id) and str(value)
+        }
+        if out:
+            return out
+    return {}
+
+
 def _function_hash_diff(current: dict[str, str], stored: dict[str, str]) -> dict[str, Any]:
     if not current or not stored:
         return {
@@ -2346,6 +2378,7 @@ def _semantic_validity(
     if isinstance(metadata.get("file_hashes"), dict):
         current_file_hashes = metadata.get("file_hashes")
     current_function_hashes = _node_function_hashes(node)
+    current_test_function_hashes = _node_test_function_hashes(node)
     if not event:
         return {
             "status": "semantic_missing",
@@ -2356,16 +2389,22 @@ def _semantic_validity(
             "file_hash_status": "unknown",
             "function_hash_status": "unknown",
             "changed_function_ids": [],
+            "test_function_hash_status": "unknown",
+            "changed_test_function_ids": [],
         }
     stored_feature_hash = str(event.get("feature_hash") or "")
     stored_file_hashes = event.get("file_hashes") if isinstance(event.get("file_hashes"), dict) else {}
     stored_function_hashes = _event_function_hashes(event)
+    stored_test_function_hashes = _event_test_function_hashes(event)
     feature_hash_match = _hash_values_equal(stored_feature_hash, current_feature_hash)
     file_hash_status = _file_hash_status(current_file_hashes, stored_file_hashes)
     file_hash_match = file_hash_status in {"match", "unknown"}
     function_hash_diff = _function_hash_diff(current_function_hashes, stored_function_hashes)
     function_hash_status = str(function_hash_diff.get("function_hash_status") or "unknown")
     function_hash_match = bool(function_hash_diff.get("function_hash_match", True))
+    test_function_hash_diff = _function_hash_diff(current_test_function_hashes, stored_test_function_hashes)
+    test_function_hash_status = str(test_function_hash_diff.get("function_hash_status") or "unknown")
+    test_function_hash_match = bool(test_function_hash_diff.get("function_hash_match", True))
     base_commit = str(event.get("baseline_commit") or event.get("target_commit") or "")
     event_snapshot_id = str(event.get("snapshot_id") or "")
     same_snapshot_event = bool(event_snapshot_id == snapshot_id and (not base_commit or base_commit == commit_sha))
@@ -2377,10 +2416,16 @@ def _semantic_validity(
     if same_snapshot_event and stored_feature_hash:
         status = "semantic_current"
         hash_validation = "same_snapshot_event"
-    elif feature_hash_match and file_hash_match and function_hash_match and base_commit == commit_sha:
+    elif (
+        feature_hash_match
+        and file_hash_match
+        and function_hash_match
+        and test_function_hash_match
+        and base_commit == commit_sha
+    ):
         status = "semantic_current"
         hash_validation = "matched"
-    elif feature_hash_match and file_hash_match and function_hash_match:
+    elif feature_hash_match and file_hash_match and function_hash_match and test_function_hash_match:
         status = "semantic_carried_forward_current"
         hash_validation = "matched_carried_forward"
     elif (
@@ -2388,18 +2433,20 @@ def _semantic_validity(
         and stored_function_hashes
         and current_function_hashes
         and file_hash_match
+        and test_function_hash_match
     ):
         status = "semantic_carried_forward_current"
         hash_validation = "function_hash_matched"
     elif (
         file_hash_status == "match"
         and function_hash_match
+        and test_function_hash_match
         and stored_file_hashes
         and current_file_hashes
     ):
         status = "semantic_carried_forward_current"
         hash_validation = "file_hash_matched"
-    elif function_hash_match and (
+    elif function_hash_match and test_function_hash_match and (
         hash_scheme_mismatch
         or (
             _hash_scheme(stored_feature_hash) == "indexed_sha256"
@@ -2412,6 +2459,9 @@ def _semantic_validity(
     elif function_hash_status == "mismatch":
         status = "semantic_stale_feature_hash"
         hash_validation = "function_hash_mismatch"
+    elif test_function_hash_status == "mismatch":
+        status = "semantic_stale_feature_hash"
+        hash_validation = "test_function_hash_mismatch"
     elif not feature_hash_match:
         status = "semantic_stale_feature_hash"
         hash_validation = "mismatch"
@@ -2435,6 +2485,12 @@ def _semantic_validity(
         "stored_function_hash_count": len(stored_function_hashes),
         "changed_function_ids": function_hash_diff.get("changed_function_ids") or [],
         "missing_function_ids": function_hash_diff.get("missing_function_ids") or [],
+        "test_function_hash_status": test_function_hash_status,
+        "test_function_hash_match": test_function_hash_match,
+        "current_test_function_hash_count": len(current_test_function_hashes),
+        "stored_test_function_hash_count": len(stored_test_function_hashes),
+        "changed_test_function_ids": test_function_hash_diff.get("changed_function_ids") or [],
+        "missing_test_function_ids": test_function_hash_diff.get("missing_function_ids") or [],
         "semantic_event_id": event.get("event_id", ""),
         "semantic_event_snapshot_id": event.get("snapshot_id", ""),
         "semantic_event_commit": base_commit,
