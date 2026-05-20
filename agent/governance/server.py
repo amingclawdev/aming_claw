@@ -10202,6 +10202,61 @@ def handle_graph_governance_snapshot_event_get(ctx: RequestContext):
         conn.close()
 
 
+def _sync_semantic_cache_for_event_status(
+    conn,
+    project_id: str,
+    snapshot_id: str,
+    event: dict[str, Any],
+    *,
+    status: str,
+) -> dict[str, Any]:
+    event_type = str(event.get("event_type") or "")
+    target_id = str(event.get("target_id") or "").strip()
+    if not target_id or event_type not in {"semantic_node_enriched", "edge_semantic_enriched"}:
+        return {"semantic_event": False}
+
+    if status == "accepted":
+        table = "graph_semantic_edges" if event_type == "edge_semantic_enriched" else "graph_semantic_nodes"
+        id_column = "edge_id" if event_type == "edge_semantic_enriched" else "node_id"
+        cur = conn.execute(
+            f"""
+            UPDATE {table}
+            SET status = 'ai_complete', updated_at = ?
+            WHERE project_id = ? AND snapshot_id = ? AND {id_column} = ?
+              AND status IN ('pending_review', 'review_pending', 'ai_complete')
+            """,
+            (_utc_now(), project_id, snapshot_id, target_id),
+        )
+        return {
+            "semantic_event": True,
+            "target_type": "edge" if event_type == "edge_semantic_enriched" else "node",
+            "target_id": target_id,
+            "cache_status": "ai_complete",
+            "cache_rows_updated": int(cur.rowcount or 0),
+        }
+
+    if status == "rejected":
+        table = "graph_semantic_edges" if event_type == "edge_semantic_enriched" else "graph_semantic_nodes"
+        id_column = "edge_id" if event_type == "edge_semantic_enriched" else "node_id"
+        cur = conn.execute(
+            f"""
+            DELETE FROM {table}
+            WHERE project_id = ? AND snapshot_id = ? AND {id_column} = ?
+              AND status IN ('pending_review', 'review_pending')
+            """,
+            (project_id, snapshot_id, target_id),
+        )
+        return {
+            "semantic_event": True,
+            "target_type": "edge" if event_type == "edge_semantic_enriched" else "node",
+            "target_id": target_id,
+            "cache_status": "rejected",
+            "cache_rows_deleted": int(cur.rowcount or 0),
+        }
+
+    return {"semantic_event": True, "target_id": target_id, "cache_status": "unchanged"}
+
+
 def _graph_event_status_action(ctx: RequestContext, status: str, action: str):
     project_id = ctx.get_project_id()
     snapshot_id = ctx.path_params["snapshot_id"]
@@ -10225,10 +10280,32 @@ def _graph_event_status_action(ctx: RequestContext, status: str, action: str):
                     actor=str(body.get("actor") or "observer"),
                     evidence=body.get("evidence") if isinstance(body.get("evidence"), dict) else {},
                 )
+                semantic_cache_sync = _sync_semantic_cache_for_event_status(
+                    conn,
+                    project_id,
+                    snapshot_id,
+                    event,
+                    status=status,
+                )
+                projection = {}
+                if semantic_cache_sync.get("semantic_event") and status in {"accepted", "rejected"}:
+                    projection = graph_events.build_semantic_projection(
+                        conn,
+                        project_id,
+                        snapshot_id,
+                        actor=str(body.get("actor") or "observer"),
+                    )
             except (KeyError, ValueError) as exc:
                 _raise_graph_api_validation(exc)
             conn.commit()
-        return {"ok": True, "project_id": project_id, "snapshot_id": snapshot_id, "event": event}
+        result = {"ok": True, "project_id": project_id, "snapshot_id": snapshot_id, "event": event}
+        if semantic_cache_sync.get("semantic_event"):
+            result["semantic_cache_sync"] = semantic_cache_sync
+            result["projection_rebuilt"] = bool(projection)
+            if projection:
+                result["projection_id"] = projection.get("projection_id", "")
+                result["event_watermark"] = projection.get("event_watermark", 0)
+        return result
     finally:
         conn.close()
 

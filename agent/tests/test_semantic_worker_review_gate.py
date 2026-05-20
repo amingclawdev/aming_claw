@@ -777,6 +777,93 @@ def test_c_accept_helper_flips_node_status_and_event(conn):
     assert ev_row["status"] == graph_events.EVENT_STATUS_ACCEPTED
 
 
+def test_c4_direct_event_accept_flips_node_status_and_projection(conn, monkeypatch):
+    """C4: direct semantic event accept must mirror the feedback gate."""
+    snap = _create_snapshot_with_node(conn, "direct-event-accept")
+    sid = snap["snapshot_id"]
+    node = next(
+        item for item in store.list_graph_snapshot_nodes(conn, PID, sid, include_semantic=False)
+        if item["node_id"] == "L7.1"
+    )
+    feature_hash = graph_events.feature_hash_for_node(node)
+    semantic._persist_semantic_state_to_db(
+        conn,
+        PID,
+        sid,
+        {
+            "node_semantics": {
+                "L7.1": {
+                    "status": "pending_review",
+                    "feature_hash": feature_hash,
+                    "semantic_summary": "direct accept semantic",
+                    "feature_name": "Direct Accept Semantic",
+                },
+            }
+        },
+        submit_for_review=False,
+    )
+    graph_events.backfill_existing_semantic_events(conn, PID, sid, actor="test")
+    ev_id = conn.execute(
+        """
+        SELECT event_id FROM graph_events
+        WHERE project_id=? AND snapshot_id=? AND target_id='L7.1'
+          AND event_type='semantic_node_enriched'
+        LIMIT 1
+        """,
+        (PID, sid),
+    ).fetchone()["event_id"]
+    graph_events.update_event_status(
+        conn,
+        PID,
+        sid,
+        ev_id,
+        status=graph_events.EVENT_STATUS_ACCEPTED,
+        actor="test-preaccept",
+    )
+    conn.commit()
+    assert conn.execute(
+        """
+        SELECT status FROM graph_semantic_nodes
+        WHERE project_id=? AND snapshot_id=? AND node_id='L7.1'
+        """,
+        (PID, sid),
+    ).fetchone()["status"] == "pending_review"
+
+    monkeypatch.setattr(server, "get_connection", lambda _project_id: _NoCloseConn(conn))
+    monkeypatch.setattr(
+        server,
+        "_require_graph_governance_operator",
+        lambda _ctx, _conn, _action: {"role": "observer"},
+    )
+    ctx = server.RequestContext(
+        None,
+        "POST",
+        {"project_id": PID, "snapshot_id": sid, "event_id": ev_id},
+        {},
+        {"actor": "test"},
+        "req-test",
+        "",
+        "",
+    )
+
+    result = server.handle_graph_governance_snapshot_event_accept(ctx)
+
+    assert result["ok"] is True
+    assert result["semantic_cache_sync"]["cache_status"] == "ai_complete"
+    assert result["semantic_cache_sync"]["cache_rows_updated"] == 1
+    assert result["projection_rebuilt"] is True
+    assert conn.execute(
+        """
+        SELECT status FROM graph_semantic_nodes
+        WHERE project_id=? AND snapshot_id=? AND node_id='L7.1'
+        """,
+        (PID, sid),
+    ).fetchone()["status"] == "ai_complete"
+    projection = graph_events.get_semantic_projection(conn, PID, sid)
+    node_semantic = projection["projection"]["node_semantics"]["L7.1"]
+    assert node_semantic["validity"]["status"] == "semantic_current"
+
+
 def test_c3_reject_decision_clears_node_pending_review_payload(conn, monkeypatch):
     """Rejecting a semantic review must retract the proposed event and cache row."""
     snap = _create_snapshot_with_node(conn, "reject-helper")
