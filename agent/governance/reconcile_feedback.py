@@ -902,6 +902,76 @@ def _semantic_review_readiness(
     }
 
 
+def _load_semantic_review_state(
+    project_id: str,
+    snapshot_id: str,
+    *,
+    conn: Any | None = None,
+) -> dict[str, Any]:
+    state = _read_json(semantic_graph_state_path(project_id, snapshot_id), {})
+    if not isinstance(state, dict):
+        state = {}
+    node_semantics = state.get("node_semantics")
+    if not isinstance(node_semantics, dict):
+        node_semantics = {}
+    else:
+        node_semantics = dict(node_semantics)
+    if conn is not None:
+        node_semantics = _merge_db_semantic_nodes(
+            node_semantics,
+            conn=conn,
+            project_id=project_id,
+            snapshot_id=snapshot_id,
+        )
+    state["node_semantics"] = node_semantics
+    return state
+
+
+def _merge_db_semantic_nodes(
+    node_semantics: dict[str, Any],
+    *,
+    conn: Any,
+    project_id: str,
+    snapshot_id: str,
+) -> dict[str, Any]:
+    merged = dict(node_semantics)
+    try:
+        rows = conn.execute(
+            """
+            SELECT node_id, status, feature_hash, file_hashes_json,
+                   semantic_json, updated_at
+            FROM graph_semantic_nodes
+            WHERE project_id = ? AND snapshot_id = ?
+            ORDER BY node_id
+            """,
+            (project_id, snapshot_id),
+        ).fetchall()
+    except Exception:
+        return merged
+    for row in rows:
+        node_id = str(row["node_id"] or "")
+        if not node_id:
+            continue
+        current = merged.get(node_id) if isinstance(merged.get(node_id), dict) else {}
+        try:
+            semantic = json.loads(row["semantic_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            semantic = {}
+        if not isinstance(semantic, dict):
+            semantic = {}
+        try:
+            file_hashes = json.loads(row["file_hashes_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            file_hashes = {}
+        payload = {**current, **semantic}
+        payload["status"] = str(row["status"] or payload.get("status") or "")
+        payload["feature_hash"] = str(row["feature_hash"] or payload.get("feature_hash") or "")
+        payload["file_hashes"] = file_hashes if isinstance(file_hashes, dict) else {}
+        payload["updated_at"] = str(row["updated_at"] or payload.get("updated_at") or "")
+        merged[node_id] = payload
+    return merged
+
+
 def build_feedback_review_queue(
     project_id: str,
     snapshot_id: str,
@@ -919,6 +989,7 @@ def build_feedback_review_queue(
     require_current_semantic: bool = False,
     worker_id: str = "",
     limit: int | None = None,
+    conn: Any | None = None,
 ) -> dict[str, Any]:
     """Return a dashboard-safe, grouped projection over raw feedback items.
 
@@ -953,7 +1024,7 @@ def build_feedback_review_queue(
     hidden_semantic_pending = 0
     groups: dict[str, dict[str, Any]] = {}
     semantic_state = (
-        _read_json(semantic_graph_state_path(project_id, snapshot_id), {})
+        _load_semantic_review_state(project_id, snapshot_id, conn=conn)
         if require_current_semantic
         else {}
     )
@@ -1120,6 +1191,7 @@ def claim_feedback_review_queue(
     max_items: int = 25,
     lease_seconds: int = DEFAULT_REVIEW_LEASE_SECONDS,
     actor: str = "observer",
+    conn: Any | None = None,
 ) -> dict[str, Any]:
     """Claim queue items for a worker using per-item lease metadata."""
     worker_id = str(worker_id or "").strip()
@@ -1142,6 +1214,7 @@ def claim_feedback_review_queue(
         require_current_semantic=require_current_semantic,
         worker_id=worker_id,
         limit=limit_groups,
+        conn=conn,
     )
     feedback_ids: list[str] = []
     selected_groups: list[dict[str, Any]] = []

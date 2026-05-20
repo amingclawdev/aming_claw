@@ -4466,6 +4466,7 @@ def handle_graph_governance_dashboard_active_bundle(ctx: RequestContext):
             include_resolved=_query_bool(ctx.query, "include_resolved", False),
             include_claimed=True,
             limit=feedback_limit,
+            conn=conn,
         )
         projection = graph_events.get_semantic_projection(conn, project_id, snapshot_id) or {}
         summary = store.summarize_graph_snapshot(conn, project_id, snapshot_id)
@@ -5124,6 +5125,7 @@ def handle_graph_governance_operations_queue(ctx: RequestContext):
                 include_claimed=True,
                 require_current_semantic=_query_bool(ctx.query, "require_current_semantic", False),
                 limit=feedback_limit,
+                conn=conn,
             )
             if snapshot_id
             else {"summary": {}, "groups": [], "count": 0, "group_count": 0}
@@ -8294,6 +8296,7 @@ def handle_graph_governance_snapshot_feedback_queue(ctx: RequestContext):
                 require_current_semantic=_query_bool(ctx.query, "require_current_semantic", False),
                 worker_id=str(ctx.query.get("worker_id") or ""),
                 limit=_query_int(ctx.query, "limit", 100),
+                conn=conn,
             ),
         }
     finally:
@@ -8612,6 +8615,7 @@ def handle_graph_governance_snapshot_feedback_queue_claim(ctx: RequestContext):
                 max_items=max_items,
                 lease_seconds=int(body.get("lease_seconds") or body.get("claim_lease_seconds") or 1800),
                 actor=str(body.get("actor") or worker_id),
+                conn=conn,
             )
         except ValueError as exc:
             _raise_graph_api_validation(exc)
@@ -9255,6 +9259,7 @@ def handle_graph_governance_snapshot_feedback_review_queue(ctx: RequestContext):
                 max_items=max_items,
                 lease_seconds=int(body.get("lease_seconds") or body.get("claim_lease_seconds") or 1800),
                 actor=str(body.get("actor") or worker_id),
+                conn=conn,
             )
             queue = {
                 "summary": claim_result.get("queue_summary", {}),
@@ -9278,6 +9283,7 @@ def handle_graph_governance_snapshot_feedback_review_queue(ctx: RequestContext):
                 require_current_semantic=require_current_semantic,
                 worker_id=worker_id,
                 limit=limit_groups,
+                conn=conn,
             )
             feedback_ids: list[str] = []
             for group in queue.get("groups") or []:

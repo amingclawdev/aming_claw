@@ -6042,6 +6042,102 @@ def test_graph_governance_feedback_review_queue_can_require_current_semantics(co
     assert queue["groups"][0]["semantic_review_ready"] is True
 
 
+def test_graph_governance_feedback_queue_merges_db_semantics_when_state_artifact_partial(conn, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir(parents=True, exist_ok=True)
+    graph = _graph("L7.1")
+    graph["deps_graph"]["nodes"].append({
+        "id": "L7.2",
+        "layer": "L7",
+        "title": "DB Backed Feature Node",
+        "kind": "service_runtime",
+        "primary": ["agent/governance/reconcile_feedback.py"],
+        "secondary": [],
+        "test": [],
+        "metadata": {"subsystem": "governance"},
+    })
+    snapshot = store.create_graph_snapshot(
+        conn,
+        PID,
+        snapshot_id="full-review-current-semantics-db-fallback-api",
+        commit_sha="head",
+        snapshot_kind="full",
+        graph_json=graph,
+    )
+    semantic_enrichment._ensure_semantic_state_schema(conn)
+    for node_id in ("L7.1", "L7.2"):
+        conn.execute(
+            """
+            INSERT INTO graph_semantic_nodes
+              (project_id, snapshot_id, node_id, status, feature_hash,
+               file_hashes_json, semantic_json, updated_at)
+            VALUES (?, ?, ?, 'ai_complete', ?, '{"agent/governance/server.py":"sha256:file"}',
+                    ?, '2026-05-09T00:00:00Z')
+            """,
+            (
+                PID,
+                snapshot["snapshot_id"],
+                node_id,
+                f"hash-{node_id}",
+                json.dumps({"feature_name": f"Feature {node_id}"}),
+            ),
+        )
+    conn.commit()
+    state_path = reconcile_feedback.semantic_graph_state_path(PID, snapshot["snapshot_id"])
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps({
+            "node_semantics": {
+                "L7.1": {
+                    "status": "ai_complete",
+                    "feature_hash": "hash-L7.1",
+                    "file_hashes": {"agent/governance/server.py": "sha256:file"},
+                    "updated_at": "2026-05-09T00:00:00Z",
+                }
+            }
+        }),
+        encoding="utf-8",
+    )
+    reconcile_feedback.classify_semantic_open_issues(
+        PID,
+        snapshot["snapshot_id"],
+        source_round="round-db-fallback",
+        created_by="observer",
+        issues=[
+            {
+                "node_id": "L7.1",
+                "reason": "dependency_patch_suggestions",
+                "summary": "Review current artifact-backed feature.",
+                "type": "add_typed_relation",
+            },
+            {
+                "node_id": "L7.2",
+                "reason": "dependency_patch_suggestions",
+                "summary": "Review current DB-backed feature.",
+                "type": "add_typed_relation",
+            },
+        ],
+    )
+
+    queue = server.handle_graph_governance_snapshot_feedback_queue(
+        _ctx(
+            {"project_id": PID, "snapshot_id": snapshot["snapshot_id"]},
+            query={
+                "source_round": "round-db-fallback",
+                "lane": "graph_patch_candidate",
+                "group_by": "feature",
+                "require_current_semantic": "true",
+            },
+        )
+    )
+
+    assert queue["summary"]["require_current_semantic"] is True
+    assert queue["summary"]["hidden_semantic_pending_count"] == 0
+    assert queue["summary"]["visible_item_count"] == 2
+    assert sorted(group["source_node_ids"][0] for group in queue["groups"]) == ["L7.1", "L7.2"]
+    assert all(group["semantic_review_ready"] is True for group in queue["groups"])
+
+
 def test_graph_governance_feedback_review_queue_can_batch_reviewer_ai(conn, tmp_path, monkeypatch):
     project = tmp_path / "project"
     project.mkdir(parents=True, exist_ok=True)
