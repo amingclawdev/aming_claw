@@ -608,7 +608,10 @@ def test_semantic_enrichment_uses_feedback_on_retry(conn, tmp_path):
     assert seen_payloads[0]["payload"]["instructions"]["mutate_project_files"] is False
     assert seen_payloads[0]["payload"]["instructions"]["analyzer"] == "reconcile_semantic"
     assert seen_payloads[0]["payload"]["instructions"]["prompt_template"]
-    assert seen_payloads[0]["payload"]["feature"]["source_excerpt"]
+    assert "source_excerpt" not in seen_payloads[0]["payload"]["feature"]
+    assert seen_payloads[0]["payload"]["feature"]["function_index"]["mode"] == "function_index"
+    assert seen_payloads[0]["payload"]["semantic_retrieval"]["mode"] == "function_index"
+    assert seen_payloads[0]["payload"]["semantic_evidence"]["schema_version"] == "semantic_evidence.v1"
     assert seen_payloads[0]["payload"]["feature"]["config"] == ["config/roles/default/pm.yaml"]
     assert seen_payloads[0]["payload"]["feature"]["config_refs"][0]["path"] == "config/roles/default/pm.yaml"
     assert first["summary"]["feature_payload_input_count"] == 1
@@ -795,11 +798,8 @@ def test_semantic_enrichment_builds_ai_graph_query_audit_trace(conn, tmp_path):
         assert audit["target_node_id"] == "L7.1"
         assert audit["trace_id"]
         assert audit["status"] == "complete"
-        assert [query["tool"] for query in audit["queries"]] == [
-            "get_node",
-            "get_neighbors",
-            "find_node_by_path",
-        ]
+        assert [query["tool"] for query in audit["queries"][:2]] == ["get_node", "get_neighbors"]
+        assert [query["tool"] for query in audit["queries"][2:]] == ["find_node_by_path"] * 4
         assert audit["queries"][0]["ok"] is True
         contract = payload["instructions"]["graph_contract"]["deps_graph"]["depends_on"]
         assert contract["direction"] == "dependency_to_dependent"
@@ -807,6 +807,23 @@ def test_semantic_enrichment_builds_ai_graph_query_audit_trace(conn, tmp_path):
         assert context_contract["source_role"] == "dependency_provider_prerequisite"
         neighbor_contract = payload["graph_query_context"]["neighbors"]["graph_contract"]["deps_graph"]["depends_on"]
         assert "B -> A" in neighbor_contract["interpretation"]
+        bindings = {
+            item["path"]: set(item["roles"])
+            for item in payload["graph_query_context"]["path_bindings"]
+        }
+        assert bindings["agent/governance/backlog_runtime.py"] == {"primary"}
+        assert bindings["agent/tests/test_backlog_runtime.py"] == {"test"}
+        assert bindings["docs/dev/backlog-runtime.md"] == {"doc"}
+        assert bindings["config/roles/default/pm.yaml"] == {"config", "config_ref"}
+        evidence = payload["semantic_evidence"]
+        assert evidence["trace_id"] == audit["trace_id"]
+        assert evidence["coverage"]["path_binding_count"] == 4
+        assert {item["kind"] for item in evidence["evidence_items"]} >= {
+            "graph_node",
+            "graph_neighbors",
+            "file_binding",
+            "function_index",
+        }
         return {
             "feature_name": "Audited Backlog Runtime",
             "semantic_summary": "Uses audited graph context before semantic output.",
@@ -871,7 +888,14 @@ def test_semantic_enrichment_builds_ai_graph_query_audit_trace(conn, tmp_path):
             (audit["trace_id"],),
         ).fetchall()
     ]
-    assert event_tools == ["get_node", "get_neighbors", "find_node_by_path"]
+    assert event_tools == [
+        "get_node",
+        "get_neighbors",
+        "find_node_by_path",
+        "find_node_by_path",
+        "find_node_by_path",
+        "find_node_by_path",
+    ]
 
     feature = result["semantic_index"]["features"][0]
     assert feature["graph_query_audit"]["trace_id"] == audit["trace_id"]
@@ -1105,6 +1129,7 @@ def test_semantic_enrichment_chunks_large_function_node_and_aggregates(conn, tmp
         assert payload["semantic_retrieval"]["mode"] == "function_index"
         assert payload["semantic_retrieval"]["source_excerpt_included"] is False
         assert payload["semantic_retrieval"]["audit_boundary"] == "payload_only"
+        assert payload["semantic_evidence"]["coverage"]["function_index_present"] is True
         assert "symbol_refs" not in payload["feature"]
         assert "test_symbol_refs" not in payload["feature"]
         assert "test_functions" not in payload["feature"]
@@ -1746,6 +1771,9 @@ def test_semantic_enrichment_batch_payload_carries_per_feature_graph_query_audit
             assert audit["run_id"].endswith(":batch-000")
             assert audit["status"] == "complete"
             assert item["graph_query_context"]["node"]
+            assert "source_excerpt" not in item["feature"]
+            assert item["semantic_retrieval"]["mode"] == "function_index"
+            assert item["semantic_evidence"]["trace_id"] == audit["trace_id"]
         return {
             "features": [
                 {
@@ -2650,6 +2678,8 @@ def test_semantic_enrichment_uses_project_config_override(conn, tmp_path):
                 "use_ai_default: true",
                 "input_policy:",
                 "  max_excerpt_chars: 8",
+                "execution_policy:",
+                "  chunk_context_mode: source_excerpt",
                 "prompt_template: |-",
                 "  Project-specific semantic analyzer prompt.",
             ]

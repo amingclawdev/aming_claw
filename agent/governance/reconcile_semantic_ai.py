@@ -278,6 +278,8 @@ def build_semantic_ai_call(
         graph_context_instruction = (
             "When graph_query_audit or graph_query_context is present in the payload, "
             "treat it as the authoritative audited graph evidence for this task. "
+            "When semantic_evidence is present, cite and reason from its evidence_items "
+            "instead of assuming facts from filenames or unaudited context. "
             "Do not invent graph facts beyond the supplied payload.\n"
         )
         prompt = (

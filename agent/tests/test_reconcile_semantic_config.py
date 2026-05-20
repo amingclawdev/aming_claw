@@ -520,6 +520,7 @@ def test_semantic_ai_openai_call_streams_prompt_on_stdin(monkeypatch, tmp_path):
     assert calls
     assert calls[0]["cmd"][-1] == "-"
     assert "Payload:" in calls[0]["input"]
+    assert "When semantic_evidence is present" in calls[0]["input"]
     assert result["feature_name"] == "Governance Trace"
     assert result["_ai_route"]["provider"] == "openai"
 

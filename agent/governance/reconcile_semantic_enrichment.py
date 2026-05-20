@@ -739,6 +739,32 @@ def _semantic_ai_graph_query_run_id(
     return f"semantic:{snapshot_id}:round-{round_number:03d}:{node_id}{suffix}"
 
 
+def _semantic_evidence_path_roles(feature: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return deduped path/role bindings that should be graph-audited."""
+    by_path: dict[str, set[str]] = {}
+
+    def add_paths(role: str, paths: Any) -> None:
+        for path in _path_list(paths):
+            by_path.setdefault(path, set()).add(role)
+
+    add_paths("primary", feature.get("primary"))
+    add_paths("doc", feature.get("secondary"))
+    add_paths("test", feature.get("test"))
+    add_paths("config", feature.get("config"))
+
+    for item in feature.get("doc_refs") or []:
+        if isinstance(item, dict):
+            add_paths("doc_ref", [item.get("path") or item.get("file")])
+    for item in feature.get("config_refs") or []:
+        if isinstance(item, dict):
+            add_paths("config_ref", [item.get("path") or item.get("file")])
+
+    return [
+        {"path": path, "roles": sorted(roles)}
+        for path, roles in sorted(by_path.items())
+    ]
+
+
 def _semantic_ai_graph_query_context(
     conn: sqlite3.Connection,
     project_id: str,
@@ -784,6 +810,7 @@ def _semantic_ai_graph_query_context(
     try:
         from . import graph_query_trace
 
+        path_roles = _semantic_evidence_path_roles(feature)
         trace = graph_query_trace.start_trace(
             conn,
             project_id,
@@ -792,7 +819,7 @@ def _semantic_ai_graph_query_context(
             query_source="ai_semantic_review",
             query_purpose="semantic_enrichment",
             run_id=run_id,
-            budget={"max_queries": 8},
+            budget={"max_queries": max(8, 2 + len(path_roles))},
         )["trace"]
         trace_id = str(trace.get("trace_id") or "")
         audit["trace_id"] = trace_id
@@ -837,17 +864,30 @@ def _semantic_ai_graph_query_context(
                 "include_edge_semantic": False,
             },
         )
-        for path in _path_list(feature.get("primary"))[:3]:
+        for path_ref in path_roles:
+            path = str(path_ref.get("path") or "")
+            if not path:
+                continue
+            result = record_query(
+                "find_node_by_path",
+                {
+                    "path": path,
+                    "limit": 10,
+                    "compact": True,
+                },
+            )
+            query = audit["queries"][-1] if audit["queries"] else {}
             context["path_bindings"].append({
                 "path": path,
-                "result": record_query(
-                    "find_node_by_path",
-                    {
-                        "path": path,
-                        "limit": 10,
-                        "compact": True,
-                    },
-                ),
+                "roles": list(path_ref.get("roles") or []),
+                "query": {
+                    "seq": query.get("seq"),
+                    "tool": query.get("tool"),
+                    "args_hash": query.get("args_hash", ""),
+                    "result_hash": query.get("result_hash", ""),
+                    "result_count": query.get("result_count", 0),
+                },
+                "result": result,
             })
 
         current = graph_query_trace.get_trace(conn, project_id, trace_id)["trace"]
@@ -1580,6 +1620,201 @@ def _compact_feature_for_slice(
     return {
         key: value for key, value in compact.items()
         if value not in ("", [], {})
+    }
+
+
+def _compact_feature_for_semantic_ai(
+    feature: dict[str, Any],
+    *,
+    context_mode: str = "function_index",
+) -> dict[str, Any]:
+    """Build the default AI-facing feature payload.
+
+    The full feature remains available internally for hashing/carry-forward.
+    AI receives indexed function/file evidence by default; raw source excerpts
+    are reserved for explicit source_excerpt fallback mode.
+    """
+    context_mode = _normal_chunk_context_mode(context_mode)
+    if context_mode == "source_excerpt":
+        return dict(feature)
+
+    functions = _feature_functions(feature)
+    compact = _compact_feature_for_slice(
+        feature,
+        functions,
+        source_excerpt={},
+        context_mode="function_index",
+    )
+    compact.setdefault("omitted_context", {})
+    compact["omitted_context"] = {
+        **(compact.get("omitted_context") if isinstance(compact.get("omitted_context"), dict) else {}),
+        "reason": "indexed_semantic_ai_payload",
+    }
+    test_function_hashes = (
+        feature.get("test_function_hashes")
+        if isinstance(feature.get("test_function_hashes"), dict)
+        else {}
+    )
+    test_function_lines = (
+        feature.get("test_function_lines")
+        if isinstance(feature.get("test_function_lines"), dict)
+        else {}
+    )
+    for key, value in (
+        ("test_functions", _path_list(feature.get("test_functions"))),
+        ("test_function_hashes", test_function_hashes),
+        ("test_function_lines", test_function_lines),
+        ("doc_refs", feature.get("doc_refs") if isinstance(feature.get("doc_refs"), list) else []),
+        ("config_refs", feature.get("config_refs") if isinstance(feature.get("config_refs"), list) else []),
+    ):
+        if value:
+            compact[key] = value
+    return compact
+
+
+def _semantic_retrieval_contract(
+    *,
+    context_mode: str,
+    source_excerpt_included: bool,
+) -> dict[str, Any]:
+    return {
+        "mode": context_mode,
+        "audit_boundary": "payload_only",
+        "source_excerpt_included": bool(source_excerpt_included),
+        "allowed_inputs": [
+            "payload.semantic_evidence.evidence_items",
+            "payload.feature.function_index",
+            "payload.feature.function_hashes",
+            "payload.feature.file_hashes",
+            "payload.graph_query_audit",
+            "payload.graph_query_context",
+            "payload.review_feedback",
+        ],
+        "disallowed_inputs": [
+            "project_file_reads",
+            "database_reads",
+            "unaudited_graph_queries",
+            "source_files_outside_payload",
+        ],
+        "if_insufficient_evidence": (
+            "State uncertainty in self_check.known_risks or propose an evidence request; "
+            "do not inspect files outside this payload."
+        ),
+    }
+
+
+def _semantic_evidence_envelope(payload: dict[str, Any], *, context_mode: str) -> dict[str, Any]:
+    feature = payload.get("feature") if isinstance(payload.get("feature"), dict) else {}
+    audit = payload.get("graph_query_audit") if isinstance(payload.get("graph_query_audit"), dict) else {}
+    context = payload.get("graph_query_context") if isinstance(payload.get("graph_query_context"), dict) else {}
+    trace_id = str(audit.get("trace_id") or "")
+    evidence_items: list[dict[str, Any]] = []
+
+    def add_item(kind: str, source: str, **fields: Any) -> None:
+        evidence_items.append({
+            "evidence_id": f"ev-{len(evidence_items) + 1:03d}",
+            "kind": kind,
+            "source": source,
+            **{key: value for key, value in fields.items() if value not in ("", [], {}, None)},
+        })
+
+    for query in audit.get("queries") or []:
+        if not isinstance(query, dict):
+            continue
+        tool = str(query.get("tool") or "")
+        if tool == "get_node":
+            add_item(
+                "graph_node",
+                "graph_query_trace",
+                trace_id=trace_id,
+                query_seq=query.get("seq"),
+                result_hash=query.get("result_hash", ""),
+                result_count=query.get("result_count", 0),
+                node_id=feature.get("node_id") or "",
+            )
+        elif tool == "get_neighbors":
+            add_item(
+                "graph_neighbors",
+                "graph_query_trace",
+                trace_id=trace_id,
+                query_seq=query.get("seq"),
+                result_hash=query.get("result_hash", ""),
+                result_count=query.get("result_count", 0),
+                node_id=feature.get("node_id") or "",
+            )
+
+    for binding in context.get("path_bindings") or []:
+        if not isinstance(binding, dict):
+            continue
+        query = binding.get("query") if isinstance(binding.get("query"), dict) else {}
+        add_item(
+            "file_binding",
+            "graph_query_trace",
+            trace_id=trace_id,
+            query_seq=query.get("seq"),
+            result_hash=query.get("result_hash", ""),
+            result_count=query.get("result_count", 0),
+            path=binding.get("path") or "",
+            roles=binding.get("roles") if isinstance(binding.get("roles"), list) else [],
+        )
+
+    function_index = feature.get("function_index") if isinstance(feature.get("function_index"), dict) else {}
+    if function_index:
+        add_item(
+            "function_index",
+            "semantic_payload",
+            node_id=feature.get("node_id") or "",
+            function_count=function_index.get("function_count", 0),
+            function_hash_count=len(function_index.get("function_hashes") or {}),
+            payload_hash=_hash_payload(function_index),
+        )
+
+    file_hashes = feature.get("file_hashes") if isinstance(feature.get("file_hashes"), dict) else {}
+    if file_hashes:
+        add_item(
+            "file_hash_index",
+            "semantic_payload",
+            node_id=feature.get("node_id") or "",
+            file_count=len(file_hashes),
+            payload_hash=_hash_payload(file_hashes),
+        )
+
+    test_function_hashes = (
+        feature.get("test_function_hashes")
+        if isinstance(feature.get("test_function_hashes"), dict)
+        else {}
+    )
+    if test_function_hashes:
+        add_item(
+            "test_function_index",
+            "semantic_payload",
+            node_id=feature.get("node_id") or "",
+            test_function_hash_count=len(test_function_hashes),
+            payload_hash=_hash_payload(test_function_hashes),
+        )
+
+    feedback = payload.get("review_feedback") if isinstance(payload.get("review_feedback"), list) else []
+    if feedback:
+        add_item(
+            "review_feedback",
+            "semantic_payload",
+            feedback_count=len(feedback),
+            payload_hash=_hash_payload(feedback),
+        )
+
+    return {
+        "schema_version": "semantic_evidence.v1",
+        "mode": context_mode,
+        "trace_id": trace_id,
+        "target_node_id": feature.get("node_id") or "",
+        "evidence_items": evidence_items,
+        "source_excerpt_included": "source_excerpt" in feature,
+        "coverage": {
+            "path_binding_count": sum(1 for item in evidence_items if item.get("kind") == "file_binding"),
+            "function_index_present": bool(function_index),
+            "graph_query_trace_present": bool(trace_id),
+            "review_feedback_count": len(feedback),
+        },
     }
 
 
@@ -3666,6 +3901,10 @@ def run_semantic_enrichment(
             created_by=created_by,
         )
     feedback = load_review_feedback(project_id, snapshot_id)
+    payload_context_mode = _normal_chunk_context_mode(
+        semantic_ai_chunk_context_mode,
+        semantic_config.execution_policy.chunk_context_mode,
+    )
     graph_path = snapshot_graph_path(project_id, snapshot_id)
     graph_json = _read_json(graph_path, {})
     selector = _selector_from_kwargs(
@@ -3767,10 +4006,7 @@ def run_semantic_enrichment(
         semantic_config.execution_policy.chunk_payload_threshold_chars,
         minimum=1000,
     )
-    chunk_context_mode = _normal_chunk_context_mode(
-        semantic_ai_chunk_context_mode,
-        semantic_config.execution_policy.chunk_context_mode,
-    )
+    chunk_context_mode = payload_context_mode
     chunk_max_slices = _normal_int(
         semantic_ai_chunk_max_slices,
         semantic_config.execution_policy.chunk_max_slices,
@@ -3845,7 +4081,10 @@ def run_semantic_enrichment(
             selection_reasons = list(selection_reasons) + ["semantic_graph_state_hash_mismatch"]
         if selected_for_ai:
             ai_selected_count += 1
-        payload_feature = dict(feature)
+        payload_feature = _compact_feature_for_semantic_ai(
+            feature,
+            context_mode=payload_context_mode,
+        )
         if not semantic_config.input_policy.include_symbol_refs:
             payload_feature["symbol_refs"] = []
         if not semantic_config.input_policy.include_doc_refs:
@@ -3918,7 +4157,7 @@ def run_semantic_enrichment(
             conn,
             project_id,
             snapshot_id,
-            record.get("feature") if isinstance(record.get("feature"), dict) else {},
+            payload.get("feature") if isinstance(payload.get("feature"), dict) else {},
             project_root=root,
             actor=created_by,
             round_number=round_number,
@@ -3926,6 +4165,16 @@ def run_semantic_enrichment(
         )
         payload["graph_query_audit"] = evidence.get("audit") if isinstance(evidence.get("audit"), dict) else {}
         payload["graph_query_context"] = evidence.get("context") if isinstance(evidence.get("context"), dict) else {}
+        payload["semantic_evidence"] = _semantic_evidence_envelope(
+            payload,
+            context_mode=chunk_context_mode,
+        )
+        payload["semantic_retrieval"] = _semantic_retrieval_contract(
+            context_mode=chunk_context_mode,
+            source_excerpt_included="source_excerpt" in (
+                payload.get("feature") if isinstance(payload.get("feature"), dict) else {}
+            ),
+        )
 
     def attach_graph_query_audit_entry(entry: dict[str, Any], record: dict[str, Any]) -> None:
         payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
@@ -3993,29 +4242,14 @@ def run_semantic_enrichment(
                 "covered_functions": slice_plan.get("covered_functions") or [],
                 "fallback_error": fallback_error,
             }
-            slice_payload["semantic_retrieval"] = {
-                "mode": plan.get("context_mode") or chunk_context_mode,
-                "audit_boundary": "payload_only",
-                "source_excerpt_included": (plan.get("context_mode") == "source_excerpt"),
-                "allowed_inputs": [
-                    "payload.feature.function_index",
-                    "payload.feature.function_hashes",
-                    "payload.semantic_chunk.covered_functions",
-                    "payload.graph_query_audit",
-                    "payload.graph_query_context",
-                    "payload.review_feedback",
-                ],
-                "disallowed_inputs": [
-                    "project_file_reads",
-                    "database_reads",
-                    "unaudited_graph_queries",
-                    "source_files_outside_payload",
-                ],
-                "if_insufficient_evidence": (
-                    "State uncertainty in self_check.known_risks or propose an evidence request; "
-                    "do not inspect files outside this payload."
-                ),
-            }
+            slice_payload["semantic_evidence"] = _semantic_evidence_envelope(
+                slice_payload,
+                context_mode=plan.get("context_mode") or chunk_context_mode,
+            )
+            slice_payload["semantic_retrieval"] = _semantic_retrieval_contract(
+                context_mode=plan.get("context_mode") or chunk_context_mode,
+                source_excerpt_included=(plan.get("context_mode") == "source_excerpt"),
+            )
             slice_payload["instructions"] = {
                 **slice_payload.get("instructions", {}),
                 "chunk_mode": True,
@@ -4348,6 +4582,8 @@ def run_semantic_enrichment(
                             ),
                             "graph_query_audit": record["payload"].get("graph_query_audit") or {},
                             "graph_query_context": record["payload"].get("graph_query_context") or {},
+                            "semantic_evidence": record["payload"].get("semantic_evidence") or {},
+                            "semantic_retrieval": record["payload"].get("semantic_retrieval") or {},
                         }
                         for record in batch
                     ],
