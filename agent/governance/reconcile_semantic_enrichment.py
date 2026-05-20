@@ -1496,21 +1496,60 @@ def _compact_feature_for_slice(
     *,
     source_excerpt: dict[str, str],
 ) -> dict[str, Any]:
-    compact = copy.deepcopy(feature)
-    metadata = compact.get("metadata") if isinstance(compact.get("metadata"), dict) else {}
-    compact["metadata"] = dict(metadata)
-    compact["metadata"]["functions"] = [
-        {
-            key: item.get(key)
-            for key in ("name", "path", "lineno", "end_lineno")
-            if item.get(key) not in {None, ""}
-        }
-        for item in functions
-    ]
-    compact["metadata"]["function_count"] = len(functions)
-    compact["function_hashes"] = _function_hash_subset(feature, functions)
-    compact["source_excerpt"] = source_excerpt
-    return compact
+    metadata = feature.get("metadata") if isinstance(feature.get("metadata"), dict) else {}
+    graph_metrics = metadata.get("graph_metrics") if isinstance(metadata.get("graph_metrics"), dict) else {}
+    all_functions = _feature_functions(feature)
+    compact_metadata = {
+        "subsystem": str(metadata.get("subsystem") or metadata.get("subsystem_key") or ""),
+        "module": str(metadata.get("module") or ""),
+        "file_role": str(metadata.get("file_role") or ""),
+        "hierarchy_parent": str(metadata.get("hierarchy_parent") or ""),
+        "area_key": str(metadata.get("area_key") or ""),
+        "graph_metrics": graph_metrics,
+        "quality_flags": _path_list(metadata.get("quality_flags") or feature.get("quality_flags")),
+        "function_count": len(functions),
+        "total_function_count": int(metadata.get("function_count") or len(all_functions) or len(functions)),
+        "functions": [
+            {
+                key: item.get(key)
+                for key in ("name", "path", "lineno", "end_lineno")
+                if item.get(key) not in {None, ""}
+            }
+            for item in functions
+        ],
+    }
+    compact = {
+        "node_id": feature.get("node_id") or "",
+        "id": feature.get("id") or feature.get("node_id") or "",
+        "layer": feature.get("layer") or "",
+        "title": feature.get("title") or feature.get("feature_name") or feature.get("node_id") or "",
+        "kind": feature.get("kind") or "",
+        "primary": _path_list(feature.get("primary")),
+        "secondary": _path_list(feature.get("secondary")),
+        "test": _path_list(feature.get("test")),
+        "config": _path_list(feature.get("config")),
+        "feature_hash": feature.get("feature_hash") or "",
+        "file_hashes": feature.get("file_hashes") if isinstance(feature.get("file_hashes"), dict) else {},
+        "function_hashes": _function_hash_subset(feature, functions),
+        "metadata": compact_metadata,
+        "source_excerpt": source_excerpt,
+        "omitted_context": {
+            "reason": "large_node_function_slice",
+            "symbol_ref_count": len(feature.get("symbol_refs") or []),
+            "test_symbol_ref_count": len(feature.get("test_symbol_refs") or []),
+            "test_function_count": len(feature.get("test_functions") or []),
+            "test_function_hash_count": len(
+                feature.get("test_function_hashes")
+                if isinstance(feature.get("test_function_hashes"), dict)
+                else {}
+            ),
+        },
+    }
+    # Drop empty scalar/list/dict fields while keeping an explicit compact shape.
+    return {
+        key: value for key, value in compact.items()
+        if value not in ("", [], {})
+    }
 
 
 def _plan_semantic_function_slices(

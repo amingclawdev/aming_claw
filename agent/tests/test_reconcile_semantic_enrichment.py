@@ -1049,6 +1049,23 @@ def test_semantic_enrichment_chunks_large_function_node_and_aggregates(conn, tmp
                             f"agent.governance.large_node::generated_{idx}": f"sha256:fn-{idx}"
                             for idx in range(6)
                         },
+                        "symbol_refs": [
+                            {"name": f"symbol_{idx}", "path": "agent/governance/large_node.py"}
+                            for idx in range(200)
+                        ],
+                    },
+                    "symbol_refs": [
+                        {"name": f"symbol_{idx}", "path": "agent/governance/large_node.py"}
+                        for idx in range(200)
+                    ],
+                    "test_symbol_refs": [
+                        {"name": f"test_symbol_{idx}", "path": "agent/tests/test_large_node.py"}
+                        for idx in range(200)
+                    ],
+                    "test_functions": [f"test_generated_{idx}" for idx in range(200)],
+                    "test_function_hashes": {
+                        f"agent.tests.test_large_node::test_generated_{idx}": f"sha256:test-{idx}"
+                        for idx in range(200)
                     },
                 }
             ],
@@ -1081,6 +1098,11 @@ def test_semantic_enrichment_chunks_large_function_node_and_aggregates(conn, tmp
         assert chunk["mode"] == "function_slice"
         assert len(chunk["covered_functions"]) <= 2
         assert len(payload["feature"]["metadata"]["functions"]) <= 2
+        assert payload["feature"]["metadata"]["total_function_count"] == 6
+        assert "symbol_refs" not in payload["feature"]
+        assert "test_symbol_refs" not in payload["feature"]
+        assert "test_functions" not in payload["feature"]
+        assert "test_function_hashes" not in payload["feature"]
         assert "graph_query_audit" in payload
         names = ", ".join(item["name"] for item in chunk["covered_functions"])
         return {
@@ -1137,6 +1159,10 @@ def test_semantic_enrichment_chunks_large_function_node_and_aggregates(conn, tmp
     assert feature["semantic_chunking"]["completed_slice_count"] == 3
     assert feature["self_check"]["checked_rules"][-1] == "chunk_slices_accounted_for"
     assert Path(result["summary"]["chunk_payload_input_dir"]).exists()
+    chunk_payload = json.loads(
+        (project / "semantic-trace" / "chunk-inputs" / "L7.large-slice-000.json").read_text()
+    )
+    assert len(json.dumps(chunk_payload, sort_keys=True)) < 50000
     output = json.loads((project / "semantic-trace" / "feature-outputs" / "L7.large.json").read_text())
     assert output["semantic_entry"]["semantic_chunking"]["mode"] == "function_slices"
 
