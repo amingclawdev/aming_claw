@@ -226,6 +226,35 @@ def test_process_node_semantic_job_scopes_persist_and_trace_dir(monkeypatch, tmp
 
     def fake_run_semantic_enrichment(*args, **kwargs):
         captured.update(kwargs)
+        semantic_payload = {
+            "node_id": "L7.1",
+            "feature_name": "Scoped Feature",
+            "semantic_summary": "Generated semantic proposal.",
+            "intent": "Exercise node worker scoping.",
+            "self_check": {
+                "valid": True,
+                "status": "passed",
+                "checked_rules": semantic.NODE_SEMANTIC_SELF_CHECK_RULES,
+            },
+        }
+        conn.execute(
+            """
+            INSERT INTO graph_semantic_nodes
+              (project_id, snapshot_id, node_id, status, feature_hash,
+               semantic_json, payload_hash, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "demo",
+                "scope-demo",
+                "L7.1",
+                "pending_review",
+                "feature-hash-demo",
+                json.dumps(semantic_payload),
+                "payload-hash-demo",
+                "2026-05-20T00:00:01Z",
+            ),
+        )
         return {"summary": {"ai_complete_count": 1}}
 
     monkeypatch.setattr(semantic, "run_semantic_enrichment", fake_run_semantic_enrichment)

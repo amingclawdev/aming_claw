@@ -188,6 +188,58 @@ def _self_precheck_payload(payload: Mapping[str, Any], result: Mapping[str, Any]
     return out
 
 
+def _semantic_node_model_self_check(payload: Mapping[str, Any]) -> dict[str, Any]:
+    for key in ("semantic_ai_self_check", "self_precheck", "self_check"):
+        value = payload.get(key)
+        if isinstance(value, Mapping):
+            return dict(value)
+    return {}
+
+
+def _semantic_node_gate_precheck(payload: Mapping[str, Any]) -> dict[str, Any]:
+    model_check = _semantic_node_model_self_check(payload)
+    checked_rules = model_check.get("checked_rules")
+    if not isinstance(checked_rules, list):
+        checked_rules = []
+    checked_rule_names = [str(item or "") for item in checked_rules if str(item or "")]
+    status = str(
+        model_check.get("status")
+        or model_check.get("precheck_status")
+        or ""
+    ).strip().lower()
+    passed_statuses = {"passed", "pass", "ok", "complete", "completed"}
+    errors: list[str] = []
+    if not model_check:
+        errors.append("missing_model_self_check")
+    if model_check.get("valid") is not True:
+        errors.append("model_self_check_not_valid")
+    if status not in passed_statuses:
+        errors.append("model_self_check_status_not_passed")
+    try:
+        from . import reconcile_semantic_enrichment as semantic
+
+        missing_rules = [
+            rule for rule in semantic.NODE_SEMANTIC_SELF_CHECK_RULES
+            if rule not in checked_rule_names
+        ]
+    except Exception:  # noqa: BLE001 - gate should still fail closed on model validity
+        missing_rules = []
+    errors.extend(f"missing_self_check_rule:{rule}" for rule in missing_rules)
+    return {
+        "source": "semantic_node_system_gate",
+        "gate_name": "semantic_node_self_check",
+        "status": "failed" if errors else "passed",
+        "valid": not errors,
+        "classification": "failed" if errors else "passed",
+        "errors": errors,
+        "checked_rules": checked_rule_names,
+        "checked_rules_count": len(checked_rule_names),
+        "model_status": status,
+        "required": True,
+        "retryable": False,
+    }
+
+
 def _graph_query_trace_ids_from_payload(payload: Mapping[str, Any]) -> list[str]:
     trace_ids: list[str] = []
     for key in ("graph_query_audit", "semantic_graph_query_audit"):
@@ -1553,6 +1605,8 @@ def _process_node_semantic_job(
         except Exception as exc:  # noqa: BLE001
             log.warning("semantic_worker: event lookup failed for %s: %s",
                         node_id_s, exc)
+        semantic_gate_precheck = _semantic_node_gate_precheck(semantic_payload)
+        semantic_gate_passed = str(semantic_gate_precheck.get("status") or "") == "passed"
         intake_mirror = _mirror_ai_output_intake(
             conn,
             project_id,
@@ -1564,7 +1618,8 @@ def _process_node_semantic_job(
             actor="semantic_worker_inproc",
             producer="semantic_worker_inproc_node",
             source_run_id=event_id or semantic_payload_hash or node_id_s,
-            route_status="review_pending",
+            result={"precheck": semantic_gate_precheck},
+            route_status="review_pending" if semantic_gate_passed else "gate_failed",
             metadata={
                 "event_id": event_id,
                 "feature_hash": feature_hash,
@@ -1572,6 +1627,60 @@ def _process_node_semantic_job(
                 "source": "semantic_worker_inproc",
             },
         )
+        if not semantic_gate_passed:
+            gate_errors = [
+                str(item or "")
+                for item in semantic_gate_precheck.get("errors", [])
+                if str(item or "")
+            ]
+            last_error = "semantic_node_self_check gate failed"
+            if gate_errors:
+                last_error = f"{last_error}: {', '.join(gate_errors)}"
+            try:
+                conn.execute(
+                    """
+                    UPDATE graph_semantic_nodes
+                    SET status = 'gate_failed', updated_at = ?
+                    WHERE project_id = ? AND snapshot_id = ? AND node_id = ?
+                      AND status IN ('pending_review', 'ai_complete')
+                    """,
+                    (semantic.utc_now(), project_id, snapshot_id, node_id_s),
+                )
+                if event_id:
+                    graph_events.update_event_status(
+                        conn,
+                        project_id,
+                        snapshot_id,
+                        event_id,
+                        status=graph_events.EVENT_STATUS_REJECTED,
+                        actor="semantic_worker_inproc",
+                        operation_type="semantic_node_gate",
+                        evidence={
+                            "source": "semantic_node_system_gate",
+                            "gate_precheck": semantic_gate_precheck,
+                            "ai_output_intake": intake_mirror,
+                        },
+                    )
+            except Exception as exc:  # noqa: BLE001 - preserve the route record and job failure
+                log.warning("semantic_worker: semantic node gate state update failed for %s: %s",
+                            node_id_s, exc)
+            _finalize_node_semantic_job(
+                conn,
+                project_id,
+                snapshot_id,
+                node_id_s,
+                status="rejected",
+                last_error=last_error,
+            )
+            conn.commit()
+            return {
+                "ok": False,
+                "status": "gate_failed",
+                "node_id": node_id_s,
+                "event_id": event_id,
+                "gate_precheck": semantic_gate_precheck,
+                "ai_output_intake": intake_mirror,
+            }
         try:
             reconcile_feedback.submit_feedback_item(
                 project_id,

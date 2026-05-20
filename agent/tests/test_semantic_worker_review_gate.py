@@ -432,6 +432,11 @@ def test_a6_drain_node_continues_after_first_claim_batch(conn, tmp_path, monkeyp
                 "semantic_summary": f"Generated proposal for {node_id}.",
                 "intent": "Exercise multi-batch semantic worker drain.",
                 "confidence": 0.8,
+                "self_check": {
+                    "valid": True,
+                    "status": "passed",
+                    "checked_rules": semantic.NODE_SEMANTIC_SELF_CHECK_RULES,
+                },
             }
 
         return _ai

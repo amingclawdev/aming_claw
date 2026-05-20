@@ -35,6 +35,7 @@ ROUTE_STATUSES = {
     "queued",
     "reserved",
     "review_pending",
+    "gate_failed",
     "completed",
     "rejected",
     "failed",
