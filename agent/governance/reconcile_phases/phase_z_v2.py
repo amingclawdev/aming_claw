@@ -1258,17 +1258,19 @@ def find_test_coverage(
         suffixes = {primary_ext}
         if primary_ext in {".jsx", ".tsx"}:
             suffixes.add(primary_ext[-3:])
-        return any(
-            lower in {
+        for suffix in suffixes:
+            if not suffix:
+                continue
+            if lower in {
                 f"{stem}.test{suffix}",
                 f"{stem}.spec{suffix}",
                 f"test_{stem}{suffix}",
                 f"{stem}_test{suffix}",
-            }
-            or lower.startswith(f"test_{stem}_")
-            for suffix in suffixes
-            if suffix
-        )
+            }:
+                return True
+            if lower.startswith(f"test_{stem}_") and lower.endswith(suffix):
+                return True
+        return False
 
     def _content_matches_primary(content: str) -> bool:
         lowered = content.lower()
@@ -1311,12 +1313,33 @@ def find_test_coverage(
                 content_match = _content_matches_primary(content)
             except OSError:
                 content = ""
+            if (
+                content_match
+                and not name_match
+                and not _test_content_match_language_compatible(primary_file, fpath)
+            ):
+                content_match = False
             if not name_match and not content_match:
                 test_files.pop()
                 continue
             covered_lines += content.count("\n")
 
     return {"test_files": test_files, "covered_lines": covered_lines}
+
+
+def _language_family_for_path(path: str) -> str:
+    language = DEFAULT_LANGUAGE_POLICY.language_for_path(path)
+    if language in {"javascript", "typescript"}:
+        return "javascript_typescript"
+    return language
+
+
+def _test_content_match_language_compatible(primary_file: str, test_file: str) -> bool:
+    primary_family = _language_family_for_path(primary_file)
+    test_family = _language_family_for_path(test_file)
+    if not primary_family or not test_family:
+        return True
+    return primary_family == test_family
 
 
 def find_doc_coverage(
@@ -1583,19 +1606,63 @@ def _iter_test_source_files(project_root: str, profile: Any) -> List[Tuple[str, 
     return files
 
 
-def _test_import_tokens(project_root: str, test_file: str, source: str) -> Set[str]:
+def _test_import_facts(project_root: str, test_file: str, source: str) -> List[Dict[str, Any]]:
     adapter = _adapter_for_source_file(test_file)
     imports = _safe_adapter_imports(adapter, test_file, source)
-    tokens: Set[str] = set()
+    facts: List[Dict[str, Any]] = []
+    seen: Set[str] = set()
+
+    def add_token(token: str, row: Dict[str, Any]) -> None:
+        normalized = str(token or "").strip()
+        if not normalized or normalized in seen:
+            return
+        seen.add(normalized)
+        facts.append({
+            "token": normalized,
+            "kind": str(row.get("kind") or ""),
+            "local": str(row.get("local") or ""),
+        })
+
     for row in imports:
         imported = str(row.get("imported") or "").strip()
         specifier = str(row.get("specifier") or "").strip()
         if imported:
-            tokens.add(_resolve_adapter_import_row(project_root, test_file, row, imported))
+            add_token(_resolve_adapter_import_row(project_root, test_file, row, imported), row)
         if specifier:
-            tokens.add(specifier)
-            tokens.add(_resolve_source_import(project_root, test_file, specifier))
-    return {token for token in tokens if token}
+            add_token(specifier, row)
+            resolved = _resolve_source_import(project_root, test_file, specifier)
+            add_token(resolved, row)
+            local = str(row.get("local") or "").strip()
+            kind = str(row.get("kind") or "")
+            if (
+                local
+                and resolved
+                and local != specifier
+                and kind in {"import", "require"}
+            ):
+                add_token(f"{resolved}.{local}", row)
+    return facts
+
+
+def _test_import_token_is_direct_symbol_for_module(
+    token: str,
+    module_name: str,
+    alias_to_modules: Dict[str, Set[str]],
+) -> bool:
+    normalized = DEFAULT_LANGUAGE_POLICY.strip_source_suffix(
+        str(token or "").replace("\\", "/").strip().strip(".")
+    ).replace("/", ".").strip(".")
+    if not normalized:
+        return False
+    aliases = {
+        str(alias or "").strip(".")
+        for alias, module_names in (alias_to_modules or {}).items()
+        if module_name in (module_names or set())
+    }
+    return any(
+        alias and normalized.startswith(f"{alias}.")
+        for alias in aliases
+    )
 
 
 def _pytest_fixture_names(source: str, file_path: str = "<test>") -> Set[str]:
@@ -1659,21 +1726,34 @@ def _pytest_fixture_fanin_index(
         fixture_names = _pytest_fixture_names(source, fpath)
         if not fixture_names:
             continue
-        module_hits: Dict[str, Set[str]] = {}
-        for token in _test_import_tokens(project_root, fpath, source):
+        module_hits: Dict[str, Dict[str, Any]] = {}
+        for fact in _test_import_facts(project_root, fpath, source):
+            token = str(fact.get("token") or "")
             module_name = _resolve_import_token_to_unique_module(token, alias_to_modules)
             if module_name:
-                module_hits.setdefault(module_name, set()).add(token)
+                hit = module_hits.setdefault(
+                    module_name,
+                    {"imports": set(), "direct_symbol_import": False},
+                )
+                hit["imports"].add(token)
+                hit["direct_symbol_import"] = bool(hit["direct_symbol_import"]) or (
+                    _test_import_token_is_direct_symbol_for_module(
+                        token,
+                        module_name,
+                        alias_to_modules,
+                    )
+                )
         if not module_hits:
             continue
         for fixture_name in sorted(fixture_names):
-            for module_name, tokens in sorted(module_hits.items()):
+            for module_name, hit in sorted(module_hits.items()):
                 fixtures.setdefault(fixture_name, []).append({
                     "module_name": module_name,
                     "fixture": fixture_name,
                     "fixture_path": fpath,
                     "fixture_rel_path": rel,
-                    "imports": sorted(tokens),
+                    "imports": sorted(hit["imports"]),
+                    "direct_symbol_import": bool(hit.get("direct_symbol_import")),
                 })
     return fixtures
 
@@ -1698,17 +1778,31 @@ def build_test_consumer_fanin_index(
             source = _read_file(fpath)
         except (UnicodeDecodeError, OSError):
             continue
-        module_hits: Dict[str, Set[str]] = {}
-        for token in _test_import_tokens(project_root, fpath, source):
+        module_hits: Dict[str, Dict[str, Any]] = {}
+        for fact in _test_import_facts(project_root, fpath, source):
+            token = str(fact.get("token") or "")
             module_name = _resolve_import_token_to_unique_module(token, alias_to_modules)
             if module_name:
-                module_hits.setdefault(module_name, set()).add(token)
-        for module_name, tokens in sorted(module_hits.items()):
+                hit = module_hits.setdefault(
+                    module_name,
+                    {"imports": set(), "direct_symbol_import": False},
+                )
+                hit["imports"].add(token)
+                hit["direct_symbol_import"] = bool(hit["direct_symbol_import"]) or (
+                    _test_import_token_is_direct_symbol_for_module(
+                        token,
+                        module_name,
+                        alias_to_modules,
+                    )
+                )
+        for module_name, hit in sorted(module_hits.items()):
             index.setdefault(module_name, []).append({
                 "path": fpath,
                 "rel_path": rel,
                 "evidence": "test_import_fanin",
-                "imports": sorted(tokens),
+                "imports": sorted(hit["imports"]),
+                "direct_symbol_import": bool(hit.get("direct_symbol_import")),
+                "language": DEFAULT_LANGUAGE_POLICY.language_for_path(rel),
                 "covered_lines": source.count("\n"),
             })
         for fixture_name in sorted(_pytest_test_fixture_args(source, fpath)):
@@ -1723,6 +1817,8 @@ def build_test_consumer_fanin_index(
                     "rel_path": rel,
                     "evidence": "pytest_fixture_consumer_fanin",
                     "imports": sorted(set(imports)),
+                    "direct_symbol_import": bool(fixture_hit.get("direct_symbol_import")),
+                    "language": DEFAULT_LANGUAGE_POLICY.language_for_path(rel),
                     "covered_lines": source.count("\n"),
                     "fixture": fixture_name,
                     "fixture_path": fixture_hit.get("fixture_rel_path") or fixture_hit.get("fixture_path"),
@@ -1736,6 +1832,9 @@ def _merge_test_consumer_fanin(
     project_root: str,
     coverage: Dict[str, Any],
     entries: List[Dict[str, Any]],
+    *,
+    node: Optional[Dict[str, Any]] = None,
+    graph_enrich_config_rules: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if not entries:
         return coverage
@@ -1744,21 +1843,47 @@ def _merge_test_consumer_fanin(
     seen = {_repo_relpath(project_root, path) for path in files}
     covered_lines = int(merged.get("covered_lines") or 0)
     fan_in_evidence = list(merged.get("fan_in_evidence") or [])
+    weak_tests = list(merged.get("weak_tests") or [])
+    weak_seen = {_repo_relpath(project_root, path) for path in weak_tests}
     for entry in entries:
         path = str(entry.get("path") or "")
         rel = _repo_relpath(project_root, entry.get("rel_path") or path)
-        if path and rel not in seen:
+        decision = _graph_enrich_config_rule_decision_for_test_fanin_entry(
+            entry,
+            node=node,
+            rules=graph_enrich_config_rules,
+        )
+        if _graph_enrich_config_rule_suppresses(decision):
+            continue
+        strong = _test_fanin_entry_is_strong(entry, decision)
+        if strong and path and rel not in seen:
             files.append(path)
             seen.add(rel)
             covered_lines += int(entry.get("covered_lines") or 0)
-        fan_in_evidence.append({
+        if not strong and rel and rel not in weak_seen:
+            weak_tests.append(rel)
+            weak_seen.add(rel)
+        evidence = {
             "path": rel,
             "evidence": entry.get("evidence") or "test_import_fanin",
             "imports": list(entry.get("imports") or []),
-        })
+        }
+        if not strong:
+            evidence["source_evidence"] = evidence["evidence"]
+            evidence["evidence"] = str(decision.get("downgrade_to") or "weak_tests")
+            evidence["direct_symbol_import"] = bool(entry.get("direct_symbol_import"))
+            evidence["graph_enrich_config_rule"] = {
+                "rule_id": decision.get("rule_id", ""),
+                "action": decision.get("action", ""),
+                "downgrade_to": decision.get("downgrade_to", ""),
+                "matched_predicates": decision.get("matched_predicates", []),
+            }
+        fan_in_evidence.append(evidence)
     merged["test_files"] = files
     merged["covered_lines"] = covered_lines
     merged["fan_in_evidence"] = fan_in_evidence
+    if weak_tests:
+        merged["weak_tests"] = weak_tests
     return merged
 
 
@@ -1766,6 +1891,8 @@ def _attach_test_consumer_fanin_to_nodes(
     project_root: str,
     nodes: List[Dict[str, Any]],
     fanin_index: Dict[str, List[Dict[str, Any]]],
+    *,
+    graph_enrich_config_rules: Optional[Dict[str, Any]] = None,
 ) -> None:
     if not fanin_index:
         return
@@ -1777,7 +1904,61 @@ def _attach_test_consumer_fanin_to_nodes(
                 project_root,
                 node.get("test_coverage") or {"test_files": [], "covered_lines": 0},
                 entries,
+                node=node,
+                graph_enrich_config_rules=graph_enrich_config_rules,
             )
+
+
+def _graph_enrich_config_rule_decision_for_test_fanin_entry(
+    entry: Dict[str, Any],
+    *,
+    node: Optional[Dict[str, Any]] = None,
+    rules: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    if not rules:
+        return {"matched": False, "rule_id": "", "action": "", "downgrade_to": "", "errors": []}
+    node = node or {}
+    metadata = node.get("metadata") or {}
+    primary_file = str(node.get("primary_file") or "")
+    if not primary_file and isinstance(node.get("primary"), list) and node.get("primary"):
+        primary_file = str(node["primary"][0])
+    context = {
+        "edge": "tests",
+        "source_evidence": str(entry.get("evidence") or "test_import_fanin"),
+        "language": str(
+            entry.get("language")
+            or DEFAULT_LANGUAGE_POLICY.language_for_path(
+                str(entry.get("rel_path") or entry.get("path") or "")
+            )
+        ),
+        "source_path": str(entry.get("rel_path") or entry.get("path") or ""),
+        "raw_target": str(node.get("module") or metadata.get("module") or ""),
+        "target_language": str(
+            node.get("language")
+            or metadata.get("language")
+            or DEFAULT_LANGUAGE_POLICY.language_for_path(primary_file)
+        ),
+        "target_path": primary_file,
+        "target_file_role": str(metadata.get("file_role") or metadata.get("kind") or ""),
+    }
+    try:
+        from agent.governance.graph_enrich_config_ops import evaluate_graph_enrich_config_rules
+
+        return evaluate_graph_enrich_config_rules(rules, context)
+    except Exception:
+        return {"matched": False, "rule_id": "", "action": "", "downgrade_to": "", "errors": ["rule_eval_failed"]}
+
+
+def _test_fanin_entry_is_strong(entry: Dict[str, Any], decision: Dict[str, Any]) -> bool:
+    if not decision.get("matched"):
+        return True
+    action = str(decision.get("action") or "")
+    downgrade_to = str(decision.get("downgrade_to") or "")
+    if action == "require_direct_symbol_import":
+        return bool(entry.get("direct_symbol_import"))
+    if action == "downgrade" and downgrade_to == "weak_tests":
+        return False
+    return downgrade_to not in {"weak_tests"}
 
 
 def _module_from_qname(qname: str) -> str:
@@ -4590,6 +4771,7 @@ def build_graph_v2_from_symbols(
     profile = discover_project_profile(project_root)
     modules = parse_production_modules(project_root, profile=profile)
     call_graph = build_call_graph(modules)
+    graph_enrich_config_rules = _load_graph_enrich_config_rules(project_root)
     sccs = tarjan_scc(call_graph.edges)
 
     # Handle cycles
@@ -4640,7 +4822,12 @@ def build_graph_v2_from_symbols(
         doc_cov = find_doc_coverage(project_root, pf, profile=profile)
         node["test_coverage"] = test_cov
         node["doc_coverage"] = doc_cov
-    _attach_test_consumer_fanin_to_nodes(project_root, nodes, test_consumer_fanin)
+    _attach_test_consumer_fanin_to_nodes(
+        project_root,
+        nodes,
+        test_consumer_fanin,
+        graph_enrich_config_rules=graph_enrich_config_rules,
+    )
 
     feature_clusters = synthesize_feature_clusters(
         project_root=project_root,
@@ -4655,7 +4842,12 @@ def build_graph_v2_from_symbols(
     ]
     fallback_nodes = append_filetree_fallback_source_nodes(project_root, nodes, profile=profile)
     all_fallback_nodes = adapter_fallback_nodes + fallback_nodes
-    _attach_test_consumer_fanin_to_nodes(project_root, all_fallback_nodes, test_consumer_fanin)
+    _attach_test_consumer_fanin_to_nodes(
+        project_root,
+        all_fallback_nodes,
+        test_consumer_fanin,
+        graph_enrich_config_rules=graph_enrich_config_rules,
+    )
     if all_fallback_nodes:
         feature_clusters.extend(_fallback_feature_clusters(all_fallback_nodes))
         feature_clusters.sort(key=lambda c: c.get("cluster_fingerprint", ""))
@@ -4683,7 +4875,6 @@ def build_graph_v2_from_symbols(
             "pending_decision_sample": [],
         }
 
-    graph_enrich_config_rules = _load_graph_enrich_config_rules(project_root)
     typed_relations = extract_typed_relations(
         project_root,
         modules,

@@ -85,9 +85,11 @@ from agent.governance.reconcile_phases.phase_z_v2 import (
     build_module_dependency_edges,
     enrich_nodes_with_architecture_signals,
     extract_typed_relations,
+    _graph_enrich_config_rule_decision_for_test_fanin_entry,
     _load_graph_enrich_config_rules,
     parse_production_modules,
     parse_production_module_file,
+    _test_fanin_entry_is_strong,
 )
 
 
@@ -1139,11 +1141,12 @@ def _apply_incremental_test_fanin_bindings(
     root = Path(project_root).resolve()
     profile = discover_project_profile(str(root))
     modules = parse_production_modules(str(root), profile=profile)
+    graph_enrich_config_rules = _load_graph_enrich_config_rules(str(root))
     fanin_index = build_test_consumer_fanin_index(str(root), modules, profile=profile)
     new_fanin_by_module: dict[str, list[dict[str, Any]]] = {}
     for module_name, entries in fanin_index.items():
         kept = [
-            _graph_fanin_entry(entry)
+            dict(entry)
             for entry in entries or []
             if _fanin_entry_path(entry) in changed
         ]
@@ -1168,7 +1171,18 @@ def _apply_incremental_test_fanin_bindings(
             for entry in old_fanin
             if _norm_repo_path(entry.get("path")) in affected
         }
-        new_changed_fanin = new_fanin_by_module.get(module_name, [])
+        new_changed_fanin = [
+            _graph_fanin_entry(entry)
+            for entry in new_fanin_by_module.get(module_name, [])
+            if _test_fanin_entry_is_strong(
+                entry,
+                _graph_enrich_config_rule_decision_for_test_fanin_entry(
+                    entry,
+                    node=node,
+                    rules=graph_enrich_config_rules,
+                ),
+            )
+        ]
         old_tests = sorted(_path_values(node, "test"))
         old_affected_tests = {path for path in old_tests if path in affected}
         if not old_changed_paths and not new_changed_fanin and not old_affected_tests:

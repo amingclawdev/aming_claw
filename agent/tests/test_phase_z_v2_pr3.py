@@ -279,6 +279,93 @@ class TestCoverageLookup:
         rows = {row["path"]: row for row in result["file_inventory"]}
         assert rows["tests/test_core.py"]["scan_status"] == "orphan"
 
+    def test_graph_enrich_config_downgrades_cross_language_test_fanin_without_direct_symbol(self):
+        project = _make_temp_project({
+            ".aming-claw/reconcile/semantic_enrichment.yaml": (
+                "graph_enrich_config_ops:\n"
+                "  rules:\n"
+                "    tests.test_import_fanin.require_direct_symbol_import:\n"
+                "      op: tighten_rule\n"
+                "      edge: tests\n"
+                "      source_evidence: test_import_fanin\n"
+                "      action: require_direct_symbol_import\n"
+                "      downgrade_to: weak_tests\n"
+                "      when:\n"
+                "        all:\n"
+                "          - predicate: source_evidence_is\n"
+                "            value: test_import_fanin\n"
+            ),
+            "frontend/dashboard/src/lib/semantic.ts": (
+                "export function summarizeSemantic(value: string) {\n"
+                "  return value.toUpperCase()\n"
+                "}\n"
+            ),
+            "frontend/dashboard/src/lib/semantic.test.ts": (
+                "import { summarizeSemantic } from './semantic'\n\n"
+                "test('summarizeSemantic', () => {\n"
+                "  expect(summarizeSemantic('ok')).toBe('OK')\n"
+                "})\n"
+            ),
+            "agent/tests/test_semantic_bridge.py": (
+                "from frontend.dashboard.src.lib import semantic\n\n"
+                "def test_backend_semantic_bridge_mentions_dashboard_module():\n"
+                "    assert semantic is not None\n"
+            ),
+            "frontend/dashboard/src/types.ts": (
+                "export type SemanticNode = {\n"
+                "  id: string\n"
+                "}\n"
+            ),
+            "agent/tests/test_graph_correction_patches.py": (
+                "def test_mentions_type_contract_path_for_graph_review():\n"
+                "    assert 'frontend/dashboard/src/types.ts'\n"
+            ),
+        })
+
+        result = build_graph_v2_from_symbols(project, dry_run=True)
+        nodes_by_module = {node["module"]: node for node in result["nodes"]}
+        semantic_node = nodes_by_module["frontend.dashboard.src.lib.semantic"]
+        type_node = nodes_by_module["frontend.dashboard.src.types"]
+        semantic_tests = {
+            os.path.relpath(path, project).replace(os.sep, "/")
+            for path in semantic_node["test_coverage"]["test_files"]
+        }
+        type_tests = {
+            os.path.relpath(path, project).replace(os.sep, "/")
+            for path in type_node["test_coverage"]["test_files"]
+        }
+
+        assert "frontend/dashboard/src/lib/semantic.test.ts" in semantic_tests
+        assert "agent/tests/test_semantic_bridge.py" not in semantic_tests
+        assert "agent/tests/test_graph_correction_patches.py" not in type_tests
+
+        fanin = semantic_node["test_coverage"]["fan_in_evidence"]
+        weak = next(
+            entry for entry in fanin
+            if entry["path"] == "agent/tests/test_semantic_bridge.py"
+        )
+        assert weak["evidence"] == "weak_tests"
+        assert weak["source_evidence"] == "test_import_fanin"
+        assert weak["graph_enrich_config_rule"]["rule_id"] == (
+            "tests.test_import_fanin.require_direct_symbol_import"
+        )
+
+        candidate = build_rebase_candidate_graph(
+            project,
+            result,
+            session_id="test-fanin-rule",
+            run_id=result["run_id"],
+        )
+        graph_nodes = {
+            node["title"]: node
+            for node in candidate["deps_graph"]["nodes"]
+            if node["layer"] == "L7"
+        }
+        assert graph_nodes["frontend.dashboard.src.lib.semantic"]["test"] == [
+            "frontend/dashboard/src/lib/semantic.test.ts"
+        ]
+        assert graph_nodes["frontend.dashboard.src.types"]["test"] == []
+
     def test_graph_enrich_config_rule_suppresses_chained_add_weak_call(self):
         project = _make_temp_project({
             "agent/service.py": (
