@@ -1,5 +1,6 @@
 """Tests for Git URL plugin bootstrap helpers."""
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -37,6 +38,9 @@ from agent.plugin_installer import (
 
 
 def _write_plugin_fixture(root: Path) -> None:
+    seed_payload = {"schema_version": 1, "project_id": "aming-claw"}
+    seed_text = json.dumps(seed_payload)
+    seed_hash = hashlib.sha256(seed_text.encode("utf-8")).hexdigest()
     for rel, text in {
         ".codex-plugin/plugin.json": {"name": "aming-claw"},
         ".agents/plugins/marketplace.json": {
@@ -84,6 +88,26 @@ def _write_plugin_fixture(root: Path) -> None:
                     "env": {"PYTHONDONTWRITEBYTECODE": "1"},
                 }
             }
+        },
+        "agent/mcp/resources/seed-graph-summary.json": seed_payload,
+        "agent/mcp/resources/self-graph-bundle-manifest.json": {
+            "schema_version": 1,
+            "bundle_kind": "aming_claw_self_graph_semantic_bundle",
+            "bundle_major": 1,
+            "bundle_version": "1.0.0",
+            "project_id": "aming-claw",
+            "source_commit": "abc1234",
+            "snapshot_id": "scope-abc1234-test",
+            "projection_id": "semproj-abc1234-test",
+            "event_watermark": 7,
+            "resources": [
+                {
+                    "path": "agent/mcp/resources/seed-graph-summary.json",
+                    "role": "seed_graph_summary",
+                    "required": True,
+                    "sha256": seed_hash,
+                }
+            ],
         },
     }.items():
         path = root / rel
@@ -222,6 +246,29 @@ def test_write_plugin_update_state_records_current_install(tmp_path):
     assert result["ok"] is True
     assert result["status"] == "pass"
     assert result["state"]["installed_version"] == "0.1.0"
+    assert result["state"]["plugin_root"] == str(tmp_path.resolve())
+    assert result["self_graph_bundle"]["status"] == "pass"
+
+
+def test_plugin_update_state_status_blocks_newer_self_bundle_major(tmp_path):
+    _write_plugin_fixture(tmp_path)
+    manifest_path = tmp_path / "agent" / "mcp" / "resources" / "self-graph-bundle-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["bundle_major"] = 2
+    manifest["bundle_version"] = "2.0.0"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    state_path = write_plugin_update_state(
+        plugin_root=tmp_path,
+        repo_url="https://github.com/amingclawdev/aming-claw.git",
+        state_path=tmp_path / "state" / "plugin.json",
+    )
+
+    result = plugin_update_state_status(state_path=state_path)
+
+    assert result["ok"] is False
+    assert result["status"] == "fail"
+    assert "self graph bundle" in result["blockers"][0]
+    assert result["self_graph_bundle"]["events"][0]["event_type"] == "plugin_update_reminder"
 
 
 def test_plugin_changed_surface_classification_maps_restart_obligations():
@@ -407,6 +454,7 @@ def test_doctor_plugin_validates_aftercare_without_governance(tmp_path):
         "claude_manifest",
         "mcp_config",
         "codex_config",
+        "self_graph_bundle",
         "dashboard_static_assets",
         "ai_cli_openai",
         "ai_cli_anthropic",

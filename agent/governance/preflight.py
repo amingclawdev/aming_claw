@@ -477,6 +477,7 @@ def check_plugin_update_state(state_path: str | None = None) -> dict:
             "blockers": status.get("blockers", []),
             "warnings": status.get("warnings", []),
             "state": status.get("state", {}),
+            "self_graph_bundle": status.get("self_graph_bundle", {}),
         }
         if status.get("status") == "fail":
             return _fail(details)

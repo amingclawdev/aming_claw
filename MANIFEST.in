@@ -11,6 +11,7 @@ include .agents/plugins/marketplace.json
 include .mcp.json
 include CLAUDE.md
 include scripts/install_from_git.py
+include scripts/check_self_graph_bundle.py
 prune .worktrees
 prune shared-volume
 prune runtime

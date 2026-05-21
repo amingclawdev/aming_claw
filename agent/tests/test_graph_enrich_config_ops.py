@@ -335,6 +335,37 @@ def _write_existing_emits_event_update_rule(project):
     )
 
 
+def _write_existing_schema_version_literal_rule(project):
+    override_path = project / PROJECT_OVERRIDE_PATH
+    override_path.parent.mkdir(parents=True, exist_ok=True)
+    override_path.write_text(
+        "\n".join(
+            [
+                "graph_enrich_config_ops:",
+                "  schema_version: graph_enrich_config_ops.v1",
+                "  rules:",
+                "    emits_event.string_literal.exclude_schema_version_tokens:",
+                "      op: add_rule",
+                "      edge: emits_event",
+                "      source_evidence: string_literal",
+                "      action: reject",
+                "      downgrade_to: ignore",
+                "      reason: Existing dogfood schema-version literal exclusion rule.",
+                "      when:",
+                "        all:",
+                "          - predicate: source_evidence_is",
+                "            value: string_literal",
+                "          - predicate: raw_target_in",
+                "            values:",
+                "              - graph_structure_ops_v1",
+                "              - graph_enrich_config_ops_v1",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_graph_enrich_config_ops_dry_run_is_non_mutating_generated_project(tmp_path):
     project = tmp_path / "generated-project"
     project.mkdir()
@@ -833,6 +864,86 @@ def test_graph_enrich_config_update_rule_adds_raw_targets_to_existing_rule(tmp_p
         "gpt_5_5",
         "powershell_exe",
     ]
+
+
+def test_graph_enrich_config_update_rule_extends_schema_version_literal_exclusion(tmp_path):
+    project = tmp_path / "generated-project"
+    project.mkdir()
+    _write_existing_schema_version_literal_rule(project)
+    payload = _predicate_rule_payload()
+    payload["operations"][0] = {
+        "op": "update_rule",
+        "rule_id": "emits_event.string_literal.exclude_schema_version_tokens",
+        "edge": "emits_event",
+        "source_evidence": "string_literal",
+        "action": "reject",
+        "downgrade_to": "ignore",
+        "confidence": 0.9,
+        "when": {
+            "all": [
+                {"predicate": "source_evidence_is", "value": "string_literal"},
+                {
+                    "predicate": "raw_target_in",
+                    "values": [
+                        "graph_structure_ops_v1",
+                        "graph_enrich_config_ops_v1",
+                        "graph_direction_contract.v1",
+                    ],
+                },
+            ]
+        },
+        "evidence": {
+            "reason": (
+                "Dogfood L7.57: graph_direction_contract.v1 is a contract "
+                "schema_version literal, not a runtime emitted event."
+            ),
+        },
+    }
+
+    result = run_graph_enrich_config_ai_output_pipeline(
+        raw_output=json.dumps(payload),
+        mode="dry_run",
+        project_root=project,
+    )
+
+    assert result["ok"] is True
+    assert result["mutated"] is False
+    assert result["gate"]["accepted_count"] == 1
+    assert result["gate"]["precheck"]["status"] == "passed"
+    operation = result["gate"]["operations"][0]
+    assert operation["existing_rule"]["relation"] == "incoming_additive_merge"
+    assert "existing_rule_additive_merge" in operation["normalizations"]
+    rule = result["preview"]["graph_enrich_config_ops"]["rules"][
+        "emits_event.string_literal.exclude_schema_version_tokens"
+    ]
+    assert rule["when"]["all"][1]["values"] == [
+        "graph_structure_ops_v1",
+        "graph_enrich_config_ops_v1",
+        "graph_direction_contract_v1",
+    ]
+
+    schema_literal = evaluate_graph_enrich_config_rules(
+        result["preview"]["graph_enrich_config_ops"]["rules"],
+        {
+            "edge": "emits_event",
+            "source_evidence": "string_literal",
+            "raw_target": "graph_direction_contract.v1",
+        },
+    )
+    assert schema_literal["matched"] is True
+    assert schema_literal["rule_id"] == "emits_event.string_literal.exclude_schema_version_tokens"
+    assert schema_literal["action"] == "reject"
+    assert schema_literal["downgrade_to"] == "ignore"
+
+    runtime_event = evaluate_graph_enrich_config_rules(
+        result["preview"]["graph_enrich_config_ops"]["rules"],
+        {
+            "edge": "emits_event",
+            "source_evidence": "string_literal",
+            "raw_target": "semantic_job.enqueued",
+        },
+    )
+    assert runtime_event["matched"] is False
 
 
 def test_graph_enrich_config_update_rule_still_rejects_raw_target_removal(tmp_path):

@@ -1,6 +1,7 @@
 """Tests for agent.cli — AC1, AC8."""
 
 import os
+import hashlib
 import json
 import subprocess
 import pytest
@@ -33,6 +34,9 @@ def _git(args: list[str], cwd):
 
 
 def _write_cli_plugin_fixture(root):
+    seed_payload = {"schema_version": 1, "project_id": "aming-claw"}
+    seed_text = json.dumps(seed_payload)
+    seed_hash = hashlib.sha256(seed_text.encode("utf-8")).hexdigest()
     for rel, text in {
         ".codex-plugin/plugin.json": {"name": "aming-claw"},
         ".agents/plugins/marketplace.json": {
@@ -54,6 +58,26 @@ def _write_cli_plugin_fixture(root):
             "plugins": [{"name": "aming-claw", "source": "./", "version": "0.1.0"}],
         },
         ".mcp.json": {"mcpServers": {"aming-claw": {"command": "python"}}},
+        "agent/mcp/resources/seed-graph-summary.json": seed_payload,
+        "agent/mcp/resources/self-graph-bundle-manifest.json": {
+            "schema_version": 1,
+            "bundle_kind": "aming_claw_self_graph_semantic_bundle",
+            "bundle_major": 1,
+            "bundle_version": "1.0.0",
+            "project_id": "aming-claw",
+            "source_commit": "abc1234",
+            "snapshot_id": "scope-abc1234-test",
+            "projection_id": "semproj-abc1234-test",
+            "event_watermark": 7,
+            "resources": [
+                {
+                    "path": "agent/mcp/resources/seed-graph-summary.json",
+                    "role": "seed_graph_summary",
+                    "required": True,
+                    "sha256": seed_hash,
+                }
+            ],
+        },
     }.items():
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -185,48 +209,7 @@ class TestCliPlugin:
 
     def test_plugin_doctor_reports_aftercare(self, tmp_path):
         runner = CliRunner()
-        for rel, text in {
-            ".codex-plugin/plugin.json": {"name": "aming-claw"},
-            ".agents/plugins/marketplace.json": {
-                "name": "aming-claw-local",
-                "plugins": [
-                    {
-                        "name": "aming-claw",
-                        "source": {"source": "local", "path": "./."},
-                    }
-                ],
-            },
-            ".claude-plugin/plugin.json": {
-                "name": "aming-claw",
-                "version": "0.1.0",
-                "description": "Test plugin.",
-                "mcpServers": {
-                    "aming-claw": {
-                        "command": "python",
-                        "args": ["-m", "agent.mcp.server"],
-                    }
-                },
-            },
-            ".claude-plugin/marketplace.json": {
-                "name": "aming-claw-local",
-                "metadata": {"description": "Test marketplace."},
-                "owner": {"name": "Aming Claw"},
-                "plugins": [
-                    {"name": "aming-claw", "source": "./", "version": "0.1.0"}
-                ],
-            },
-            ".mcp.json": {"mcpServers": {"aming-claw": {"command": "python"}}},
-        }.items():
-            path = tmp_path / rel
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(text), encoding="utf-8")
-        for rel in ("skills/aming-claw/SKILL.md", "skills/aming-claw-launcher/SKILL.md"):
-            path = tmp_path / rel
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("---\nname: test\n---\n", encoding="utf-8")
-        server_path = tmp_path / "agent" / "mcp" / "server.py"
-        server_path.parent.mkdir(parents=True, exist_ok=True)
-        server_path.write_text("# test runtime entrypoint\n", encoding="utf-8")
+        _write_cli_plugin_fixture(tmp_path)
 
         codex_home = tmp_path / "codex-home"
         marketplace_root = install_codex_marketplace(tmp_path, marketplace_root=tmp_path / "marketplace-root")

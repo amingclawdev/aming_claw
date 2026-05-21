@@ -27,6 +27,24 @@ subtools include `find_node_by_path`, `search_structure`, `function_index`,
 `function_callers`, `function_callees`, `high_degree_nodes`, `search_semantic`,
 `get_neighbors`, and `get_file_excerpt`.
 
+## V1 Graph Repair And Config Surfaces
+
+Graph repair is source-controlled and reconcile-backed. HTTP/dashboard surfaces
+may help write or review source-controlled hints/config, but the graph database
+is not the trusted mutation interface.
+
+| Surface | Purpose |
+| --- | --- |
+| File hygiene hint attach | Bind orphan doc/test/config files to existing nodes by writing source-controlled hints. |
+| Graph structure ops | Review and materialize constrained repairs such as `add_edge`, `suppress_edge`, and `move_file` through source hints. |
+| Graph enrich config ops | Review project-local semantic enrichment rule changes such as `tests.test_import_fanin.require_direct_symbol_import`. |
+| Operations Queue | Show pending graph structure/config proposals, semantic jobs, reconcile work, and retryable status. |
+
+When an AI session proposes graph/config changes, treat the payload as
+untrusted workflow input. Require precheck, server validation, observer/human
+review, source update, commit, and Update Graph/reconcile before relying on the
+new graph context.
+
 ## Documents
 
 | File | V1 Status | Description |
@@ -40,5 +58,8 @@ subtools include `find_node_by_path`, `search_structure`, `function_index`,
   with governance API port `40000`.
 - AI Enrich proposals are not trusted memory until Review Queue accept/reject
   completes and projection materializes the accepted result.
+- Project-local semantic enrichment config is documented in
+  [semantic-enrichment.md](../config/semantic-enrichment.md); it is the main
+  language/framework adaptation layer for graph review context.
 - Workflow acceptance graph APIs (`/api/wf/...`) are separate from the snapshot
   graph APIs used by the dashboard.

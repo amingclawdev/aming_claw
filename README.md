@@ -8,12 +8,57 @@ codebase. Multi-language (Python/TypeScript), MCP-native, local-first.
 
 ![Aming Claw — AI session and dashboard side by side, sharing the same project evidence](docs/assets/hero.png)
 
+## AI-Agent Review Control Plane
+
+Aming Claw is a graph-governed control plane for AI-agent code review. The
+claim is narrow: not total program correctness, not human-free review, and not
+free first-build cost on huge monorepos. The V1 loop is a reusable project fact
+layer: commit-bound graph state, typed AI proposals, review gates, durable
+repair rules, and reconcile after code or rules change.
+
+```mermaid
+flowchart TD
+  Human["Human reviewer"] --> UI["Dashboard"]
+  Agent["AI agent"] --> MCP["MCP tools"]
+
+  UI --> Gov["Governance control plane"]
+  MCP --> Gov
+
+  Gov --> Backlog["Backlog<br/>intent + work ledger"]
+  Gov --> Review["Review Queue<br/>accept / reject proposals"]
+  Gov --> Graph["Commit-bound graph<br/>files, functions, tests, docs, config"]
+
+  Agent --> Proposal["Typed AI proposals<br/>semantic / graph / config / backlog"]
+  Proposal --> Review
+
+  Code["Committed code"] --> Reconcile["Reconcile<br/>derive review state"]
+  Rules["Hints + config + rules"] --> Reconcile
+  Review --> Events["Accepted semantic events"]
+  Events --> Reconcile
+
+  Reconcile --> Graph
+  Reconcile --> Semantics["Semantic projection<br/>current / stale / missing"]
+
+  Graph --> Context["Scoped review context"]
+  Semantics --> Context
+  Backlog --> Context
+```
+
+The important boundary: AI proposals are not trusted state. Committed code,
+source-controlled hints/config/rules, and accepted semantic events are source;
+graph snapshots, semantic projections, review queues, and test/doc/config
+bindings are derived state.
+
 ## Contents
 
 - [Quick Start](#quick-start)
+- [Review-Scope Challenge](#review-scope-challenge)
 - [Key Terms](#key-terms)
+- [Architecture Contracts](#architecture-contracts)
 - [Demos](#demos)
+- [Dashboard Surfaces](#dashboard-surfaces)
 - [Use Cases](#use-cases)
+- [Observer-Led Manual Fix](#observer-led-manual-fix)
 - [V1 MVP Snapshot](#v1-mvp-snapshot)
 - [Install Details](#install-details)
 - [Runtime Boundaries](#runtime-boundaries)
@@ -98,15 +143,125 @@ changes apply only to **new** sessions.
 This is a Claude Code framework behavior, not specific to Aming Claw — but it
 surprises users often enough that we call it out.
 
+## Review-Scope Challenge
+
+This regression case is a small local E2E. The fixture creates a temporary
+project with one TypeScript source file, one real TypeScript test, and two
+Python files that look related but should not become direct test coverage. The
+temporary project writes its own `.aming-claw/reconcile/semantic_enrichment.yaml`
+rule for test fan-in, then builds the graph and verifies the resulting review
+scope. The test also points `RECONCILE_SEMANTIC_CONFIG` at an isolated base with
+no graph-enrich rules, so the result must come from the temporary project's
+local rule rather than Aming Claw's repository config.
+
+```mermaid
+flowchart TD
+  Fixture["Fixture creates temp project<br/>TS source + TS test + Python noise"]
+  Config["Load project-local rule<br/>require direct symbol import"]
+  Graph["Build graph"]
+  Classify{"Does evidence prove<br/>direct test ownership?"}
+
+  TSTest["semantic.test.ts<br/>direct TS symbol import"]
+  PyImport["test_semantic_bridge.py<br/>Python broad import"]
+  PyPath["test_graph_correction_patches.py<br/>path string only"]
+
+  Strong["Bind as strong test coverage"]
+  Weak["Keep as weak fan-in evidence"]
+  Drop["Do not bind as a test"]
+  Candidate["Candidate graph<br/>only the TS test is direct coverage"]
+
+  Fixture --> Config --> Graph --> Classify
+  TSTest --> Classify
+  PyImport --> Classify
+  PyPath --> Classify
+
+  Classify -->|direct symbol import| Strong --> Candidate
+  Classify -->|broad import only| Weak --> Candidate
+  Classify -->|path text only| Drop --> Candidate
+```
+
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -q agent/tests/test_phase_z_v2_pr3.py::TestCoverageLookup::test_graph_enrich_config_downgrades_cross_language_test_fanin_without_direct_symbol
+```
+
+Expected behavior:
+
+- `frontend/dashboard/src/lib/semantic.test.ts` remains strong test coverage
+  because it directly imports the TypeScript symbol.
+- `agent/tests/test_semantic_bridge.py` is retained as weak fan-in evidence,
+  not direct coverage.
+- `agent/tests/test_graph_correction_patches.py` does not become a direct test
+  for `frontend/dashboard/src/types.ts` just because it mentions the path.
+
+The dogfood path that produced this case also involved AI semantic review and a
+Review Queue proposal. This fast challenge avoids requiring an AI provider; it
+tests the replayable graph/rule behavior directly.
+
+The actual story was: AI semantic review noticed suspicious review context,
+the proposed graph-enrich config stayed queued for observer review instead of
+mutating state, an observer session checked graph evidence, then the durable
+fix became a project-local rule plus regression fixture. That is the
+control-plane claim in miniature.
+
+The point is not that this finds every bug. The point is that review context
+can be explicit, replayable, gated, auditable, and maintained incrementally
+instead of guessed from each diff.
+
 ## Key Terms
 
 - **Commit-bound graph** — graph state pinned 1:1 to a specific git commit; queries return what was true at that commit. The snapshot id encodes the commit (e.g. `scope-aefef99-a554`).
 - **Manual Fix (MF)** — the audit-trailed change workflow: predeclare a backlog row → graph-first discovery → scoped edit → focused tests → commit with Chain trailers → graph reconcile → close the row. V1's default implementation path in place of chain automation.
+- **Observer session** — an Aming Claw-enabled AI session operating for the user. It uses MCP tools, local checks, graph traces, and backlog rows so the user can ask for governed work in natural language rather than running every command manually.
 - **Update Graph / scope reconcile** — re-materialize the graph snapshot to track new commits. Triggered after a Manual Fix lands so subsequent queries see the latest code.
 - **Operations Queue** — dashboard view of in-flight graph operations: snapshot builds, semantic enrichment jobs, reconcile work, governance hint patches.
 - **Review Queue** — dashboard view where AI-proposed semantic memories wait for human accept/reject; nothing becomes trusted project memory until an operator approves.
-- **Governance Hint** — graph mutation written as a comment in a tracked file (committed, then applied at the next reconcile). Source-controlled, reversible, audit-trailed — the only safe way to bind orphan doc/test/config files to nodes.
+- **Semantic projection** — derived semantic memory for the active graph snapshot. Accepted semantic events are source; the projection is the current materialized view.
+- **Typed proposal** — AI output submitted as machine-checkable workflow input. Proposals are routed through schema/precheck, policy, review, and reconcile paths before anything becomes trusted state.
+- **Self graph bundle** — packaged read-only Aming Claw graph/semantic context used by fresh plugin sessions before the Aming Claw repo bootstraps itself as a governed project.
+- **Source-Controlled Hints** — reviewed comment metadata written into tracked files, then materialized by reconcile after commit plus Update Graph. V1 uses this contract for two graph repairs: binding orphan doc/test/config files to existing nodes, and topology fixes such as `add_edge`, `suppress_edge`, and `move_file`. Deleting the hint withdraws the projected effect.
 - **AI Enrich** — request the AI provider to generate a semantic summary/intent/risk for selected nodes or edges. Proposals land in Review Queue; the AI provider is the local `claude` or `codex` CLI (see [AI Providers](#ai-providers)).
+
+## Architecture Contracts
+
+**Source vs derived state.** Committed code, source-controlled hints/config/rules,
+and accepted semantic events are source. Graph snapshots, semantic projections,
+review queues, and materialized test/doc/config bindings are derived by
+reconcile. AI proposals are never trusted state by themselves. Graph defects are
+fixed by adding, updating, or removing source-controlled hints/config/rules and
+then reconciling, not by editing the graph database as trusted state.
+
+**Proposal before mutation.** AI does not directly edit graph topology or
+semantic memory. It submits typed proposals such as semantic updates, graph
+corrections, config changes, or backlog items. Governance routes each proposal
+through the relevant precheck, policy gate, Review Queue, and reconcile path.
+
+Example proposal shape:
+
+```json
+{
+  "kind": "graph_enrich_config",
+  "target": "tests edge",
+  "evidence": ["cross-language path mention", "no direct TypeScript symbol import"],
+  "operation": "downgrade_to_weak_tests",
+  "precheck": "passed"
+}
+```
+
+For machine-consumed AI output, prompts expose a local precheck and tell the
+model to validate and repair its own draft once before final output. The server
+gate is still authoritative. MCP graph queries also produce trace ids, so an
+observer or subagent's project-context lookups can be audited instead of being
+hidden inside chat history.
+
+**Cost model.** The first full graph build is heavier than grep, especially on
+large repositories. That is the tradeoff for a reusable project fact layer.
+Steady-state work uses commit-bound incremental reconcile to update changed
+files/functions, affected edges, semantic current/stale status, and review
+queues.
+
+**V1 boundary.** The V1 proof is the graph/backlog/Review Queue/reconcile loop.
+Chain automation, gateway surfaces, Redis, and dbservice-backed memory are
+advanced or experimental paths, not required for the local dashboard/graph MVP.
 
 ## Demos
 
@@ -130,11 +285,12 @@ Choose a clean project, build the graph, watch nodes appear in Projects/Graph.
 
 Select a node, open Files / Functions / Relations, jump to a function line in the editor.
 
-### Find a PR opportunity
+### Resolve a graph-backed backlog row
 
-![Find a PR opportunity — turn graph evidence into a backlog row](docs/assets/demos/pr-opportunity.gif)
+![Resolve a backlog row — inspect graph evidence, run MF, and mark the row fixed](docs/assets/demos/pr-opportunity.gif)
 
-Use low health, missing tests/docs, or high fan-out to file a graph-backed backlog row.
+Open an existing backlog row, inspect its target files and graph evidence, run
+an observer-led Manual Fix, then close the row as `FIXED` with evidence.
 
 ### AI Enrich review
 
@@ -146,15 +302,45 @@ Run targeted AI Enrich, watch Operations Queue, then accept or reject the Review
 
 ![Governance Hint — bind an orphan file to a node via a committed comment](docs/assets/demos/governance-hint.gif)
 
-Bind an orphan doc/test/config file to a node, commit the hint, run Update Graph.
+This clip shows the file-binding surface: bind an orphan doc/test/config file
+to a node, commit the source-controlled hint, run Update Graph. The same
+source -> commit -> reconcile contract also covers reviewed topology repairs:
+`add_edge`, `suppress_edge`, and `move_file`.
+
+## Dashboard Surfaces
+
+The dashboard is the shared panel for the human and the AI session. The user
+can inspect the same evidence the observer is using through:
+
+- **Projects** - register/select workspaces and see graph bootstrap state.
+- **Graph** - browse node hierarchy, files, tests, docs, config, relations, and
+  function indexes.
+- **Inspector** - inspect selected node metadata, evidence, hashes, and source
+  file bindings.
+- **Operations Queue** - watch snapshot builds, semantic jobs, reconcile work,
+  graph-enrich/config proposals, and retryable operations.
+- **Review Queue** - accept or reject AI-proposed semantic memory or graph/config
+  follow-ups before they become trusted state.
+- **Backlog** - keep requirements, defects, PR opportunities, MF rows, target
+  files, and verification evidence in one local ledger.
+- **AI Config** - configure project-level provider/model routing for AI Enrich.
 
 ## Use Cases
 
 ### Govern AI-assisted fixes
 
-For V1, use Manual Fix rather than chain automation for normal implementation:
-file/update backlog, inspect the graph first, edit only scoped files, run
-focused tests, commit with evidence, then Update Graph.
+For V1, ask an observer session to use Manual Fix rather than chain automation
+for normal implementation. The user-facing interaction can be one sentence:
+
+```text
+Use Manual Fix for this issue: file or update backlog first, check graph impact,
+implement the scoped change, run focused tests, then report evidence.
+```
+
+The observer handles the MCP calls and local checks: backlog first, graph first,
+scoped edits, focused tests, optional `aming-claw mf precommit-check`, then a
+reviewable summary. Commit, reconcile, and backlog close can wait for explicit
+user approval.
 
 ### Hand off work between AI agents
 
@@ -162,7 +348,9 @@ Use graph, backlog, queue state, and commit evidence as the shared project
 ledger between Codex, Claude Code, and future agent workers. One AI can file a
 backlog row, another can inspect the same graph evidence, implement a scoped
 fix, and a third can review or continue the task without depending on fragile
-chat history.
+chat history. Parallel worker coordination is still an advanced path, but the
+contract is already there: backlog records intent, graph records structure and
+state, and gates verify scoped output before it is trusted.
 
 ### Share the dashboard view with an AI agent
 
@@ -184,9 +372,35 @@ project memory is trusted.
 
 ### Repair graph structure safely
 
-Use Governance Hint to bind orphan doc/test/config files to an existing node.
-The hint is written as source-controlled evidence and only takes effect after
-commit plus Update Graph.
+Use Source-Controlled Hints for graph repairs: bind orphan doc/test/config files
+to existing nodes, add a missing edge, suppress an incorrect inferred edge, or
+move file ownership. Hints are written as source-controlled evidence and only
+take effect after commit plus Update Graph. Removing the hint removes the
+projected graph effect on the next reconcile.
+
+## Observer-Led Manual Fix
+
+Manual Fix is not primarily a command sequence the user has to run. It is an
+observer-led workflow that gives an AI session a strict operating contract.
+
+User prompt:
+
+```text
+Use Manual Fix for this issue.
+```
+
+The observer session then:
+
+1. Checks runtime, graph, operations queue, and relevant backlog state.
+2. Files or updates the backlog row with target files and acceptance criteria.
+3. Uses graph queries before editing so review scope is explicit.
+4. Makes a scoped change without reverting unrelated user work.
+5. Runs focused tests and local precommit/plugin checks when relevant.
+6. Reports changed files, tests, remaining warnings, and whether commit/reconcile
+   is still waiting for user approval.
+
+The command line remains available for debugging and reproducibility, but the
+product path is natural language to an Aming Claw-enabled observer.
 
 ## V1 MVP Snapshot
 
@@ -205,8 +419,8 @@ Stable V1 capabilities:
   implementation work.
 - Run targeted AI Enrich on selected nodes or edges, then accept or reject the
   proposed semantic memory in Review Queue.
-- Use Governance Hint to bind orphan doc/test/config files to existing nodes
-  through source-controlled evidence.
+- Use Source-Controlled Hints to repair graph bindings and topology through
+  committed evidence plus reconcile.
 
 V1 boundaries to keep visible:
 
@@ -219,8 +433,10 @@ V1 boundaries to keep visible:
   proposals until reviewed and accepted.
 - Function-level call queries exist for supported snapshots, but dashboard
   visualization is still evolving.
-- Governance Hint is not arbitrary graph editing. It only binds orphan
-  doc/test/config files that already appear in snapshot inventory.
+- Graph repair is not arbitrary graph database editing. V1 supports constrained,
+  reviewed, source-controlled repairs: orphan file binding plus graph-structure
+  hints for `add_edge`, `suppress_edge`, and `move_file`, all materialized by
+  reconcile and reversible by source changes.
 - Plugin install, governance startup, dashboard availability, MCP visibility,
   ServiceManager health, and local AI CLI readiness are separate states.
 
@@ -381,6 +597,8 @@ Expected checks:
   args).
 - `.mcp.json` contains `mcpServers.aming-claw`.
 - Dashboard static assets are present, or doctor prints the exact build fallback.
+- The packaged self graph bundle manifest is readable, uses a supported
+  `bundle_major`, and its listed resource checksums match.
 - Local Codex/Claude CLI commands are detected when available; detection still
   reports AI auth as unknown.
 - Governance health is reachable after services are started.
@@ -424,11 +642,17 @@ Keep these states separate when troubleshooting:
 - ServiceManager responds on port `40101`.
 - Executor/chain automation is available.
 - Local AI CLIs are detected and the project has AI routing.
+- Packaged self graph bundle compatibility is current for the installed runtime.
 
 `aming-claw start` only starts governance. It does not prove the current
 Codex/Claude session loaded the plugin, that dashboard assets exist, that
 ServiceManager/executor are online, or that Codex/Claude CLI auth is valid.
 Reload/open a new editor session after installing or updating plugin assets.
+
+Aming Claw is local-first. The governance DB, backlog, graph snapshots, review
+queues, and plugin update state live on the user's machine. AI features use the
+user's local `claude` or `codex` CLI; graph query, backlog, dashboard, and MF
+workflows still run without an AI provider.
 
 ## Plugin Components
 
@@ -439,6 +663,10 @@ Aming Claw ships these assets in the repo:
 - `.mcp.json` — MCP server contract (read when the repo is opened as a workspace; the CLI installer also generates cache-aware overrides for plugin-mode loading)
 - `skills/aming-claw/` — main governance skill
 - `skills/aming-claw-launcher/` — onboarding/launcher skill
+- `agent/mcp/resources/seed-graph-summary.json` — lightweight packaged context
+  for fresh sessions
+- `agent/mcp/resources/self-graph-bundle-manifest.json` — read-only compatibility
+  manifest for packaged self graph/semantic context
 
 After install, the plugin exposes two skills (Claude Code namespacing shown):
 
@@ -468,6 +696,26 @@ checkout, refresh the Python/Codex install surfaces, and write restart/reload
 obligations for MCP, governance, or ServiceManager when changed files require
 operator action. After completing those restarts/reloads, run
 `aming-claw plugin update --check` again to mark the installed commit current.
+
+Plugin update state is intentionally explicit:
+
+- `current` - installed checkout matches the checked remote commit.
+- `available` - a newer remote commit exists; apply when ready.
+- `applied_pending_restart` - files changed that require MCP, governance, or
+  ServiceManager reload before the new runtime is fully in use.
+- `failed` - the last update attempt failed and should block MF precommit.
+- missing state - warning only; run `aming-claw plugin update --check` when you
+  want a fresh remote comparison.
+
+The self graph bundle has its own compatibility check. The installed runtime
+supports a `bundle_major`; if a packaged bundle declares a higher major, local
+checks fail and emit a structured `plugin_update_reminder` event instead of
+silently importing context the runtime may not understand.
+
+```bash
+python scripts/check_self_graph_bundle.py --json-output
+```
+
 Starting governance is a separate long-running service command; keep it in its
 own terminal instead of expecting plugin install to start it. On Windows use a
 separate shell such as `Start-Process powershell`; on macOS/Linux a detached
@@ -486,6 +734,8 @@ Confirm visibility:
 - Skills `/aming-claw:aming-claw` and `/aming-claw:aming-claw-launcher` resolve.
 - MCP tool `mcp__aming_claw__health` returns `ok`.
 - `runtime_status` returns aggregated governance + ServiceManager + version_check state.
+- MCP resource `aming-claw://self-graph-bundle-manifest` is readable when the
+  plugin session needs packaged Aming Claw self-context.
 
 Plugin install loads plugin/skill assets and the MCP server declaration; it
 does not install Python dependencies (unless using the CLI installer above),
@@ -537,8 +787,10 @@ commit/stash first.
 
 For Aming Claw internals, an active local `project_id="aming-claw"` graph is not
 required for the plugin to be usable. Use `aming-claw://seed-graph-summary` as
-the packaged MVP navigation map when no active self graph exists. Target/user
-projects need bootstrap before graph-backed claims are available.
+the packaged MVP navigation map when no active self graph exists. Use
+`aming-claw://self-graph-bundle-manifest` to inspect the packaged self-context
+compatibility contract. Target/user projects need bootstrap before graph-backed
+claims are available.
 
 ## CLI
 
@@ -555,6 +807,12 @@ aming-claw status          # check governance health
 aming-claw mf precommit-check # run manual-fix plugin update guards
 aming-claw bootstrap       # register a project workspace
 aming-claw scan            # scan an external project
+```
+
+Repo-local diagnostic helper:
+
+```bash
+python scripts/check_self_graph_bundle.py --json-output
 ```
 
 ## Packaging
@@ -595,6 +853,7 @@ Before publishing a release build, rebuild the dashboard assets:
 
 ```bash
 npm --prefix frontend/dashboard run build
+python scripts/check_self_graph_bundle.py --json-output
 python scripts/build_package.py --skip-dashboard-build
 ```
 

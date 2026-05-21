@@ -40,6 +40,7 @@ from agent.governance.reconcile_phases.phase_z_v2 import (
     ModuleInfo,
     FunctionMeta,
 )
+from agent.governance.reconcile_semantic_config import _default_config_dict
 
 # NOTE: migration_state_machine has been removed — replaced by
 # agent.governance.symbol_swap. We only re-import the atomic-swap surface
@@ -322,7 +323,14 @@ class TestCoverageLookup:
             ),
         })
 
-        result = build_graph_v2_from_symbols(project, dry_run=True)
+        base_config = _default_config_dict()
+        base_config["graph_enrich_config_ops"]["rules"] = {}
+        base_config_path = os.path.join(project, "_isolated_semantic_base.json")
+        with open(base_config_path, "w", encoding="utf-8") as f:
+            json.dump(base_config, f)
+
+        with patch.dict(os.environ, {"RECONCILE_SEMANTIC_CONFIG": base_config_path}):
+            result = build_graph_v2_from_symbols(project, dry_run=True)
         nodes_by_module = {node["module"]: node for node in result["nodes"]}
         semantic_node = nodes_by_module["frontend.dashboard.src.lib.semantic"]
         type_node = nodes_by_module["frontend.dashboard.src.types"]

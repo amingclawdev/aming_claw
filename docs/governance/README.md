@@ -11,7 +11,7 @@ experimental chain.
 V1 is graph-first and local-first:
 
 - The dashboard and MCP graph tools are the primary control plane.
-- Target projects must be explicitly registered/bootstraped before graph-backed
+- Target projects must be explicitly registered/bootstrapped before graph-backed
   claims are available.
 - Graph snapshots are commit-bound and should be built from a clean worktree.
 - Backlog rows are the canonical work ledger; do not file work by editing
@@ -21,6 +21,9 @@ V1 is graph-first and local-first:
   Chain trailers, post-commit Update Graph, and backlog close evidence.
 - AI Enrich creates proposals that require Review Queue approval before they
   become trusted semantic memory.
+- Source-controlled hints/config/rules are the durable repair inputs for graph
+  defects. Reconcile materializes the graph projection; direct DB graph edits
+  are not the trusted repair path.
 
 ## V1 Entry Points
 
@@ -29,6 +32,7 @@ V1 is graph-first and local-first:
 | Install and run locally | [README.md](../../README.md) |
 | Register a target project | [onboarding.md](../onboarding.md) |
 | Configure project YAML and AI routing | [config/aming-claw-yaml.md](../config/aming-claw-yaml.md) |
+| Adapt graph rules for a language/framework | [semantic enrichment config](../config/semantic-enrichment.md) |
 | Use MCP tools and graph queries | [skills MCP guide](../../skills/aming-claw/references/mcp-tools.md) |
 | Follow Manual Fix in V1 | [skills MF checklist](../../skills/aming-claw/references/mf-sop.md) |
 | Package Codex/Claude plugins | [plugin packaging notes](../../skills/aming-claw/references/plugin-packaging.md) |

@@ -260,11 +260,28 @@ class TestRunPreflight(unittest.TestCase):
     def setUp(self):
         self.conn = _create_test_db()
         self.pid = "test-proj"
+        import governance.preflight as preflight
+
+        self._preflight_module = preflight
+        self._old_check_plugin_update_state = preflight.check_plugin_update_state
+        preflight.check_plugin_update_state = lambda state_path=None: {
+            "status": "pass",
+            "details": {
+                "state_path": "test-plugin-state.json",
+                "state_exists": True,
+                "update_status": "current",
+                "blockers": [],
+                "warnings": [],
+            },
+        }
         now = datetime.now(timezone.utc).isoformat()
         self.conn.execute(
             "INSERT INTO project_version VALUES (?, ?, ?, ?, ?, ?, ?)",
             (self.pid, "abc123", now, "test", "abc123", "[]", now))
         self.conn.commit()
+
+    def tearDown(self):
+        self._preflight_module.check_plugin_update_state = self._old_check_plugin_update_state
 
     def test_full_report_structure(self):
         report = run_preflight(self.conn, self.pid)

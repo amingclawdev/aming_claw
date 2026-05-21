@@ -100,6 +100,7 @@ class TestPackagedDashboardAssets:
         assert "include .agents/plugins/marketplace.json" in manifest
         assert "include CLAUDE.md" in manifest
         assert "include scripts/install_from_git.py" in manifest
+        assert "include scripts/check_self_graph_bundle.py" in manifest
 
     def test_dashboard_build_sync_script_is_wired_to_npm_build(self):
         package_json = json.loads((ROOT / "frontend" / "dashboard" / "package.json").read_text(encoding="utf-8"))
@@ -153,6 +154,10 @@ class TestLocalPluginPackaging:
 
         assert data["project_id"] == "aming-claw"
         assert data["mvp_boundaries"]["primary"]
+        manifest = ROOT / "agent" / "mcp" / "resources" / "self-graph-bundle-manifest.json"
+        bundle = json.loads(manifest.read_text(encoding="utf-8"))
+        assert bundle["bundle_major"] == 1
+        assert bundle["resources"][0]["path"] == "agent/mcp/resources/seed-graph-summary.json"
 
     def test_mcp_config_is_relocatable_and_uses_stdio_module_entrypoint(self):
         config_text = (ROOT / ".mcp.json").read_text(encoding="utf-8")

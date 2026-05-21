@@ -1,8 +1,13 @@
 # .aming-claw.yaml Schema Reference
 
-`.aming-claw.yaml` is the project-level contract used by bootstrap, graph
-reconcile, dashboard project management, and AI role routing. Keep it at the
-workspace root.
+`.aming-claw.yaml` is the project metadata and runtime routing contract used by
+bootstrap, graph reconcile, dashboard project management, testing, and AI role
+routing. Keep it at the workspace root.
+
+Do not put graph adaptation rules in this file. Language/framework-specific
+review-context rules live in the companion
+`.aming-claw/reconcile/semantic_enrichment.yaml` config documented in
+[semantic-enrichment.md](semantic-enrichment.md).
 
 ## Required Fields
 
@@ -118,6 +123,24 @@ Use `graph.exclude_paths` for generated artifacts, local worktrees, nested demo
 projects, and docs/dev handoff scratch space that should not become governed L4
 or L7 nodes in the parent project.
 
+### Companion Semantic Enrichment Config
+
+The graph scanner uses `.aming-claw.yaml` for project-level scan/runtime
+metadata. It loads graph/semantic adaptation rules from:
+
+```text
+.aming-claw/reconcile/semantic_enrichment.yaml
+```
+
+Use that companion config to adapt review context for project-specific language
+and framework behavior. Examples include requiring direct TypeScript symbol
+imports before a test becomes strong coverage, downgrading path-only Python
+mentions to weak evidence, or suppressing schema-version string literals that
+should not become event edges.
+
+See [semantic-enrichment.md](semantic-enrichment.md) for the rule schema,
+supported predicates, proposal gate, and upstream registered-function path.
+
 ## AI Routing
 
 ```yaml
@@ -147,6 +170,10 @@ object; the backend writes it back to `.aming-claw.yaml` / `.aming-claw.json`
 and leaves other config sections intact. Execution still applies the existing
 runtime routing stack until role launchers consume the project-level routing
 directly.
+
+AI routing decides which local provider/model handles each job. It does not
+make AI output trusted state. Semantic and graph-configuration proposals still
+need precheck, server validation, Review Queue approval, and reconcile.
 
 ## Dashboard Branch / Ref Selection
 
@@ -202,3 +229,25 @@ ai:
     dev: { provider: "openai", model: "gpt-5.5" }
     semantic: { provider: "anthropic", model: "claude-opus-4-7" }
 ```
+
+Optional companion graph-rule override:
+
+```yaml
+# .aming-claw/reconcile/semantic_enrichment.yaml
+graph_enrich_config_ops:
+  rules:
+    tests.test_import_fanin.require_direct_symbol_import:
+      op: tighten_rule
+      edge: tests
+      source_evidence: test_import_fanin
+      action: require_direct_symbol_import
+      downgrade_to: weak_tests
+      reason: Require direct test symbol import; preserve weak fan-in evidence.
+      when:
+        all:
+          - predicate: source_evidence_is
+            value: test_import_fanin
+```
+
+Commit both config files and run Update Graph before expecting dashboard or MCP
+graph queries to reflect the new project contract.

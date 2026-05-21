@@ -1,7 +1,7 @@
 # Aming Claw — Deployment Guide
 
-> **Canonical deployment document** — Host-based deployment for development and production.
-> Last updated: 2026-04-20 | Correct MCP startup behavior (`--workers 0` does NOT auto-start executor)
+> **Canonical deployment document** — Host-based deployment for local V1 usage.
+> Last updated: 2026-05-21 | V1 dashboard/graph control-plane alignment
 
 ## V1 Local Plugin Path
 
@@ -43,10 +43,11 @@ export REDIS_URL="redis://localhost:40079"
 
 ```
 Host Machine (primary runtime)
-├── Governance Service     :40000   ← Rule engine, API, auto-chain
-├── Manager HTTP Server    :40101   ← Redeploy orchestration (PR1)
-├── Service Manager                 ← Executor supervisor
-└── Executor Worker                 ← Task execution
+├── Governance Service     :40000   ← Dashboard, graph, backlog, review, reconcile API
+├── MCP Server                      ← Tool bridge for Codex/Claude sessions
+├── Manager HTTP Server    :40101   ← Optional ServiceManager sidecar
+├── Service Manager                 ← Optional executor supervisor
+└── Executor Worker                 ← Experimental chain task execution
 
 Optional Docker Dependencies
 ├── Telegram Gateway       :40010   ← Message gateway
@@ -56,6 +57,10 @@ Optional Docker Dependencies
 
 **All V1 governance and dashboard operations run on the host at
 `http://localhost:40000`.**
+
+The minimum V1 path is Governance + dashboard assets + MCP visibility. The
+ServiceManager, executor, Telegram gateway, Redis, and dbservice are advanced
+or optional surfaces.
 
 ## 3. MCP Configuration (`.mcp.json`)
 
@@ -193,6 +198,9 @@ The gateway connects to the host governance service:
 ```
 Telegram → Gateway (:40010) → Governance (:40000) → Executor → Reply via Redis pub/sub
 ```
+
+This is an optional remote task flow. It is not the primary V1 dashboard/graph
+review path.
 
 ## 7. Redis Setup
 

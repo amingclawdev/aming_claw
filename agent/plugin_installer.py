@@ -701,6 +701,7 @@ def normalize_plugin_update_state(payload: Optional[dict[str, Any]]) -> dict[str
     return {
         "schema_version": schema_version,
         "plugin_id": str(raw.get("plugin_id") or CODEX_PLUGIN_ID),
+        "plugin_root": str(raw.get("plugin_root") or ""),
         "repo_url": str(raw.get("repo_url") or DEFAULT_REPO_URL),
         "ref": str(raw.get("ref") or ""),
         "installed_commit": str(raw.get("installed_commit") or ""),
@@ -741,6 +742,7 @@ def write_plugin_update_state(
         {
             "schema_version": PLUGIN_STATE_SCHEMA_VERSION,
             "plugin_id": CODEX_PLUGIN_ID,
+            "plugin_root": str(root),
             "repo_url": repo_url,
             "ref": ref,
             "installed_commit": _git_commit(root),
@@ -763,9 +765,61 @@ def write_plugin_update_state(
     return path
 
 
+def _self_graph_bundle_status(
+    *,
+    plugin_root: Optional[Union[Path, str]] = None,
+    manifest_path: Optional[Union[Path, str]] = None,
+) -> dict[str, Any]:
+    try:
+        from agent.governance.self_graph_bundle_check import check_self_graph_bundle
+    except ImportError:
+        try:
+            from governance.self_graph_bundle_check import check_self_graph_bundle  # type: ignore
+        except ImportError as exc:
+            return {
+                "ok": True,
+                "status": "warn",
+                "warnings": [f"self graph bundle check unavailable: {exc}"],
+                "blockers": [],
+                "events": [],
+            }
+    try:
+        return check_self_graph_bundle(
+            plugin_root=plugin_root,
+            manifest_path=manifest_path,
+        )
+    except Exception as exc:  # noqa: BLE001 - diagnostics should report, not crash caller.
+        return {
+            "ok": False,
+            "status": "fail",
+            "warnings": [],
+            "blockers": [f"self graph bundle check failed: {exc}"],
+            "events": [],
+        }
+
+
+def _merge_self_graph_bundle_status(
+    blockers: list[str],
+    warnings: list[str],
+    bundle_status: dict[str, Any],
+) -> None:
+    if not bundle_status:
+        return
+    for item in bundle_status.get("blockers") or []:
+        blockers.append(f"self graph bundle: {item}")
+    for item in bundle_status.get("warnings") or []:
+        warnings.append(f"self graph bundle: {item}")
+    for event in bundle_status.get("events") or []:
+        reason = event.get("reason", "plugin_update_reminder")
+        warnings.append(f"self graph bundle event: {reason}")
+
+
 def plugin_update_state_status(
     *,
     state_path: Optional[Union[Path, str]] = None,
+    plugin_root: Optional[Union[Path, str]] = None,
+    self_graph_bundle_manifest: Optional[Union[Path, str]] = None,
+    include_self_graph_bundle: bool = True,
 ) -> dict[str, Any]:
     """Return read-only plugin update/restart obligation status.
 
@@ -775,33 +829,52 @@ def plugin_update_state_status(
     """
 
     path = Path(state_path).expanduser() if state_path else default_plugin_update_state_path()
+    bundle_status = (
+        _self_graph_bundle_status(plugin_root=plugin_root, manifest_path=self_graph_bundle_manifest)
+        if include_self_graph_bundle
+        else {}
+    )
     if not path.is_file():
+        blockers: list[str] = []
+        warnings = ["plugin update state file not found"]
+        _merge_self_graph_bundle_status(blockers, warnings, bundle_status)
+        status = "fail" if blockers else ("warn" if warnings else "pass")
         return {
-            "ok": True,
-            "status": "warn",
+            "ok": not blockers,
+            "status": status,
             "state_exists": False,
             "state_path": str(path),
             "update_status": "unknown",
-            "blockers": [],
-            "warnings": ["plugin update state file not found"],
+            "blockers": blockers,
+            "warnings": warnings,
             "state": normalize_plugin_update_state({}),
+            "self_graph_bundle": bundle_status,
         }
 
     try:
         payload = _read_json_file(path)
     except Exception as exc:
+        blockers = [f"cannot read plugin update state: {exc}"]
+        warnings: list[str] = []
+        _merge_self_graph_bundle_status(blockers, warnings, bundle_status)
         return {
             "ok": False,
             "status": "fail",
             "state_exists": True,
             "state_path": str(path),
             "update_status": "unknown",
-            "blockers": [f"cannot read plugin update state: {exc}"],
-            "warnings": [],
+            "blockers": blockers,
+            "warnings": warnings,
             "state": normalize_plugin_update_state({}),
+            "self_graph_bundle": bundle_status,
         }
 
     state = normalize_plugin_update_state(payload)
+    if include_self_graph_bundle and not plugin_root and state.get("plugin_root"):
+        bundle_status = _self_graph_bundle_status(
+            plugin_root=state.get("plugin_root"),
+            manifest_path=self_graph_bundle_manifest,
+        )
     blockers: list[str] = []
     warnings: list[str] = []
     update_status = state["update_status"]
@@ -825,6 +898,7 @@ def plugin_update_state_status(
     elif update_status == "applied_pending_restart":
         blockers.append("plugin update applied but restart/reload satisfaction is unknown")
 
+    _merge_self_graph_bundle_status(blockers, warnings, bundle_status)
     status = "fail" if blockers else ("warn" if warnings else "pass")
     return {
         "ok": not blockers,
@@ -835,6 +909,7 @@ def plugin_update_state_status(
         "blockers": blockers,
         "warnings": warnings,
         "state": state,
+        "self_graph_bundle": bundle_status,
     }
 
 
@@ -1676,6 +1751,24 @@ def _check_dashboard_assets(plugin_root: Path) -> DoctorCheck:
     )
 
 
+def _check_self_graph_bundle(plugin_root: Path) -> DoctorCheck:
+    status = _self_graph_bundle_status(plugin_root=plugin_root)
+    detail_parts = [
+        f"major={status.get('bundle_major', '-')}",
+        f"supported={status.get('supported_bundle_major', '-')}",
+    ]
+    events = status.get("events") or []
+    if events:
+        detail_parts.append(
+            "event=" + ",".join(str(event.get("event_type") or "unknown") for event in events)
+        )
+    messages = (status.get("blockers") or []) + (status.get("warnings") or [])
+    if messages:
+        detail_parts.append("; ".join(str(item) for item in messages))
+    check_status = "ok" if status.get("status") == "pass" else str(status.get("status") or "warn")
+    return _doctor_check("self_graph_bundle", check_status, "; ".join(detail_parts))
+
+
 def _check_dashboard_route(governance_url: str) -> DoctorCheck:
     url = governance_url.rstrip("/") + "/dashboard"
     try:
@@ -1784,6 +1877,7 @@ def doctor_plugin(
     result.checks.append(_check_codex_config(codex_config_path))
     result.checks.append(_check_codex_cache(root, codex_home=codex_home, codex_config=codex_config_path))
     result.checks.append(_check_dashboard_assets(root))
+    result.checks.append(_check_self_graph_bundle(root))
     for provider, requirement in AI_CLI_REQUIREMENTS.items():
         result.checks.append(_check_ai_cli(provider, requirement))
     if check_governance:
@@ -1872,6 +1966,16 @@ def format_plugin_update_state_status(result: dict[str, Any]) -> str:
             suffix = f", {satisfied}" if info.get("required") else ""
             reason = f" - {info.get('reason')}" if info.get("reason") else ""
             lines.append(f"  - {component}: {required}{suffix}{reason}")
+    bundle = result.get("self_graph_bundle") if isinstance(result.get("self_graph_bundle"), dict) else {}
+    if bundle:
+        lines.append("")
+        lines.append("Self graph bundle:")
+        lines.append(f"  status:          {bundle.get('status', 'unknown')}")
+        lines.append(f"  bundle major:    {bundle.get('bundle_major', '-')}")
+        lines.append(f"  supported major: {bundle.get('supported_bundle_major', '-')}")
+        for event in bundle.get("events") or []:
+            reason = event.get("reason", "plugin_update_reminder")
+            lines.append(f"  event:           {event.get('event_type', 'unknown')} ({reason})")
     return "\n".join(lines)
 
 

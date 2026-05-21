@@ -75,6 +75,11 @@ RESOURCE_FILES: dict[str, tuple[str, str, str]] = {
         "agent/mcp/resources/seed-graph-summary.json",
         "application/json",
     ),
+    "aming-claw://self-graph-bundle-manifest": (
+        "Self Graph Bundle Manifest",
+        "agent/mcp/resources/self-graph-bundle-manifest.json",
+        "application/json",
+    ),
 }
 
 # JSON-RPC error codes
