@@ -5458,6 +5458,186 @@ def test_graph_governance_semantic_feedback_and_enrich_api(conn, tmp_path):
     assert Path(enriched["semantic_index_path"]).exists()
 
 
+def test_graph_governance_semantic_chunk_fix_replay_api(conn, tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    functions = [
+        {
+            "name": f"generated_{idx}",
+            "path": "agent/governance/large_replay.py",
+            "lineno": idx + 1,
+        }
+        for idx in range(4)
+    ]
+    graph = {
+        "deps_graph": {
+            "nodes": [
+                {
+                    "id": "L7.replay",
+                    "layer": "L7",
+                    "title": "Large Replay Node",
+                    "kind": "service_runtime",
+                    "primary": ["agent/governance/large_replay.py"],
+                    "metadata": {
+                        "subsystem": "semantic",
+                        "function_count": len(functions),
+                        "functions": functions,
+                    },
+                }
+            ],
+            "edges": [],
+        }
+    }
+    snapshot = store.create_graph_snapshot(
+        conn,
+        PID,
+        snapshot_id="full-semantic-chunk-replay-api",
+        commit_sha="head",
+        snapshot_kind="full",
+        graph_json=graph,
+    )
+    store.index_graph_snapshot(
+        conn,
+        PID,
+        snapshot["snapshot_id"],
+        nodes=graph["deps_graph"]["nodes"],
+        edges=[],
+    )
+    conn.commit()
+    source_trace = project / "semantic-source-trace"
+
+    def write_trace(path: Path, payload: dict) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+    write_trace(
+        source_trace / "feature-inputs" / "L7.replay.json",
+        {
+            "graph_query_audit": {
+                "status": "complete",
+                "trace_id": "gqt-api-replay",
+            }
+        },
+    )
+    self_check = {
+        "required": True,
+        "valid": True,
+        "status": "passed",
+        "checked_rules": [
+            "required_fields_present",
+            "source_payload_only",
+            "no_project_mutation",
+            "review_feedback_accounted_for",
+            "graph_suggestions_contract_checked",
+        ],
+        "checked_rules_count": 5,
+        "repair_attempts": 0,
+        "max_repair_attempts": 1,
+        "known_risks": [],
+    }
+    for idx in range(2):
+        write_trace(
+            source_trace / "chunk-outputs" / f"L7.replay-slice-{idx:03d}.json",
+            {
+                "node_id": "L7.replay",
+                "slice_id": f"L7.replay-slice-{idx:03d}",
+                "slice_index": idx,
+                "ai_response_present": True,
+                "ai_error": "",
+                "ai_response": {
+                    "feature_name": f"Large Replay Node slice {idx}",
+                    "semantic_summary": f"Persisted slice {idx}.",
+                    "intent": f"slice-{idx}",
+                    "domain_label": "semantic.slice",
+                    "self_check": self_check,
+                },
+            },
+        )
+    write_trace(
+        source_trace / "feature-outputs" / "L7.replay.json",
+        {
+            "node_id": "L7.replay",
+            "ai_response_present": True,
+            "ai_response": {
+                "node_id": "L7.replay",
+                "feature_name": "Large Replay Node slice 0",
+                "semantic_summary": "Persisted aggregate still slice scoped.",
+                "intent": "slice-0",
+                "domain_label": "semantic.slice",
+                "self_check": self_check,
+                "semantic_chunking": {
+                    "mode": "function_slices",
+                    "status": "complete",
+                    "slice_count": 2,
+                    "completed_slice_count": 2,
+                },
+            },
+        },
+    )
+    stages: list[str] = []
+
+    def fake_ai(stage: str, payload: dict) -> dict:
+        stages.append(stage)
+        assert stage == "reconcile_semantic_chunk_fix"
+        assert payload["instructions"]["job_type"] == "chunk_fix"
+        return {
+            "feature_name": "Large Replay Runtime",
+            "semantic_summary": "API replay repaired completed chunk outputs.",
+            "intent": "coordinate replayed chunks",
+            "domain_label": "semantic.large_node",
+            "self_check": self_check,
+            "_ai_route": {"provider": "openai", "model": "gpt-5.5"},
+        }
+
+    monkeypatch.setattr(
+        server,
+        "_semantic_ai_call_from_body",
+        lambda *_args, **_kwargs: fake_ai,
+    )
+
+    code, result = server.handle_graph_governance_snapshot_semantic_chunk_fix_replay(
+        _ctx(
+            {"project_id": PID, "snapshot_id": "full-semantic-chunk-replay-api"},
+            method="POST",
+            body={
+                "project_root": str(project),
+                "actor": "observer",
+                "node_id": "L7.replay",
+                "source_trace_dir": str(source_trace),
+                "trace_dir": str(project / "semantic-replay-trace"),
+                "semantic_ai_chunk_context_mode": "function_index",
+                "semantic_ai_chunk_max_functions_per_slice": 2,
+            },
+        )
+    )
+
+    assert code == 200
+    assert result["ok"] is True
+    assert result["complete_count"] == 1
+    assert stages == ["reconcile_semantic_chunk_fix"]
+    assert (
+        project / "semantic-replay-trace" / "chunk-fix-inputs" / "L7.replay.json"
+    ).exists()
+    row = conn.execute(
+        """
+        SELECT status, semantic_json FROM graph_semantic_nodes
+        WHERE project_id=? AND snapshot_id=? AND node_id=?
+        """,
+        (PID, "full-semantic-chunk-replay-api", "L7.replay"),
+    ).fetchone()
+    assert row["status"] == "pending_review"
+    semantic_json = json.loads(row["semantic_json"])
+    assert semantic_json["feature_name"] == "Large Replay Runtime"
+    event = conn.execute(
+        """
+        SELECT status FROM graph_events
+        WHERE project_id=? AND snapshot_id=? AND event_type='semantic_node_enriched'
+          AND target_id=?
+        """,
+        (PID, "full-semantic-chunk-replay-api", "L7.replay"),
+    ).fetchone()
+    assert event["status"] == "proposed"
+
+
 def test_graph_governance_semantic_review_queue_waits_for_ai_semantics(conn, tmp_path):
     project = tmp_path / "project"
     primary = project / "agent" / "governance" / "server.py"

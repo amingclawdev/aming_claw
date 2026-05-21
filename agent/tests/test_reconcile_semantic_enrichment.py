@@ -23,6 +23,7 @@ from agent.governance.reconcile_semantic_enrichment import (
     append_review_feedback,
     claim_semantic_jobs,
     load_review_feedback,
+    replay_semantic_chunk_aggregate_fix,
     run_semantic_enrichment,
 )
 from agent.governance.db import _ensure_schema
@@ -1477,6 +1478,190 @@ def test_semantic_enrichment_chunk_fix_repairs_slice_scoped_aggregate(conn, tmp_
     assert output["semantic_entry"]["feature_name"] == "Large Fix Node Runtime"
     assert (project / "semantic-trace" / "chunk-fix-inputs" / "L7.fix.json").exists()
     assert (project / "semantic-trace" / "chunk-fix-outputs" / "L7.fix.json").exists()
+
+
+def test_semantic_chunk_fix_replay_reuses_persisted_slice_outputs(conn, tmp_path):
+    project = tmp_path / "project"
+    functions = [
+        {
+            "name": f"generated_{idx}",
+            "path": "agent/governance/large_replay.py",
+            "lineno": idx + 1,
+        }
+        for idx in range(4)
+    ]
+    graph = {
+        "deps_graph": {
+            "nodes": [
+                {
+                    "id": "L7.replay",
+                    "layer": "L7",
+                    "title": "Large Replay Node",
+                    "kind": "service_runtime",
+                    "primary": ["agent/governance/large_replay.py"],
+                    "metadata": {
+                        "subsystem": "semantic",
+                        "function_count": len(functions),
+                        "functions": functions,
+                    },
+                }
+            ],
+            "edges": [],
+        }
+    }
+    store.create_graph_snapshot(
+        conn,
+        PID,
+        snapshot_id="full-semantic-test",
+        commit_sha="abc1234",
+        snapshot_kind="full",
+        graph_json=graph,
+        notes=json.dumps({"state_only": True}),
+    )
+    store.index_graph_snapshot(
+        conn,
+        PID,
+        "full-semantic-test",
+        nodes=graph["deps_graph"]["nodes"],
+        edges=[],
+    )
+    conn.commit()
+    source_trace = project / "semantic-source-trace"
+    node_name = "L7.replay"
+    _write(
+        source_trace / "feature-inputs" / f"{node_name}.json",
+        json.dumps({
+            "graph_query_audit": {
+                "status": "complete",
+                "trace_id": "gqt-replay",
+            }
+        }),
+    )
+    slice_self_check = {
+        "required": True,
+        "valid": True,
+        "status": "passed",
+        "checked_rules": [
+            "required_fields_present",
+            "source_payload_only",
+            "no_project_mutation",
+            "review_feedback_accounted_for",
+            "graph_suggestions_contract_checked",
+        ],
+        "checked_rules_count": 5,
+        "repair_attempts": 0,
+        "max_repair_attempts": 1,
+        "known_risks": [],
+    }
+    for idx in range(2):
+        _write(
+            source_trace / "chunk-outputs" / f"{node_name}-slice-{idx:03d}.json",
+            json.dumps({
+                "node_id": "L7.replay",
+                "slice_id": f"L7.replay-slice-{idx:03d}",
+                "slice_index": idx,
+                "ai_response_present": True,
+                "ai_error": "",
+                "ai_response": {
+                    "feature_name": f"Large Replay Node slice {idx}",
+                    "semantic_summary": f"Slice {idx} already paid output.",
+                    "intent": f"slice-{idx}",
+                    "domain_label": "semantic.slice",
+                    "self_check": slice_self_check,
+                },
+            }),
+        )
+    _write(
+        source_trace / "feature-outputs" / f"{node_name}.json",
+        json.dumps({
+            "node_id": "L7.replay",
+            "ai_response_present": True,
+            "ai_response": {
+                "node_id": "L7.replay",
+                "feature_name": "Large Replay Node slice 0",
+                "semantic_summary": "Chunked aggregate still describes slice outputs.",
+                "intent": "slice-0",
+                "domain_label": "semantic.slice",
+                "self_check": slice_self_check,
+                "semantic_chunking": {
+                    "mode": "function_slices",
+                    "status": "complete",
+                    "slice_count": 2,
+                    "completed_slice_count": 2,
+                },
+            },
+        }),
+    )
+    stages: list[str] = []
+
+    def fake_ai(stage: str, payload: dict) -> dict:
+        stages.append(stage)
+        assert stage == "reconcile_semantic_chunk_fix"
+        assert payload["semantic_chunk_fix"]["completed_slice_count"] == 2
+        assert payload["semantic_chunk_fix"]["source"] == "completed_function_slices"
+        assert "slice" in payload["aggregate"]["feature_name"].lower()
+        return {
+            "feature_name": "Large Replay Runtime",
+            "semantic_summary": "Node-level repair over completed replay chunks.",
+            "intent": "coordinate replayed chunk outputs",
+            "domain_label": "semantic.large_node",
+            "self_check": {
+                "required": True,
+                "valid": True,
+                "status": "passed",
+                "checked_rules": [
+                    "required_fields_present",
+                    "source_payload_only",
+                    "no_project_mutation",
+                    "review_feedback_accounted_for",
+                    "graph_suggestions_contract_checked",
+                ],
+                "checked_rules_count": 5,
+                "repair_attempts": 0,
+                "max_repair_attempts": 1,
+                "known_risks": [],
+            },
+            "_ai_route": {"provider": "openai", "model": "gpt-5.5"},
+        }
+
+    result = replay_semantic_chunk_aggregate_fix(
+        conn,
+        PID,
+        "full-semantic-test",
+        project,
+        node_id="L7.replay",
+        source_trace_dir=source_trace,
+        trace_dir=project / "semantic-replay-trace",
+        ai_call=fake_ai,
+        created_by="semantic-worker-test",
+        semantic_ai_chunk_context_mode="function_index",
+        semantic_ai_chunk_max_functions_per_slice=2,
+        submit_for_review=True,
+    )
+
+    assert stages == ["reconcile_semantic_chunk_fix"]
+    assert result["ok"] is True
+    assert result["status"] == "complete"
+    assert result["slice_response_count"] == 2
+    assert result["semantic_entry"]["feature_name"] == "Large Replay Runtime"
+    assert result["semantic_entry"]["semantic_chunking"]["aggregate_fix"]["status"] == "complete"
+    assert (
+        project / "semantic-replay-trace" / "chunk-fix-inputs" / "L7.replay.json"
+    ).exists()
+    assert (
+        project / "semantic-replay-trace" / "chunk-fix-outputs" / "L7.replay.json"
+    ).exists()
+    row = conn.execute(
+        """
+        SELECT status, semantic_json FROM graph_semantic_nodes
+        WHERE project_id=? AND snapshot_id=? AND node_id=?
+        """,
+        (PID, "full-semantic-test", "L7.replay"),
+    ).fetchone()
+    assert row["status"] == "pending_review"
+    semantic_json = json.loads(row["semantic_json"])
+    assert semantic_json["feature_name"] == "Large Replay Runtime"
+    assert semantic_json["graph_query_audit"]["trace_id"] == "gqt-replay"
 
 
 def test_semantic_enrichment_runs_function_slices_concurrently_and_orders_results(conn, tmp_path):

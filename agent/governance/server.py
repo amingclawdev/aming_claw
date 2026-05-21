@@ -12731,6 +12731,116 @@ def handle_graph_governance_snapshot_semantic_enrich(ctx: RequestContext):
         conn.close()
 
 
+@route("POST", "/api/graph-governance/{project_id}/snapshots/{snapshot_id}/semantic/chunk-fix/replay")
+def handle_graph_governance_snapshot_semantic_chunk_fix_replay(ctx: RequestContext):
+    """Replay semantic chunk aggregate repair from persisted slice outputs."""
+    project_id = ctx.get_project_id()
+    snapshot_id = ctx.path_params["snapshot_id"]
+    body = ctx.body
+    root = _graph_governance_project_root(project_id, body)
+    from . import reconcile_semantic_enrichment as semantic
+    from .errors import ValidationError
+
+    source_trace_dir = (
+        body.get("source_trace_dir")
+        or body.get("source_trace")
+        or body.get("chunk_trace_dir")
+        or body.get("source_chunk_trace_dir")
+    )
+    if not source_trace_dir:
+        raise ValidationError("source_trace_dir is required")
+    node_ids = _string_list_field(
+        body.get("node_ids")
+        or body.get("semantic_node_ids")
+        or body.get("target_ids")
+        or body.get("node_id"),
+        limit=50,
+    )
+    if not node_ids:
+        raise ValidationError("node_id or node_ids is required")
+    dry_run = bool(_semantic_bool_from_body(body, "dry_run", default=False))
+    ai_body = {**body, "snapshot_id": snapshot_id}
+    if (
+        not dry_run
+        and ai_body.get("use_ai") is None
+        and ai_body.get("semantic_use_ai") is None
+        and ai_body.get("reviewer_use_ai") is None
+        and ai_body.get("use_reviewer_ai") is None
+    ):
+        ai_body["use_ai"] = True
+    semantic_ai_call = None if dry_run else _semantic_ai_call_from_body(project_id, root, ai_body)
+    output_trace_dir = (
+        body.get("output_trace_dir")
+        or body.get("replay_trace_dir")
+        or body.get("trace_dir")
+    )
+    conn = get_connection(project_id)
+    try:
+        _require_graph_governance_operator(ctx, conn, "graph-governance.snapshot.semantic.chunk-fix.replay")
+        snapshot_id = _resolve_graph_snapshot_id(conn, project_id, snapshot_id)
+        results = []
+        for node_id in node_ids:
+            node_trace_dir = output_trace_dir
+            if output_trace_dir and len(node_ids) > 1:
+                node_trace_dir = str(Path(output_trace_dir) / semantic._safe_node_filename(str(node_id)))
+            try:
+                results.append(semantic.replay_semantic_chunk_aggregate_fix(
+                    conn,
+                    project_id,
+                    snapshot_id,
+                    root,
+                    node_id=str(node_id),
+                    source_trace_dir=source_trace_dir,
+                    trace_dir=node_trace_dir,
+                    ai_call=semantic_ai_call,
+                    created_by=str(body.get("actor") or body.get("created_by") or "observer"),
+                    semantic_config_path=body.get("semantic_config_path"),
+                    semantic_ai_chunk_context_mode=body.get("semantic_ai_chunk_context_mode")
+                    or body.get("chunk_context_mode"),
+                    semantic_ai_chunk_max_slices=body.get("semantic_ai_chunk_max_slices")
+                    or body.get("chunk_max_slices"),
+                    semantic_ai_chunk_max_functions_per_slice=(
+                        body.get("semantic_ai_chunk_max_functions_per_slice")
+                        or body.get("chunk_max_functions_per_slice")
+                    ),
+                    semantic_ai_chunk_max_source_chars=body.get("semantic_ai_chunk_max_source_chars")
+                    or body.get("chunk_max_source_chars"),
+                    submit_for_review=bool(_semantic_bool_from_body(
+                        body,
+                        "submit_for_review",
+                        default=True,
+                    )),
+                    persist_feature_payloads=bool(_semantic_bool_from_body(
+                        body,
+                        "persist_feature_payloads",
+                        default=True,
+                    )),
+                    backfill_events=bool(_semantic_bool_from_body(
+                        body,
+                        "backfill_events",
+                        default=True,
+                    )),
+                ))
+            except (FileNotFoundError, KeyError, ValueError) as exc:
+                _raise_graph_api_validation(exc)
+        conn.commit()
+        complete_count = sum(1 for item in results if item.get("status") == "complete")
+        failed_count = sum(1 for item in results if item.get("ok") is False)
+        return 200, {
+            "ok": failed_count == 0,
+            "project_id": project_id,
+            "snapshot_id": snapshot_id,
+            "status": "dry_run" if dry_run else ("complete" if failed_count == 0 else "partial"),
+            "dry_run": dry_run,
+            "node_count": len(results),
+            "complete_count": complete_count,
+            "failed_count": failed_count,
+            "results": results,
+        }
+    finally:
+        conn.close()
+
+
 @route("POST", "/api/graph-governance/{project_id}/snapshots/{snapshot_id}/global-review/incremental")
 def handle_graph_governance_snapshot_incremental_global_review(ctx: RequestContext):
     """Run post-scope semantic catch-up plus incremental global review."""

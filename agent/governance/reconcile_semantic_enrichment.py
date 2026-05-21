@@ -2057,6 +2057,63 @@ def _build_chunk_fix_payload(
     return payload
 
 
+def _feature_context_for_node_id(
+    snapshot: dict[str, Any],
+    graph_json: dict[str, Any],
+    node_id: str,
+    *,
+    project_root: Path | None,
+    max_excerpt_chars: int = 0,
+) -> dict[str, Any]:
+    feature_index = _load_feature_index(snapshot)
+    for node in _graph_nodes(graph_json):
+        if _node_id(node) == node_id:
+            return _feature_context_from_node(
+                node,
+                feature_index=feature_index,
+                project_root=project_root,
+                max_excerpt_chars=max_excerpt_chars,
+            )
+    raise KeyError(f"graph node not found: {node_id}")
+
+
+def _chunk_output_slice_index(path: Path, payload: dict[str, Any]) -> int:
+    raw = payload.get("slice_index") if isinstance(payload, dict) else None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        pass
+    stem = path.stem
+    marker = "-slice-"
+    if marker in stem:
+        try:
+            return int(stem.rsplit(marker, 1)[1])
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
+def _read_persisted_chunk_responses(
+    source_trace_dir: Path,
+    node_name: str,
+) -> list[dict[str, Any]]:
+    chunk_dir = source_trace_dir / "chunk-outputs"
+    paths = sorted(chunk_dir.glob(f"{node_name}-slice-*.json"))
+    responses: list[tuple[int, dict[str, Any]]] = []
+    for path in paths:
+        payload = _read_json(path, {})
+        if not isinstance(payload, dict):
+            continue
+        raw_response = payload.get("ai_response")
+        response = raw_response if isinstance(raw_response, dict) else {}
+        if not response:
+            response = {
+                "_ai_error": str(payload.get("ai_error") or "persisted_chunk_response_missing")
+            }
+        responses.append((_chunk_output_slice_index(path, payload), response))
+    return [response for _, response in sorted(responses, key=lambda item: item[0])]
+
+
 def _merge_chunk_fix_response(
     aggregate: dict[str, Any],
     response: dict[str, Any],
@@ -2119,6 +2176,296 @@ def _annotate_chunk_fix_status(
     }
     annotated["semantic_chunking"] = chunking
     return annotated
+
+
+def replay_semantic_chunk_aggregate_fix(
+    conn: sqlite3.Connection,
+    project_id: str,
+    snapshot_id: str,
+    project_root: str | Path | None = None,
+    *,
+    node_id: str,
+    source_trace_dir: str | Path,
+    trace_dir: str | Path | None = None,
+    ai_call: FeedbackAiCall | None = None,
+    created_by: str = "observer",
+    semantic_config_path: str | Path | None = None,
+    semantic_ai_chunk_context_mode: str | None = None,
+    semantic_ai_chunk_max_slices: int | None = None,
+    semantic_ai_chunk_max_functions_per_slice: int | None = None,
+    semantic_ai_chunk_max_source_chars: int | None = None,
+    submit_for_review: bool = True,
+    persist_feature_payloads: bool = True,
+    backfill_events: bool = True,
+) -> dict[str, Any]:
+    """Replay only the node-level chunk aggregate repair stage.
+
+    This recovery path salvages already-completed function-slice AI outputs
+    from a prior semantic run. It never calls the slice analyzer; it rebuilds
+    or reads the deterministic aggregate, calls only
+    `reconcile_semantic_chunk_fix`, and persists the repaired node semantic
+    payload through the normal semantic state/review tables.
+    """
+    ensure_schema(conn)
+    _ensure_semantic_state_schema(conn)
+    node_id_s = str(node_id or "").strip()
+    if not node_id_s:
+        raise ValueError("node_id is required")
+    source_base = Path(source_trace_dir).expanduser().resolve()
+    if not source_base.exists():
+        raise FileNotFoundError(f"source_trace_dir not found: {source_base}")
+    snapshot = get_graph_snapshot(conn, project_id, snapshot_id)
+    if not snapshot:
+        raise KeyError(f"graph snapshot not found: {project_id}/{snapshot_id}")
+    root = Path(project_root).resolve() if project_root else None
+    semantic_config = load_semantic_enrichment_config(
+        project_root=root,
+        config_path=semantic_config_path,
+    )
+    graph_json = _read_json(snapshot_graph_path(project_id, snapshot_id), {})
+    if not isinstance(graph_json, dict):
+        graph_json = {}
+    feature = _feature_context_for_node_id(
+        snapshot,
+        graph_json,
+        node_id_s,
+        project_root=root,
+        max_excerpt_chars=0,
+    )
+    node_name = _safe_node_filename(node_id_s)
+    record_payload = _read_json(source_base / "feature-inputs" / f"{node_name}.json", {})
+    if not isinstance(record_payload, dict):
+        record_payload = {}
+    feature_output = _read_json(source_base / "feature-outputs" / f"{node_name}.json", {})
+    if not isinstance(feature_output, dict):
+        feature_output = {}
+    responses = _read_persisted_chunk_responses(source_base, node_name)
+    if not responses:
+        return {
+            "ok": False,
+            "status": "failed",
+            "reason": "persisted_chunk_outputs_missing",
+            "project_id": project_id,
+            "snapshot_id": snapshot_id,
+            "node_id": node_id_s,
+            "source_trace_dir": str(source_base),
+        }
+    plan = _plan_semantic_function_slices(
+        feature,
+        project_root=root,
+        max_slices=_normal_int(
+            semantic_ai_chunk_max_slices,
+            semantic_config.execution_policy.chunk_max_slices,
+        ),
+        max_functions_per_slice=_normal_int(
+            semantic_ai_chunk_max_functions_per_slice,
+            semantic_config.execution_policy.chunk_max_functions_per_slice,
+        ),
+        max_source_chars=_normal_int(
+            semantic_ai_chunk_max_source_chars,
+            semantic_config.execution_policy.chunk_max_source_chars,
+            minimum=500,
+        ),
+        context_mode=_normal_chunk_context_mode(
+            semantic_ai_chunk_context_mode,
+            semantic_config.execution_policy.chunk_context_mode,
+        ),
+    )
+    persisted_aggregate = (
+        feature_output.get("ai_response")
+        if isinstance(feature_output.get("ai_response"), dict)
+        else feature_output.get("semantic_entry")
+    )
+    aggregate = (
+        copy.deepcopy(persisted_aggregate)
+        if isinstance(persisted_aggregate, dict)
+        else _aggregate_chunked_semantic_response(feature, [], plan, responses)
+    )
+    if not isinstance(aggregate, dict):
+        aggregate = _aggregate_chunked_semantic_response(feature, [], plan, responses)
+    if aggregate.get("_ai_error"):
+        return {
+            "ok": False,
+            "status": "failed",
+            "reason": str(aggregate.get("_ai_error") or "chunk_aggregate_failed"),
+            "project_id": project_id,
+            "snapshot_id": snapshot_id,
+            "node_id": node_id_s,
+            "source_trace_dir": str(source_base),
+        }
+    feedback = load_review_feedback(project_id, snapshot_id)
+    trace_base = (
+        Path(trace_dir).expanduser().resolve()
+        if trace_dir is not None
+        else source_base / "chunk-fix-replays" / f"{node_name}-{uuid.uuid4().hex[:8]}"
+    )
+    if not _chunk_fix_needed(aggregate):
+        aggregate = _annotate_chunk_fix_status(aggregate, status="not_needed")
+        return {
+            "ok": True,
+            "status": "not_needed",
+            "project_id": project_id,
+            "snapshot_id": snapshot_id,
+            "node_id": node_id_s,
+            "source_trace_dir": str(source_base),
+            "trace_dir": str(trace_base),
+            "slice_response_count": len(responses),
+            "semantic_entry": aggregate,
+        }
+    fix_payload = _build_chunk_fix_payload(
+        record_payload,
+        feature,
+        feedback,
+        plan,
+        aggregate,
+        responses,
+        semantic_config.to_instruction_payload("chunk_fix"),
+    )
+    if persist_feature_payloads:
+        write_json(trace_base / "chunk-fix-inputs" / f"{node_name}.json", fix_payload)
+    if ai_call is None:
+        return {
+            "ok": False,
+            "status": "needs_ai",
+            "reason": "ai_call_missing",
+            "project_id": project_id,
+            "snapshot_id": snapshot_id,
+            "node_id": node_id_s,
+            "source_trace_dir": str(source_base),
+            "trace_dir": str(trace_base),
+            "slice_response_count": len(responses),
+            "semantic_chunk_fix_payload": fix_payload,
+        }
+    fix_response = _call_ai(
+        ai_call,
+        stage="reconcile_semantic_chunk_fix",
+        payload=fix_payload,
+    )
+    if fix_response is None:
+        fixed = _annotate_chunk_fix_status(aggregate, status="failed", reason="ai_response_missing")
+        status = "failed"
+        reason = "ai_response_missing"
+    else:
+        valid, reason = _chunk_fix_response_valid(fix_response)
+        if valid:
+            fixed = _merge_chunk_fix_response(aggregate, fix_response)
+            status = "complete"
+            reason = ""
+        else:
+            fixed = _annotate_chunk_fix_status(aggregate, status="failed", reason=reason)
+            status = "failed"
+    if persist_feature_payloads:
+        write_json(
+            trace_base / "chunk-fix-outputs" / f"{node_name}.json",
+            {
+                "node_id": node_id_s,
+                "ai_response_present": bool(fix_response and not fix_response.get("_ai_error")),
+                "ai_error": (
+                    ""
+                    if fix_response and not fix_response.get("_ai_error")
+                    else (
+                        str((fix_response or {}).get("_ai_error") or "")
+                        if isinstance(fix_response, dict)
+                        else "ai_response_missing"
+                    )
+                ),
+                "ai_response": fix_response or {},
+                "semantic_entry": fixed,
+            },
+        )
+    if status != "complete":
+        return {
+            "ok": False,
+            "status": status,
+            "reason": reason,
+            "project_id": project_id,
+            "snapshot_id": snapshot_id,
+            "node_id": node_id_s,
+            "source_trace_dir": str(source_base),
+            "trace_dir": str(trace_base),
+            "slice_response_count": len(responses),
+            "semantic_entry": fixed,
+        }
+    semantic_entry = _heuristic_semantic_entry(
+        feature,
+        feedback,
+        enrichment_status="ai_complete",
+        ai_response=fixed,
+    )
+    if fixed.get("_ai_route"):
+        semantic_entry["semantic_ai_route"] = fixed.get("_ai_route")
+    if fixed.get("_ai_elapsed_ms") is not None:
+        semantic_entry["semantic_ai_elapsed_ms"] = fixed.get("_ai_elapsed_ms")
+    if isinstance(fixed.get("semantic_chunking"), dict):
+        semantic_entry["semantic_chunking"] = fixed["semantic_chunking"]
+    for key in ("graph_query_audit", "semantic_graph_query_audit"):
+        audit = record_payload.get(key)
+        if isinstance(audit, dict) and audit:
+            semantic_entry[key] = dict(audit)
+    semantic_state = _load_semantic_graph_state_source(conn, project_id, snapshot_id, snapshot)
+    existing_rounds = sorted((_semantic_base_dir(project_id, snapshot_id) / "rounds").glob("round-*"))
+    round_number = len(existing_rounds)
+    _upsert_semantic_graph_state_entry(
+        semantic_state,
+        feature,
+        semantic_entry,
+        feedback_round=round_number,
+        batch_index=None,
+        updated_at=utc_now(),
+    )
+    _write_semantic_graph_state_artifacts(
+        conn,
+        project_id,
+        snapshot_id,
+        graph_json,
+        semantic_state,
+        round_number=round_number,
+        feature_index=_load_feature_index(snapshot),
+        submit_for_review=submit_for_review,
+        review_node_ids={node_id_s},
+        persist_node_ids={node_id_s},
+    )
+    if persist_feature_payloads:
+        write_json(
+            trace_base / "feature-outputs" / f"{node_name}.json",
+            {
+                "node_id": node_id_s,
+                "enrichment_status": "ai_complete",
+                "ai_response_present": True,
+                "ai_error": "",
+                "ai_response": fixed,
+                "semantic_selection_status": "selected",
+                "semantic_selection_reasons": ["semantic_chunk_fix_replay"],
+                "semantic_entry": semantic_entry,
+            },
+        )
+    events_result: dict[str, Any] = {}
+    if backfill_events:
+        try:
+            from . import graph_events
+
+            with _semantic_write_lock():
+                events_result = graph_events.backfill_existing_semantic_events(
+                    conn,
+                    project_id,
+                    snapshot_id,
+                    actor=created_by,
+                )
+                _commit_semantic_write(conn)
+        except Exception as exc:  # noqa: BLE001 - semantic state is still persisted
+            events_result = {"ok": False, "error": str(exc)}
+    return {
+        "ok": True,
+        "status": "complete",
+        "project_id": project_id,
+        "snapshot_id": snapshot_id,
+        "node_id": node_id_s,
+        "source_trace_dir": str(source_base),
+        "trace_dir": str(trace_base),
+        "slice_response_count": len(responses),
+        "semantic_entry": semantic_entry,
+        "events_backfill": events_result,
+    }
 
 
 def _aggregate_chunked_semantic_response(
