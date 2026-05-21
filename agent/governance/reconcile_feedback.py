@@ -64,6 +64,7 @@ FEEDBACK_DECISION_ACTIONS = {
     "accept_graph_correction",
     "accept_project_improvement",
     "accept_semantic_enrichment",  # MF-2026-05-10-016: gates semantic worker output
+    "revise_semantic_enrichment",
     "keep_status_observation",
     "reject_false_positive",
     "needs_human_signoff",
@@ -2986,6 +2987,8 @@ def decide_feedback_items(
         # needs_human_signoff, which the dashboard surfaces as "Accept did
         # nothing". Map the action to mapped_accept=True so the call is
         # idempotent regardless of whether the caller also sends accept=true.
+        mapped_accept = True
+    elif normalized_action == "revise_semantic_enrichment":
         mapped_accept = True
     elif normalized_action == "keep_status_observation":
         mapped_decision = KIND_STATUS_OBSERVATION

@@ -28,6 +28,7 @@ from agent.governance import reconcile_semantic_enrichment as semantic
 from agent.governance import semantic_worker
 from agent.governance import server
 from agent.governance.db import _ensure_schema
+from agent.governance.errors import ValidationError
 
 
 PID = "semantic-worker-test"
@@ -587,6 +588,7 @@ def test_b2_backfill_preserves_accepted_semantic_event_status(conn):
 def test_c_accept_semantic_enrichment_in_decision_actions():
     """C: the verb is registered in the catalog."""
     assert "accept_semantic_enrichment" in reconcile_feedback.FEEDBACK_DECISION_ACTIONS
+    assert "revise_semantic_enrichment" in reconcile_feedback.FEEDBACK_DECISION_ACTIONS
 
 
 def test_c2_decide_feedback_accept_semantic_enrichment_maps_to_accept_true(
@@ -815,6 +817,237 @@ def test_c_accept_helper_flips_node_status_and_event(conn):
         (output["output_id"],),
     ).fetchone()
     assert route_row["status"] == "completed"
+
+
+def _create_actionpanel_revision_fixture(conn, snapshot_id: str = "replay-actionpanel-revision") -> dict:
+    """Replayable observer-review fixture for the ActionPanel dependency case."""
+    snap = _create_snapshot_with_node(conn, snapshot_id, "L7.199")
+    sid = snap["snapshot_id"]
+    node = next(
+        item for item in store.list_graph_snapshot_nodes(conn, PID, sid, include_semantic=False)
+        if item["node_id"] == "L7.199"
+    )
+    feature_hash = graph_events.feature_hash_for_node(node)
+    wrong_dependency_issue = {
+        "node_id": "L7.199",
+        "reason": "dependency_patch_suggestions",
+        "type": "observation",
+        "summary": (
+            "ActionPanel re-exports/exports EnrichPreset which ActionControlPanel imports, "
+            "making ActionPanel the dependency."
+        ),
+    }
+    split_issue = {
+        "node_id": "L7.199",
+        "reason": "split_suggestions",
+        "summary": "Form primitives can be split for testability.",
+    }
+    semantic._persist_semantic_state_to_db(
+        conn,
+        PID,
+        sid,
+        {
+            "node_semantics": {
+                "L7.199": {
+                    "status": "pending_review",
+                    "feature_hash": feature_hash,
+                    "feature_name": "Dashboard ActionPanel",
+                    "semantic_summary": "ActionPanel renders observer actions.",
+                    "open_issues": [split_issue, wrong_dependency_issue],
+                }
+            }
+        },
+        submit_for_review=False,
+    )
+    conn.execute(
+        """
+        INSERT INTO graph_semantic_jobs
+          (project_id, snapshot_id, node_id, status, feature_hash, file_hashes_json,
+           feedback_round, batch_index, attempt_count, updated_at, created_at)
+        VALUES (?, ?, 'L7.199', 'ai_complete', ?, '{}',
+                0, 0, 1, '2026-05-21T00:00:00Z', '2026-05-21T00:00:00Z')
+        """,
+        (PID, sid, feature_hash),
+    )
+    graph_events.backfill_existing_semantic_events(conn, PID, sid, actor="semantic_worker_inproc")
+    ev_id = conn.execute(
+        """
+        SELECT event_id FROM graph_events
+        WHERE project_id=? AND snapshot_id=? AND target_id='L7.199'
+          AND event_type='semantic_node_enriched'
+        LIMIT 1
+        """,
+        (PID, sid),
+    ).fetchone()["event_id"]
+    output = ai_output_intake.submit_ai_output(
+        conn,
+        PID,
+        {
+            "task_type": "semantic_node",
+            "snapshot_id": sid,
+            "target_type": "node",
+            "target_id": "L7.199",
+            "route_status": "review_pending",
+            "payload": {"node_id": "L7.199", "semantic_summary": "ActionPanel proposal"},
+        },
+        actor="semantic_worker_inproc",
+    )
+    submitted = reconcile_feedback.submit_feedback_item(
+        PID,
+        sid,
+        feedback_kind=reconcile_feedback.KIND_NEEDS_OBSERVER_DECISION,
+        issue={
+            "issue": "AI semantic enrichment generated for L7.199 -- awaiting review",
+            "source_node_ids": ["L7.199"],
+            "target_id": "L7.199",
+            "target_type": "node",
+            "priority": "P3",
+            "evidence": {
+                "node_id": "L7.199",
+                "linked_event_ids": [ev_id],
+                "ai_output_intake": {"output_id": output["output_id"]},
+            },
+        },
+        actor="semantic_worker_inproc",
+    )
+    conn.commit()
+    return {
+        "snapshot_id": sid,
+        "event_id": ev_id,
+        "feedback_id": submitted["items"][0]["feedback_id"],
+        "output_id": output["output_id"],
+        "split_issue": split_issue,
+        "wrong_dependency_issue": wrong_dependency_issue,
+    }
+
+
+def test_c5_revise_semantic_enrichment_writes_observer_revision_event(conn, monkeypatch):
+    fixture = _create_actionpanel_revision_fixture(conn)
+    sid = fixture["snapshot_id"]
+    feedback_id = fixture["feedback_id"]
+    original_event_id = fixture["event_id"]
+    revised_payload = {
+        "feature_name": "Dashboard ActionPanel",
+        "semantic_summary": "ActionPanel renders observer actions.",
+        "open_issues": [fixture["split_issue"]],
+        "review_notes": [
+            "Removed false dependency-direction observation: ActionPanel imports EnrichPreset from ActionControlPanel."
+        ],
+    }
+    monkeypatch.setattr(server, "get_connection", lambda _project_id: _NoCloseConn(conn))
+    monkeypatch.setattr(
+        server,
+        "_require_graph_governance_operator",
+        lambda _ctx, _conn, _action: {"role": "observer"},
+    )
+    ctx = server.RequestContext(
+        None,
+        "POST",
+        {"project_id": PID, "snapshot_id": sid},
+        {},
+        {
+            "feedback_id": feedback_id,
+            "action": "revise_semantic_enrichment",
+            "revised_semantic_payload": revised_payload,
+            "rationale": "Corrected ActionPanel/ActionControlPanel dependency direction.",
+            "actor": "observer",
+        },
+        "req-test",
+        "",
+        "",
+    )
+
+    result = server.handle_graph_governance_snapshot_feedback_decision(ctx)
+
+    assert result["ok"] is True
+    assert result["decided_count"] == 1
+    assert result["projection_rebuilt"] is True
+    revision = result["semantic_enrichment_revised"]
+    assert revision["node_ids_revised"] == ["L7.199"]
+    assert revision["event_ids_superseded"] == [original_event_id]
+    assert revision["ai_output_ids_marked_completed"] == [fixture["output_id"]]
+    revised_event_id = revision["event_ids_created"][0]
+
+    original = graph_events.get_event(conn, PID, sid, original_event_id)
+    revised = graph_events.get_event(conn, PID, sid, revised_event_id)
+    assert original["status"] == graph_events.EVENT_STATUS_REJECTED
+    assert revised["status"] == graph_events.EVENT_STATUS_ACCEPTED
+    assert revised["source_event_id"] == original_event_id
+    assert revised["event_kind"] == "observer_semantic_revision"
+    assert revised["payload"]["semantic_payload"]["open_issues"] == [fixture["split_issue"]]
+    assert "re-exports/exports EnrichPreset" not in str(revised["payload"]["semantic_payload"])
+    assert revised["payload"]["review_revision"]["supersedes_event_id"] == original_event_id
+
+    row = conn.execute(
+        """
+        SELECT status, semantic_json, source_event_id FROM graph_semantic_nodes
+        WHERE project_id=? AND snapshot_id=? AND node_id='L7.199'
+        """,
+        (PID, sid),
+    ).fetchone()
+    assert row["status"] == "ai_complete"
+    assert row["source_event_id"] == original_event_id
+    assert "re-exports/exports EnrichPreset" not in row["semantic_json"]
+    route_row = conn.execute(
+        "SELECT status FROM ai_output_queue WHERE output_id=?",
+        (fixture["output_id"],),
+    ).fetchone()
+    assert route_row["status"] == "completed"
+
+    projection = graph_events.get_semantic_projection(conn, PID, sid)
+    node_semantic = projection["projection"]["node_semantics"]["L7.199"]
+    assert node_semantic["source_event"]["event_id"] == revised_event_id
+    assert node_semantic["validity"]["status"] == "semantic_current"
+    assert node_semantic["semantic"]["open_issues"] == [fixture["split_issue"]]
+
+
+def test_c6_revise_semantic_enrichment_rejects_structural_ops(conn, monkeypatch):
+    fixture = _create_actionpanel_revision_fixture(conn, "replay-actionpanel-structural-reject")
+    sid = fixture["snapshot_id"]
+    monkeypatch.setattr(server, "get_connection", lambda _project_id: _NoCloseConn(conn))
+    monkeypatch.setattr(
+        server,
+        "_require_graph_governance_operator",
+        lambda _ctx, _conn, _action: {"role": "observer"},
+    )
+    ctx = server.RequestContext(
+        None,
+        "POST",
+        {"project_id": PID, "snapshot_id": sid},
+        {},
+        {
+            "feedback_id": fixture["feedback_id"],
+            "action": "revise_semantic_enrichment",
+            "revised_semantic_payload": {
+                "feature_name": "Dashboard ActionPanel",
+                "graph_structure_ops": {
+                    "operations": [
+                        {"op": "add_edge", "src": "L7.198", "dst": "L7.199"},
+                    ],
+                },
+            },
+            "rationale": "Should not bypass graph correction gate.",
+            "actor": "observer",
+        },
+        "req-test",
+        "",
+        "",
+    )
+
+    with pytest.raises(ValidationError, match="graph_structure_ops"):
+        server.handle_graph_governance_snapshot_feedback_decision(ctx)
+
+    item = reconcile_feedback.list_feedback_items(PID, sid)[0]
+    assert item["status"] == reconcile_feedback.STATUS_CLASSIFIED
+    original = graph_events.get_event(conn, PID, sid, fixture["event_id"])
+    assert original["status"] == graph_events.EVENT_STATUS_PROPOSED
+    revised_events = [
+        event for event in graph_events.list_events(
+            conn, PID, sid, event_types=["semantic_node_enriched"], limit=20,
+        )
+        if event["event_kind"] == "observer_semantic_revision"
+    ]
+    assert revised_events == []
 
 
 def test_c4_direct_event_accept_flips_node_status_and_projection(conn, monkeypatch):

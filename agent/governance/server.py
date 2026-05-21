@@ -8743,6 +8743,348 @@ def _semantic_feedback_ai_output_id(evidence: dict[str, Any], worker_evidence: d
     return str(ai_output.get("output_id") or "").strip()
 
 
+_SEMANTIC_REVISION_FORBIDDEN_KEYS = {
+    "graph_structure_ops",
+    "graph_structure_suggestions",
+    "graph_structure_candidates",
+    "graph_enrich_config_ops",
+    "graph_enrich_config_suggestions",
+    "graph_enrich_config_candidates",
+}
+
+
+def _semantic_revision_nonempty(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (list, tuple, set, dict)):
+        return bool(value)
+    if isinstance(value, str):
+        return bool(value.strip())
+    return True
+
+
+def _semantic_revision_forbidden_key(payload: dict[str, Any]) -> str:
+    candidates = [payload]
+    nested = payload.get("semantic_payload")
+    if isinstance(nested, dict):
+        candidates.append(nested)
+    for candidate in candidates:
+        for key in sorted(_SEMANTIC_REVISION_FORBIDDEN_KEYS):
+            if _semantic_revision_nonempty(candidate.get(key)):
+                return key
+    return ""
+
+
+def _semantic_revision_payload_from_body_item(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict) and isinstance(raw.get("semantic_payload"), dict):
+        raw = raw.get("semantic_payload")
+    if not isinstance(raw, dict):
+        raise ValueError("revised semantic payload must be a JSON object")
+    try:
+        return json.loads(json.dumps(raw, ensure_ascii=False, sort_keys=True))
+    except Exception as exc:  # noqa: BLE001 - validation should surface as 400.
+        raise ValueError(f"revised semantic payload must be JSON-serializable: {exc}") from exc
+
+
+def _semantic_revision_payloads_from_body(
+    body: dict[str, Any],
+    feedback_ids: list[str],
+) -> dict[str, dict[str, Any]]:
+    ids = [str(item or "").strip() for item in feedback_ids if str(item or "").strip()]
+    revisions = body.get("semantic_revisions")
+    if revisions is None:
+        revisions = body.get("revisions")
+    if revisions is not None:
+        if not isinstance(revisions, dict):
+            raise ValueError("semantic_revisions must be a feedback_id keyed object")
+        payloads: dict[str, dict[str, Any]] = {}
+        for fid in ids:
+            if fid not in revisions:
+                raise ValueError(f"missing semantic revision payload for feedback_id: {fid}")
+            payloads[fid] = _semantic_revision_payload_from_body_item(revisions.get(fid))
+        return payloads
+    if len(ids) != 1:
+        raise ValueError("revised_semantic_payload is only valid for a single feedback_id")
+    raw_payload = body.get("revised_semantic_payload")
+    if raw_payload is None:
+        raw_payload = body.get("semantic_payload")
+    return {ids[0]: _semantic_revision_payload_from_body_item(raw_payload)}
+
+
+def _semantic_event_ids_for_feedback_item(item: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+    raw_issue = evidence.get("raw_issue") if isinstance(evidence.get("raw_issue"), dict) else {}
+    worker_evidence = (
+        raw_issue.get("evidence") if isinstance(raw_issue.get("evidence"), dict) else {}
+    )
+    event_ids = worker_evidence.get("linked_event_ids") or evidence.get("linked_event_ids") or []
+    if not isinstance(event_ids, list):
+        event_ids = [event_ids]
+    return evidence, worker_evidence, [str(eid or "").strip() for eid in event_ids if str(eid or "").strip()]
+
+
+def _semantic_revision_event_id(snapshot_id: str, node_id: str, payload_hash: str) -> str:
+    raw = f"semnode-revised-{snapshot_id}-{node_id}-{payload_hash[:12]}"
+    return re.sub(r"[^A-Za-z0-9_.:-]+", "-", raw).strip("-")[:220]
+
+
+def _plan_semantic_enrichment_revisions(
+    conn,
+    project_id: str,
+    snapshot_id: str,
+    feedback_ids: list[str],
+    revision_payloads: dict[str, dict[str, Any]],
+    *,
+    rationale: str = "",
+) -> list[dict[str, Any]]:
+    from . import graph_events
+    from . import graph_snapshot_store as store
+    from . import reconcile_feedback
+
+    items = reconcile_feedback.list_feedback_items(project_id, snapshot_id)
+    by_id = {str(item.get("feedback_id") or ""): item for item in items}
+    nodes = store.list_graph_snapshot_nodes(
+        conn,
+        project_id,
+        snapshot_id,
+        include_semantic=False,
+        limit=1000,
+    )
+    nodes_by_id = {str(node.get("node_id") or node.get("id") or ""): node for node in nodes}
+    plan: list[dict[str, Any]] = []
+    for fid in feedback_ids:
+        item = by_id.get(fid)
+        if not item:
+            raise ValueError(f"feedback_not_found: {fid}")
+        revised_payload = revision_payloads.get(fid)
+        if not isinstance(revised_payload, dict):
+            raise ValueError(f"missing revised semantic payload for feedback_id: {fid}")
+        forbidden = _semantic_revision_forbidden_key(revised_payload)
+        if forbidden:
+            raise ValueError(
+                f"semantic revision cannot include {forbidden}; use the graph correction/config gate"
+            )
+        evidence, worker_evidence, event_ids = _semantic_event_ids_for_feedback_item(item)
+        semantic_events: list[dict[str, Any]] = []
+        for event_id in event_ids:
+            event = graph_events.get_event(conn, project_id, snapshot_id, event_id)
+            if event and str(event.get("event_type") or "") in {"semantic_node_enriched", "edge_semantic_enriched"}:
+                semantic_events.append(event)
+        if not semantic_events:
+            raise ValueError(f"no linked semantic event found for feedback_id: {fid}")
+        if len(semantic_events) > 1:
+            raise ValueError(f"ambiguous linked semantic events for feedback_id: {fid}")
+        event = semantic_events[0]
+        if str(event.get("event_type") or "") != "semantic_node_enriched":
+            raise ValueError("revise_semantic_enrichment currently supports node semantic events only")
+        node_id = (
+            str(event.get("target_id") or "").strip()
+            or str(item.get("target_id") or "").strip()
+            or str(worker_evidence.get("node_id") or "").strip()
+        )
+        if not node_id:
+            raise ValueError(f"missing node_id for feedback_id: {fid}")
+        node = nodes_by_id.get(node_id)
+        if not node:
+            raise ValueError(f"node_not_found for semantic revision: {node_id}")
+        stable_key = graph_events.stable_node_key_for_node(node)
+        event_stable_key = str(event.get("stable_node_key") or "").strip()
+        if event_stable_key and stable_key and event_stable_key != stable_key:
+            raise ValueError(f"stable_node_key_mismatch for semantic revision: {node_id}")
+        current_feature_hash = graph_events.feature_hash_for_node(node)
+        event_feature_hash = str(event.get("feature_hash") or "").strip()
+        if event_feature_hash and current_feature_hash and event_feature_hash != current_feature_hash:
+            raise ValueError(f"feature_hash_mismatch for semantic revision: {node_id}")
+        metadata = node.get("metadata") if isinstance(node.get("metadata"), dict) else {}
+        current_file_hashes = (
+            metadata.get("file_hashes")
+            if isinstance(metadata.get("file_hashes"), dict)
+            else {}
+        )
+        event_file_hashes = event.get("file_hashes") if isinstance(event.get("file_hashes"), dict) else {}
+        if event_file_hashes and current_file_hashes and event_file_hashes != current_file_hashes:
+            raise ValueError(f"file_hash_mismatch for semantic revision: {node_id}")
+        payload_hash = hashlib.sha256(
+            json.dumps(revised_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        plan.append({
+            "feedback_id": fid,
+            "feedback_item": item,
+            "evidence": evidence,
+            "worker_evidence": worker_evidence,
+            "event": event,
+            "node": node,
+            "node_id": node_id,
+            "stable_node_key": stable_key,
+            "feature_hash": event_feature_hash or current_feature_hash,
+            "file_hashes": event_file_hashes or current_file_hashes or {},
+            "revised_payload": revised_payload,
+            "payload_hash": f"sha256:{payload_hash}",
+            "revision_event_id": _semantic_revision_event_id(snapshot_id, node_id, payload_hash),
+            "rationale": rationale,
+        })
+    return plan
+
+
+def _apply_semantic_enrichment_revision_plan(
+    conn,
+    project_id: str,
+    snapshot_id: str,
+    revision_plan: list[dict[str, Any]],
+    *,
+    actor: str = "observer",
+) -> dict[str, Any]:
+    from . import ai_output_intake
+    from . import graph_events
+
+    revised_node_ids: list[str] = []
+    event_ids_created: list[str] = []
+    event_ids_superseded: list[str] = []
+    ai_output_ids_marked_completed: list[str] = []
+    errors: list[dict[str, Any]] = []
+    for entry in revision_plan:
+        fid = str(entry.get("feedback_id") or "")
+        event = entry.get("event") if isinstance(entry.get("event"), dict) else {}
+        event_id = str(event.get("event_id") or "")
+        node_id = str(entry.get("node_id") or "")
+        revised_payload = entry.get("revised_payload") if isinstance(entry.get("revised_payload"), dict) else {}
+        payload_hash = str(entry.get("payload_hash") or "")
+        revision_event_id = str(entry.get("revision_event_id") or "")
+        rationale = str(entry.get("rationale") or "")
+        try:
+            event_payload = dict(event.get("payload") if isinstance(event.get("payload"), dict) else {})
+            event_payload["semantic_payload"] = revised_payload
+            event_payload["semantic_status"] = "ai_complete"
+            event_payload["review_revision"] = {
+                "feedback_id": fid,
+                "supersedes_event_id": event_id,
+                "rationale": rationale,
+                "actor": actor,
+                "revised_at": _utc_now(),
+            }
+            created = graph_events.create_event(
+                conn,
+                project_id,
+                snapshot_id,
+                event_id=revision_event_id,
+                event_type="semantic_node_enriched",
+                event_kind="observer_semantic_revision",
+                target_type="node",
+                target_id=node_id,
+                status=graph_events.EVENT_STATUS_ACCEPTED,
+                risk_level=str(event.get("risk_level") or "low"),
+                confidence=float(event.get("confidence") or 0.0),
+                baseline_commit=str(event.get("baseline_commit") or ""),
+                target_commit=str(event.get("target_commit") or ""),
+                branch_ref=str(event.get("branch_ref") or ""),
+                operation_type="review_revision",
+                source_branch_ref=str(event.get("branch_ref") or ""),
+                source_snapshot_id=str(event.get("snapshot_id") or snapshot_id),
+                source_event_id=event_id,
+                payload_hash=payload_hash,
+                stable_node_key=str(entry.get("stable_node_key") or ""),
+                feature_hash=str(entry.get("feature_hash") or ""),
+                file_hashes=entry.get("file_hashes") if isinstance(entry.get("file_hashes"), dict) else {},
+                payload=event_payload,
+                evidence={
+                    "source": "revise_semantic_enrichment",
+                    "feedback_id": fid,
+                    "supersedes_event_id": event_id,
+                    "rationale": rationale,
+                },
+                created_by=actor,
+            )
+            event_ids_created.append(str(created.get("event_id") or revision_event_id))
+            graph_events.update_event_status(
+                conn,
+                project_id,
+                snapshot_id,
+                event_id,
+                status=graph_events.EVENT_STATUS_REJECTED,
+                actor=actor,
+                operation_type="supersede",
+                evidence={
+                    "source": "revise_semantic_enrichment",
+                    "feedback_id": fid,
+                    "superseded_by_event_id": revision_event_id,
+                },
+            )
+            event_ids_superseded.append(event_id)
+            now = _utc_now()
+            conn.execute(
+                """
+                INSERT INTO graph_semantic_nodes
+                  (project_id, snapshot_id, node_id, status, feature_hash,
+                   file_hashes_json, semantic_json, branch_ref, operation_type,
+                   source_branch_ref, source_snapshot_id, source_event_id, payload_hash,
+                   feedback_round, batch_index, updated_at)
+                VALUES (?, ?, ?, 'ai_complete', ?, ?, ?, ?, 'review_revision',
+                        ?, ?, ?, ?, 0, NULL, ?)
+                ON CONFLICT(project_id, snapshot_id, node_id) DO UPDATE SET
+                  status = excluded.status,
+                  feature_hash = excluded.feature_hash,
+                  file_hashes_json = excluded.file_hashes_json,
+                  semantic_json = excluded.semantic_json,
+                  branch_ref = excluded.branch_ref,
+                  operation_type = excluded.operation_type,
+                  source_branch_ref = excluded.source_branch_ref,
+                  source_snapshot_id = excluded.source_snapshot_id,
+                  source_event_id = excluded.source_event_id,
+                  payload_hash = excluded.payload_hash,
+                  feedback_round = excluded.feedback_round,
+                  batch_index = excluded.batch_index,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    project_id,
+                    snapshot_id,
+                    node_id,
+                    str(entry.get("feature_hash") or ""),
+                    json.dumps(entry.get("file_hashes") or {}, ensure_ascii=False, sort_keys=True),
+                    json.dumps(revised_payload, ensure_ascii=False, sort_keys=True),
+                    str(event.get("branch_ref") or ""),
+                    str(event.get("branch_ref") or ""),
+                    str(event.get("snapshot_id") or snapshot_id),
+                    event_id,
+                    payload_hash,
+                    now,
+                ),
+            )
+            revised_node_ids.append(node_id)
+            ai_output_id = _semantic_feedback_ai_output_id(
+                entry.get("evidence") if isinstance(entry.get("evidence"), dict) else {},
+                entry.get("worker_evidence") if isinstance(entry.get("worker_evidence"), dict) else {},
+            )
+            if ai_output_id:
+                marked = ai_output_intake.mark_ai_output_route_status(
+                    conn,
+                    project_id,
+                    ai_output_id,
+                    "completed",
+                    actor=actor,
+                )
+                if marked.get("ok"):
+                    ai_output_ids_marked_completed.append(ai_output_id)
+                else:
+                    errors.append({
+                        "feedback_id": fid,
+                        "output_id": ai_output_id,
+                        "error": marked.get("error") or "ai_output_route_update_failed",
+                    })
+        except Exception as exc:  # noqa: BLE001 - keep batch result inspectable.
+            errors.append({"feedback_id": fid, "event_id": event_id, "error": str(exc)})
+    conn.commit()
+    return {
+        "node_ids_revised": revised_node_ids,
+        "event_ids_created": event_ids_created,
+        "event_ids_superseded": event_ids_superseded,
+        "ai_output_ids_marked_completed": ai_output_ids_marked_completed,
+        "errors": errors,
+    }
+
+
 def _accept_semantic_enrichment_for_feedback_items(
     conn,
     project_id: str,
@@ -9102,6 +9444,17 @@ def handle_graph_governance_snapshot_feedback_decision(ctx: RequestContext):
         _require_graph_governance_operator(ctx, conn, "graph-governance.snapshot.feedback.decision")
         snapshot_id = _resolve_graph_snapshot_id(conn, project_id, snapshot_id)
         try:
+            revision_plan: list[dict[str, Any]] = []
+            if action == "revise_semantic_enrichment":
+                revision_payloads = _semantic_revision_payloads_from_body(body, feedback_ids)
+                revision_plan = _plan_semantic_enrichment_revisions(
+                    conn,
+                    project_id,
+                    snapshot_id,
+                    feedback_ids,
+                    revision_payloads,
+                    rationale=str(body.get("rationale") or body.get("reviewer_rationale") or ""),
+                )
             result = reconcile_feedback.decide_feedback_items(
                 project_id,
                 snapshot_id,
@@ -9166,6 +9519,38 @@ def handle_graph_governance_snapshot_feedback_decision(ctx: RequestContext):
                 )
                 result["semantic_enrichment_accepted"] = accepted
                 if accepted.get("event_ids_flipped"):
+                    try:
+                        graph_events.build_semantic_projection(
+                            conn, project_id, snapshot_id,
+                            actor=str(body.get("actor") or "observer"),
+                        )
+                        result["projection_rebuilt"] = True
+                    except Exception as exc:  # noqa: BLE001 - advisory
+                        result["projection_rebuilt"] = False
+                        result["projection_rebuild_error"] = str(exc)
+            elif action == "revise_semantic_enrichment":
+                from . import graph_events
+
+                successful = set(successful_feedback_ids)
+                successful_plan = [
+                    item for item in revision_plan
+                    if str(item.get("feedback_id") or "") in successful
+                ]
+                revised = _apply_semantic_enrichment_revision_plan(
+                    conn,
+                    project_id,
+                    snapshot_id,
+                    successful_plan,
+                    actor=str(body.get("actor") or "observer"),
+                )
+                result["semantic_enrichment_revised"] = revised
+                if revised.get("errors"):
+                    result["ok"] = False
+                    result["error_count"] = int(result.get("error_count") or 0) + len(revised.get("errors") or [])
+                    result.setdefault("errors", [])
+                    if isinstance(result["errors"], list):
+                        result["errors"].extend(revised.get("errors") or [])
+                if revised.get("event_ids_created"):
                     try:
                         graph_events.build_semantic_projection(
                             conn, project_id, snapshot_id,
