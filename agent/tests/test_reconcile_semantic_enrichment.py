@@ -1084,7 +1084,7 @@ def test_semantic_ai_graph_query_audit_scales_budget_for_many_path_bindings(conn
     )
     test_paths = [
         f"agent/tests/test_semantic_worker_{idx}.py"
-        for idx in range(12)
+        for idx in range(90)
     ]
     for path in test_paths:
         _write(project / path, "def test_semantic_worker():\n    assert True\n")
@@ -1173,7 +1173,9 @@ def test_semantic_ai_graph_query_audit_scales_budget_for_many_path_bindings(conn
         (PID, "full-semantic-test", audit["trace_id"]),
     ).fetchone()
     assert trace["status"] == "complete"
-    assert json.loads(trace["budget_json"])["max_result_chars"] > 80_000
+    budget = json.loads(trace["budget_json"])
+    assert budget["max_result_chars"] > 80_000
+    assert budget["max_result_nodes"] > 800
 
 
 def test_semantic_enrichment_chunks_large_function_node_and_aggregates(conn, tmp_path):

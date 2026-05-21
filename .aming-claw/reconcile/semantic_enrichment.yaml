@@ -1,3 +1,9 @@
+execution_policy:
+  # Large-node retries are sensitive to provider-side temporary 429s. Keep
+  # node-level worker concurrency high, but serialize slices inside one large
+  # node so chunk aggregation can finish reliably.
+  chunk_slice_max_concurrency: 1
+
 graph_enrich_config_ops:
   rules:
     calls.weak_resolver.short_name_add_method_drop:

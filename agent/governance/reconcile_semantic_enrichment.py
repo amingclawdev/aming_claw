@@ -817,6 +817,7 @@ def _semantic_ai_graph_query_context(
         # graph audit completion does not fail solely because many compact
         # path lookups each return several owning nodes.
         max_result_chars = max(80_000, 30_000 + (len(path_roles) * 12_000))
+        max_result_nodes = max(800, 80 + (len(path_roles) * 10))
         trace = graph_query_trace.start_trace(
             conn,
             project_id,
@@ -828,6 +829,7 @@ def _semantic_ai_graph_query_context(
             budget={
                 "max_queries": max(8, 2 + len(path_roles)),
                 "max_result_chars": max_result_chars,
+                "max_result_nodes": max_result_nodes,
             },
         )["trace"]
         trace_id = str(trace.get("trace_id") or "")
