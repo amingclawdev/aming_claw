@@ -564,6 +564,37 @@ def test_install_codex_plugin_cache_uses_versioned_codex_loader_layout(tmp_path)
     assert server["args"][:2] == ["-m", "agent.mcp.server"]
 
 
+def test_codex_install_surfaces_do_not_write_external_project_cwd(tmp_path, monkeypatch):
+    plugin_root = tmp_path / "plugin-root"
+    _write_plugin_fixture(plugin_root)
+    external_project = tmp_path / "my-app"
+    (external_project / "src").mkdir(parents=True)
+    (external_project / "src" / "App.js").write_text("export default function App() { return null; }\n", encoding="utf-8")
+    monkeypatch.chdir(external_project)
+
+    codex_home = tmp_path / "codex-home"
+    marketplace_root = tmp_path / "marketplace-root"
+
+    cache_target = install_codex_plugin_cache(plugin_root, codex_home=codex_home)
+    marketplace_target = install_codex_marketplace(plugin_root, marketplace_root=marketplace_root)
+    configure_codex_plugin(
+        codex_config=codex_home / "config.toml",
+        marketplace_root=marketplace_target,
+    )
+
+    assert (cache_target / ".mcp.json").is_file()
+    assert (marketplace_target / ".agents" / "plugins" / "aming-claw" / ".mcp.json").is_file()
+    for rel in (
+        ".mcp.json",
+        "shared-volume",
+        ".codex-plugin",
+        ".claude-plugin",
+        ".agents/plugins",
+        "agent/mcp/resources",
+    ):
+        assert not (external_project / rel).exists(), f"unexpected target-local plugin artifact: {rel}"
+
+
 def test_doctor_plugin_fails_when_cache_mcp_cannot_import_runtime(tmp_path):
     _write_plugin_fixture(tmp_path)
     codex_home = tmp_path / "codex-home"

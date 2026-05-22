@@ -142,6 +142,98 @@ def _ensure_clean_git_worktree_for_graph(workspace: Path) -> dict:
     return {"is_git_repo": True, "dirty": False, "git_root": str(git_root)}
 
 
+def _safe_read_json(path: Path) -> dict:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _is_aming_claw_plugin_root(root: Path) -> bool:
+    manifest = _safe_read_json(root / ".codex-plugin" / "plugin.json")
+    return (
+        str(manifest.get("name") or "") == "aming-claw"
+        and (root / "agent" / "mcp" / "server.py").is_file()
+        and (root / "skills" / "aming-claw" / "SKILL.md").is_file()
+    )
+
+
+def _mcp_config_points_at_self_project(path: Path) -> bool:
+    payload = _safe_read_json(path)
+    servers = payload.get("mcpServers") if isinstance(payload, dict) else {}
+    server = servers.get("aming-claw") if isinstance(servers, dict) else None
+    if not isinstance(server, dict):
+        return False
+    args = [str(item) for item in (server.get("args") or []) if str(item)]
+    for index, item in enumerate(args[:-1]):
+        if item == "--project" and args[index + 1] == "aming-claw":
+            return True
+    return False
+
+
+def _marketplace_contains_aming_claw(path: Path) -> bool:
+    payload = _safe_read_json(path)
+    plugins = payload.get("plugins") if isinstance(payload, dict) else []
+    if not isinstance(plugins, list):
+        return False
+    return any(isinstance(item, dict) and item.get("name") == "aming-claw" for item in plugins)
+
+
+def inspect_target_workspace_pollution(workspace: str | Path) -> dict:
+    """Detect Aming Claw plugin/runtime artifacts inside an external target."""
+    root = Path(workspace).resolve()
+    if _is_aming_claw_plugin_root(root):
+        return {"ok": True, "issues": [], "workspace_path": str(root)}
+
+    issues: list[dict] = []
+
+    mcp_path = root / ".mcp.json"
+    if mcp_path.is_file() and _mcp_config_points_at_self_project(mcp_path):
+        issues.append({
+            "path": ".mcp.json",
+            "kind": "self_project_mcp_config",
+            "message": "targets project_id `aming-claw` instead of the target project",
+        })
+
+    plugin_manifests = (
+        (".codex-plugin/plugin.json", "codex_plugin_manifest"),
+        (".claude-plugin/plugin.json", "claude_plugin_manifest"),
+    )
+    for rel, kind in plugin_manifests:
+        payload = _safe_read_json(root / rel)
+        if payload.get("name") == "aming-claw":
+            issues.append({
+                "path": rel,
+                "kind": kind,
+                "message": "Aming Claw plugin manifest is present in the target root",
+            })
+
+    for rel in (".agents/plugins/marketplace.json", ".claude-plugin/marketplace.json"):
+        if _marketplace_contains_aming_claw(root / rel):
+            issues.append({
+                "path": rel,
+                "kind": "plugin_marketplace",
+                "message": "Aming Claw plugin marketplace metadata is present in the target root",
+            })
+
+    if (root / "shared-volume" / "codex-tasks").exists():
+        issues.append({
+            "path": "shared-volume/codex-tasks",
+            "kind": "runtime_shared_volume",
+            "message": "governance runtime state is inside the target project",
+        })
+
+    if (root / "agent" / "mcp" / "resources" / "self-graph-bundle-manifest.json").exists():
+        issues.append({
+            "path": "agent/mcp/resources/self-graph-bundle-manifest.json",
+            "kind": "self_graph_bundle",
+            "message": "Aming Claw self-graph bundle is present in the target project",
+        })
+
+    return {"ok": not issues, "issues": issues, "workspace_path": str(root)}
+
+
 def _progress_with_elapsed(progress: object) -> object:
     if not isinstance(progress, dict):
         return progress
@@ -716,6 +808,17 @@ def bootstrap_project(
     ws = Path(workspace_path).resolve()
     if not ws.is_dir():
         raise ValidationError(f"workspace_path does not exist or is not a directory: {workspace_path}")
+    pollution = inspect_target_workspace_pollution(ws)
+    if not pollution["ok"]:
+        shown = "; ".join(
+            f"{issue['path']} ({issue['kind']})" for issue in pollution["issues"][:6]
+        )
+        more = "" if len(pollution["issues"]) <= 6 else f"; +{len(pollution['issues']) - 6} more"
+        raise ValidationError(
+            "target workspace contains Aming Claw plugin/runtime artifacts that do not belong "
+            f"to this project: {shown}{more}. Remove them from the target project or choose the "
+            "real project root before bootstrap."
+        )
 
     # Step 1: Config discovery
     try:

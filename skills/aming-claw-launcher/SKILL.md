@@ -150,7 +150,7 @@ claims are available.
 | `aming-claw init` | Write `.aming-claw.yaml` in the current directory. |
 | `aming-claw bootstrap --path <dir> --name <id>` | Register an external project under governance. |
 | `aming-claw scan --path <dir> --project-id <id>` | Scan an external project into a `.aming-claw` candidate workspace. |
-| `aming-claw start --port 40000 --workspace .` | Start governance in the foreground from a separate terminal/window. |
+| `aming-claw start --port 40000 [--workspace <runtime-root>]` | Start governance in the foreground from a separate terminal/window. By default the runtime root is the plugin checkout/package root, not the current target project. |
 | `aming-claw status` | GET `/api/health` against the running governance service. |
 | `aming-claw plugin doctor [--plugin-root <dir>] [--python <python3.9+>]` | Run read-only aftercare checks for plugin assets, generated marketplace, versioned Codex plugin cache, MCP config, Codex config hints, Python runtime, dashboard assets, AI CLI probes, and governance health. |
 | `aming-claw open --governance-url <url>` | Open the dashboard in the default browser. |
@@ -163,7 +163,7 @@ claims are available.
 
 ## Project-Local Plugin Contract
 
-- MCP server config: `.mcp.json` at repo root, stdio entrypoint `python -m agent.mcp.server --project aming-claw --workers 0 --governance-url http://localhost:40000`. Plugin sessions keep `--workers 0`; ServiceManager owns executor lifecycle.
+- MCP server config: `.mcp.json` at the Aming Claw plugin/repo root, stdio entrypoint `python -m agent.mcp.server --project aming-claw --workers 0 --governance-url http://localhost:40000`. Do not copy that file into an external target project; a target-local `.mcp.json` with `--project aming-claw` is install/startup pollution. Plugin sessions keep `--workers 0`; ServiceManager owns executor lifecycle.
 - This skill is auto-discovered through the Claude Code plugin manifest at `.claude-plugin/plugin.json`. It is namespaced as `/aming-claw:aming-claw-launcher`. (Note: `CLAUDE.md` at repo root is **workspace** project rules — loaded by Claude Code when the repo is opened as a workspace, not part of plugin context; plugin-time guidance lives in this skill.)
 
 ## Offline / Fresh Install

@@ -81,11 +81,11 @@ and troubleshooting notes are in [Install Details](#install-details).
 Ask Codex to install from the GitHub repo:
 
 ```text
-Install the Aming Claw plugin from https://github.com/amingclawdev/aming-claw
+One-shot install and open dashboard for Aming Claw from https://github.com/amingclawdev/aming-claw
 ```
 
-If the `aming-claw` CLI is already available, you can run the same install
-directly:
+If the `aming-claw` CLI is already available and you only want to refresh the
+local plugin package without starting governance, run:
 
 ```bash
 aming-claw plugin install https://github.com/amingclawdev/aming-claw
@@ -693,6 +693,11 @@ The CLI installer (`aming-claw plugin install <git-url>` or
 - Writes Codex config + a generated local marketplace + a versioned plugin
   cache at `~/.codex/plugins/cache/aming-claw-local/aming-claw/<version>/`
   that real Codex CLI startup reads.
+- Does not write plugin-owned files into the target project you are governing.
+  If a target project contains `.mcp.json` with `--project aming-claw`,
+  `.codex-plugin/`, `.claude-plugin/`, `.agents/plugins/`, or
+  `shared-volume/codex-tasks/`, treat it as install/startup pollution and
+  remove it before bootstrap.
 
 Run `aming-claw plugin doctor` after install. If the cache or generated
 marketplace is missing/inconsistent, doctor reports `fail` (not just `ok`).
@@ -807,6 +812,12 @@ scans the workspace, and builds a commit-bound graph snapshot through
 `POST http://127.0.0.1:40000/api/project/bootstrap`; ServiceManager on `40101`
 is not the bootstrap API. If the target workspace is a dirty git repo,
 commit/stash first.
+
+Install/startup state belongs to the plugin/runtime checkout, not the target
+project. Bootstrap now refuses obvious Aming Claw self-artifacts in an external
+target, such as `.mcp.json` pointing at `--project aming-claw` or
+`shared-volume/codex-tasks/`. Clean those paths up or choose the real project
+root before building the graph.
 
 Before bootstrap, the dashboard asks the operator to confirm the path prefixes
 that should be excluded from graph scanning. The defaults handle common

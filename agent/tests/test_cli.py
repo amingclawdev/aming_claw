@@ -4,6 +4,9 @@ import os
 import hashlib
 import json
 import subprocess
+import sys
+import types
+from pathlib import Path
 import pytest
 
 try:
@@ -156,6 +159,29 @@ class TestCliLauncher:
 
 
 class TestCliStart:
+    def test_start_without_workspace_uses_plugin_runtime_root_not_cwd(self, monkeypatch, tmp_path):
+        import agent.cli as cli
+
+        runner = CliRunner()
+        calls = []
+        fake_start_governance = types.SimpleNamespace(
+            main=lambda workspace_root=None: calls.append(Path(workspace_root).resolve())
+        )
+        monkeypatch.setitem(sys.modules, "start_governance", fake_start_governance)
+        monkeypatch.setattr(cli, "_probe_governance", lambda port: None)
+        monkeypatch.setattr(cli, "_port_is_open", lambda port: False)
+        monkeypatch.delenv("AMING_CLAW_HOME", raising=False)
+        monkeypatch.delenv("SHARED_VOLUME_PATH", raising=False)
+
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            cwd = Path.cwd()
+            result = runner.invoke(main, ["start", "--port", "45555"])
+
+        assert result.exit_code == 0
+        assert calls == [Path(cli.__file__).resolve().parents[1]]
+        assert not (cwd / "shared-volume").exists()
+        assert not (cwd / ".mcp.json").exists()
+
     def test_start_exits_when_governance_already_healthy(self, monkeypatch, tmp_path):
         import agent.cli as cli
 

@@ -142,7 +142,11 @@ projects can keep the same rule in `graph.exclude_paths`, `graph.ignore_globs`,
 or `graph.nested_projects`. When bootstrapping from an AI session instead of
 the dashboard form, surface this as an explicit visible reminder before calling
 the bootstrap API/CLI, and include the reviewed exclude list in the bootstrap
-request. After bootstrap, open:
+request. If the target root contains Aming Claw plugin/runtime artifacts such
+as `.mcp.json` with `--project aming-claw`, `.codex-plugin/`,
+`.claude-plugin/`, `.agents/plugins/`, or `shared-volume/codex-tasks/`, stop
+and ask the user to clean them up or choose the real project root before graph
+build. After bootstrap, open:
 `http://127.0.0.1:40000/dashboard?project_id=<project_id>&view=projects`.
 
 ## Semantic Enrichment MVP

@@ -6,11 +6,18 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
+from agent.governance.errors import ValidationError
 from agent.governance.external_project_governance import (
     COVERAGE_STATE_FILE,
     FEATURE_INDEX_FILE,
     GOVERNANCE_DIR,
     scan_external_project,
+)
+from agent.governance.project_service import (
+    bootstrap_project,
+    inspect_target_workspace_pollution,
 )
 from agent.governance.project_profile import discover_project_profile
 from agent.governance.reconcile_file_inventory import build_file_inventory
@@ -52,6 +59,35 @@ def test_profile_excludes_project_local_aming_claw_workspace(tmp_path):
 
     assert GOVERNANCE_DIR in profile.exclude_roots
     assert ".aming-claw/sessions/old/generated.py" not in paths
+
+
+def test_bootstrap_rejects_self_plugin_artifacts_in_external_target(tmp_path):
+    project = tmp_path / "my-app"
+    (project / "src").mkdir(parents=True)
+    (project / "src" / "App.js").write_text("export default function App() { return null; }\n", encoding="utf-8")
+    (project / "package.json").write_text('{"scripts":{"test":"echo ok"}}\n', encoding="utf-8")
+    (project / ".mcp.json").write_text(
+        json.dumps({
+            "mcpServers": {
+                "aming-claw": {
+                    "command": "python",
+                    "args": ["-m", "agent.mcp.server", "--project", "aming-claw"],
+                }
+            }
+        }),
+        encoding="utf-8",
+    )
+    (project / "shared-volume" / "codex-tasks").mkdir(parents=True)
+
+    pollution = inspect_target_workspace_pollution(project)
+
+    assert pollution["ok"] is False
+    assert {issue["path"] for issue in pollution["issues"]} == {
+        ".mcp.json",
+        "shared-volume/codex-tasks",
+    }
+    with pytest.raises(ValidationError, match="Aming Claw plugin/runtime artifacts"):
+        bootstrap_project(str(project), project_name="my-app")
 
 
 def test_scan_external_project_writes_governance_artifacts(tmp_path):

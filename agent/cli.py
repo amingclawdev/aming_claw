@@ -115,6 +115,11 @@ def _dashboard_url(governance_url: str) -> str:
     return governance_url.rstrip("/") + "/dashboard"
 
 
+def _default_runtime_workspace() -> Path:
+    """Return the plugin/runtime root used for local governance state."""
+    return Path(__file__).resolve().parents[1]
+
+
 def _probe_governance(port: int, *, timeout: float = 2.0) -> Optional[dict]:
     url = f"http://127.0.0.1:{port}/api/health"
     try:
@@ -225,7 +230,11 @@ def _launcher_html(governance_url: str) -> str:
 
 
 @main.command()
-@click.option("--workspace", default=".", help="Workspace root used for shared-volume and project state.")
+@click.option(
+    "--workspace",
+    default="",
+    help="Runtime workspace root for shared-volume/project state. Defaults to the plugin runtime root, not the current project.",
+)
 @click.option("--port", default=40000, type=int, help="Governance HTTP port.")
 def start(workspace, port):
     """Start governance in the foreground without spawning plugin-owned workers."""
@@ -243,10 +252,12 @@ def start(workspace, port):
             "Stop that process or choose a different --port."
         )
     os.environ["GOVERNANCE_PORT"] = str(port)
-    os.environ.setdefault("AMING_CLAW_HOME", str(Path(workspace).resolve()))
+    runtime_workspace = Path(workspace).resolve() if workspace else _default_runtime_workspace()
+    os.environ["AMING_CLAW_HOME"] = str(runtime_workspace)
+    os.environ.setdefault("SHARED_VOLUME_PATH", str(runtime_workspace / "shared-volume"))
     import start_governance
 
-    start_governance.main(workspace_root=Path(workspace).resolve())
+    start_governance.main(workspace_root=runtime_workspace)
 
 
 @main.command("open")
