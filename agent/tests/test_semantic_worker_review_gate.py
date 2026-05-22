@@ -89,6 +89,34 @@ def _create_snapshot_with_node(conn, snapshot_id: str, node_id: str = "L7.1") ->
     return _create_snapshot_with_nodes(conn, snapshot_id, [node_id])
 
 
+def _create_external_my_app_snapshot(conn) -> tuple[str, str, str]:
+    project_id = "my-app"
+    snapshot_id = "full-e13bc00-81e7"
+    node_id = "L7.3"
+    nodes = [
+        {
+            "id": node_id,
+            "layer": "L7",
+            "title": "React Native App entrypoint",
+            "kind": "frontend_runtime",
+            "primary": ["src/App.js"],
+            "secondary": ["README.md"],
+            "test": ["__tests__/App.test.js"],
+            "metadata": {"subsystem": "my-app"},
+        }
+    ]
+    snap = store.create_graph_snapshot(
+        conn,
+        project_id,
+        snapshot_id=snapshot_id,
+        commit_sha="e13bc0081e7",
+        snapshot_kind="full",
+        graph_json={"deps_graph": {"nodes": nodes, "edges": []}},
+    )
+    store.index_graph_snapshot(conn, project_id, snap["snapshot_id"], nodes=nodes, edges=[])
+    return project_id, snapshot_id, node_id
+
+
 def test_a_persist_submit_for_review_writes_pending_review_status(conn):
     """A: state writer forces status='pending_review' under the flag."""
     snap = _create_snapshot_with_node(conn, "persist-review")
@@ -583,6 +611,89 @@ def test_b2_backfill_preserves_accepted_semantic_event_status(conn):
         (event_id,),
     ).fetchone()
     assert row["status"] == graph_events.EVENT_STATUS_ACCEPTED
+
+
+def test_b3_retry_after_reject_reproposes_external_project_semantic_event(conn):
+    """External smoke: retrying a rejected node semantic must be visible again."""
+    project_id, sid, node_id = _create_external_my_app_snapshot(conn)
+    feature_hash = "sha256:my-app-l7-3"
+
+    semantic._persist_semantic_state_to_db(
+        conn,
+        project_id,
+        sid,
+        {
+            "node_semantics": {
+                node_id: {
+                    "status": "pending_review",
+                    "feature_hash": feature_hash,
+                    "semantic_summary": "first candidate",
+                },
+            }
+        },
+        submit_for_review=False,
+    )
+    graph_events.backfill_existing_semantic_events(conn, project_id, sid, actor="test")
+    first = graph_events.list_events(
+        conn,
+        project_id,
+        sid,
+        statuses=[graph_events.EVENT_STATUS_PROPOSED],
+        event_types=["semantic_node_enriched"],
+        target_type="node",
+        target_id=node_id,
+    )
+    assert len(first) == 1
+    event_id = first[0]["event_id"]
+
+    graph_events.update_event_status(
+        conn,
+        project_id,
+        sid,
+        event_id,
+        status=graph_events.EVENT_STATUS_REJECTED,
+        actor="dashboard_user",
+    )
+    conn.execute(
+        """
+        DELETE FROM graph_semantic_nodes
+        WHERE project_id=? AND snapshot_id=? AND node_id=?
+        """,
+        (project_id, sid, node_id),
+    )
+    conn.commit()
+
+    semantic._persist_semantic_state_to_db(
+        conn,
+        project_id,
+        sid,
+        {
+            "node_semantics": {
+                node_id: {
+                    "status": "pending_review",
+                    "feature_hash": feature_hash,
+                    "semantic_summary": "retry candidate with observer rationale",
+                },
+            }
+        },
+        submit_for_review=False,
+    )
+    graph_events.backfill_existing_semantic_events(conn, project_id, sid, actor="retry")
+    proposed = graph_events.list_events(
+        conn,
+        project_id,
+        sid,
+        statuses=[graph_events.EVENT_STATUS_PROPOSED],
+        event_types=["semantic_node_enriched"],
+        target_type="node",
+        target_id=node_id,
+    )
+
+    assert len(proposed) == 1
+    assert proposed[0]["event_id"] == event_id
+    assert proposed[0]["payload"]["semantic_payload"]["semantic_summary"] == (
+        "retry candidate with observer rationale"
+    )
 
 
 def test_c_accept_semantic_enrichment_in_decision_actions():

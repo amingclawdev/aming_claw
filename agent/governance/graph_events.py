@@ -720,7 +720,19 @@ def _row_to_event(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     return item
 
 
-def _backfill_event_status(existing: dict[str, Any] | None, derived_status: str) -> str:
+def _backfill_event_status(
+    existing: dict[str, Any] | None,
+    derived_status: str,
+    *,
+    allow_rejected_reproposal: bool = False,
+) -> str:
+    if (
+        allow_rejected_reproposal
+        and existing
+        and str(existing.get("status") or "") == EVENT_STATUS_REJECTED
+        and derived_status == EVENT_STATUS_PROPOSED
+    ):
+        return derived_status
     if existing and str(existing.get("status") or "") in BACKFILL_PRESERVED_EVENT_STATUSES:
         return str(existing.get("status") or "")
     return derived_status
@@ -1747,7 +1759,11 @@ def backfill_existing_semantic_events(
                 str(row["feature_hash"] or "")[:12],
             )
             existed = get_event(conn, project_id, snapshot_id, event_id)
-            event_status = _backfill_event_status(existed, event_status)
+            event_status = _backfill_event_status(
+                existed,
+                event_status,
+                allow_rejected_reproposal=status == "pending_review",
+            )
             source_snapshot_id = str(_row_get(row, "source_snapshot_id") or "")
             if not source_snapshot_id and isinstance(semantic_payload, dict):
                 source_snapshot_id = str(semantic_payload.get("carried_forward_from_snapshot_id") or "")
@@ -1895,7 +1911,11 @@ def backfill_existing_semantic_events(
                 str(row["edge_signature_hash"] or "")[:12],
             )
             existed = get_event(conn, project_id, snapshot_id, event_id)
-            event_status = _backfill_event_status(existed, event_status)
+            event_status = _backfill_event_status(
+                existed,
+                event_status,
+                allow_rejected_reproposal=status == "pending_review",
+            )
             edge_struct = edges_by_id.get(edge_id, {})
             source_snapshot_id = str(_row_get(row, "source_snapshot_id") or "")
             if not source_snapshot_id and isinstance(semantic_entry, dict):
