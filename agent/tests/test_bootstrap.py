@@ -374,7 +374,7 @@ def test_bootstrap_project_uses_snapshot_full_reconcile(tmp_path, monkeypatch):
 
     monkeypatch.setattr(state_reconcile, "run_state_only_full_reconcile", fake_reconcile)
 
-    result = project_service.bootstrap_project(str(workspace))
+    result = project_service.bootstrap_project(str(workspace), exclude_patterns=["node"])
 
     assert result["bootstrap_mode"] == "snapshot_full_reconcile"
     assert result["snapshot_id"] == "full-bootstrap-demo"
@@ -383,7 +383,8 @@ def test_bootstrap_project_uses_snapshot_full_reconcile(tmp_path, monkeypatch):
     assert observed["activate"] is True
     assert observed["semantic_use_ai"] is False
     assert observed["semantic_enqueue_stale"] is False
-    assert observed["notes_extra"]["effective_exclude_roots"] == ["examples"]
+    assert observed["notes_extra"]["effective_exclude_roots"] == ["examples", "node"]
+    assert observed["graph_exclude_paths"] == ["examples", "node"]
 
 
 def test_bootstrap_git_gate_rejects_dirty_worktree(tmp_path, monkeypatch):

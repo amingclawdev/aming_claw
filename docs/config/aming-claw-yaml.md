@@ -123,6 +123,12 @@ Use `graph.exclude_paths` for generated artifacts, local worktrees, nested demo
 projects, and docs/dev handoff scratch space that should not become governed L4
 or L7 nodes in the parent project.
 
+Review these paths before the first bootstrap. The graph builder can only
+classify what it scans; if a project-specific generated or vendored directory
+such as `node`, `vendor`, `generated`, an embedded fixture app, or a local
+runtime checkout is not excluded, it may be materialized as normal project
+structure. Fixing that later requires updating config and rebuilding the graph.
+
 ### Companion Semantic Enrichment Config
 
 The graph scanner uses `.aming-claw.yaml` for project-level scan/runtime

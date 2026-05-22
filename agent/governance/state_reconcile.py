@@ -2226,6 +2226,8 @@ def run_state_only_full_reconcile(
     semantic_base_snapshot_id: str | None = None,
     semantic_config_path: str | Path | None = None,
     semantic_enqueue_stale: bool = True,
+    graph_exclude_paths: Any = None,
+    graph_ignore_globs: Any = None,
 ) -> dict[str, Any]:
     """Create a candidate full-reconcile graph snapshot from current files.
 
@@ -2293,6 +2295,8 @@ def run_state_only_full_reconcile(
             "semantic_layers": semantic_layers,
             "semantic_quality_flags": semantic_quality_flags,
             "semantic_missing": semantic_missing,
+            "graph_exclude_paths": graph_exclude_paths or [],
+            "graph_ignore_globs": graph_ignore_globs or [],
         },
     )
 
@@ -2301,6 +2305,8 @@ def run_state_only_full_reconcile(
         dry_run=True,
         scratch_dir=str(scratch_dir),
         run_id=rid,
+        extra_exclude_roots=list(graph_exclude_paths or []),
+        extra_ignore_globs=list(graph_ignore_globs or []),
     )
     trace.step(
         "build-graph-v2",

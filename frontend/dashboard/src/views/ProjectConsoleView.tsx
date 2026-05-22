@@ -74,6 +74,7 @@ interface Notice {
 }
 
 const CLOSED_BACKLOG_STATUSES = new Set(["FIXED", "CLOSED", "DONE", "RESOLVED", "CANCELLED"]);
+const DEFAULT_BOOTSTRAP_EXCLUDES = ["node_modules", "dist", "build", ".expo", ".next", "coverage"];
 
 export default function ProjectConsoleView({
   projects,
@@ -89,6 +90,8 @@ export default function ProjectConsoleView({
   const [refreshToken, setRefreshToken] = useState(0);
   const [workspacePath, setWorkspacePath] = useState(initialWorkspacePath ?? "");
   const [projectName, setProjectName] = useState("");
+  const [bootstrapExcludePaths, setBootstrapExcludePaths] = useState(DEFAULT_BOOTSTRAP_EXCLUDES.join("\n"));
+  const [excludeReviewConfirmed, setExcludeReviewConfirmed] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [actionState, setActionState] = useState<{ key: string; label: string } | null>(null);
   const [actionStartedAt, setActionStartedAt] = useState<number | null>(null);
@@ -176,17 +179,29 @@ export default function ProjectConsoleView({
       setNotice({ kind: "error", message: "Workspace path is required." });
       return;
     }
+    const excludePaths = parseBootstrapExcludePaths(bootstrapExcludePaths);
+    if (!excludeReviewConfirmed) {
+      setNotice({
+        kind: "error",
+        message: "Confirm excluded directories before bootstrap so generated or local-only files do not enter the graph.",
+      });
+      return;
+    }
     setActionState({ key: "bootstrap", label: "Bootstrapping" });
     setActionStartedAt(Date.now());
-    setNotice({ kind: "info", message: "Bootstrapping project..." });
+    setNotice({ kind: "info", message: `Bootstrapping project with ${excludePaths.length} excluded path(s)...` });
     try {
       const result = await api.bootstrapProject({
         workspace_path: path,
         project_name: projectName.trim() || undefined,
         scan_depth: 3,
+        exclude_patterns: excludePaths,
+        config_override: { graph: { exclude_paths: excludePaths } },
       });
       setWorkspacePath("");
       setProjectName("");
+      setBootstrapExcludePaths(DEFAULT_BOOTSTRAP_EXCLUDES.join("\n"));
+      setExcludeReviewConfirmed(false);
       setNotice({
         kind: "success",
         message: `Bootstrapped ${result.project_id}${result.snapshot_id ? ` · ${result.snapshot_id}` : ""}`,
@@ -380,6 +395,32 @@ export default function ProjectConsoleView({
               onChange={(event) => setProjectName(event.target.value)}
               placeholder="optional"
             />
+          </label>
+          <label className="project-bootstrap-excludes">
+            <span>Exclude paths before graph build</span>
+            <textarea
+              data-testid="project-import-exclude-paths"
+              value={bootstrapExcludePaths}
+              onChange={(event) => {
+                setBootstrapExcludePaths(event.target.value);
+                setExcludeReviewConfirmed(false);
+              }}
+              placeholder={"node_modules\ndist\nbuild\ncoverage"}
+              rows={4}
+            />
+            <small>
+              One path prefix per line. Add project-specific generated, vendored, nested, or scratch directories
+              such as <code>node</code>, <code>vendor</code>, generated clients, fixture clones, or docs scratch roots.
+            </small>
+          </label>
+          <label className="project-bootstrap-confirm">
+            <input
+              type="checkbox"
+              data-testid="project-import-exclude-confirm"
+              checked={excludeReviewConfirmed}
+              onChange={(event) => setExcludeReviewConfirmed(event.target.checked)}
+            />
+            <span>I reviewed which directories should not be included in the graph.</span>
           </label>
           <button
             className="action-btn action-btn-primary"
@@ -915,6 +956,16 @@ function formatSeconds(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
   const rest = seconds % 60;
   return `${minutes}m ${rest}s`;
+}
+
+function parseBootstrapExcludePaths(value: string): string[] {
+  const seen = new Set<string>();
+  for (const raw of value.split(/[\n,]+/)) {
+    const normalized = raw.replace(/\\/g, "/").trim().replace(/^\/+|\/+$/g, "");
+    if (!normalized || normalized === "." || seen.has(normalized)) continue;
+    seen.add(normalized);
+  }
+  return Array.from(seen);
 }
 
 function errorMessage(error: unknown): string {

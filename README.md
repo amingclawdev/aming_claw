@@ -277,7 +277,14 @@ URL drop → `aming-claw plugin doctor` → `aming-claw start` → open `/dashbo
 
 ![Bootstrap a project — pick a workspace, build the commit-bound graph, watch nodes appear](docs/assets/demos/bootstrap.gif)
 
-Choose a clean project, build the graph, watch nodes appear in Projects/Graph.
+Choose a clean project, review exclude paths, build the graph, watch nodes
+appear in Projects/Graph.
+
+The Projects bootstrap form asks you to confirm which path prefixes should not
+enter the graph. Defaults cover common folders such as `node_modules`, `dist`,
+`build`, `.expo`, `.next`, and `coverage`, but project-specific names such as
+`node`, `vendor`, local model checkouts, generated SDKs, scratch worktrees, or
+fixture clones should be added before the first graph build.
 
 ### Inspect code through the graph
 
@@ -338,7 +345,7 @@ implement the scoped change, run focused tests, then report evidence.
 ```
 
 The observer handles the MCP calls and local checks: backlog first, graph first,
-scoped edits, focused tests, optional `aming-claw mf precommit-check`, then a
+scoped edits, focused tests, `preflight_check` when MCP is available, then a
 reviewable summary. Commit, reconcile, and backlog close can wait for explicit
 user approval.
 
@@ -785,6 +792,17 @@ scans the workspace, and builds a commit-bound graph snapshot through
 is not the bootstrap API. If the target workspace is a dirty git repo,
 commit/stash first.
 
+Before bootstrap, the dashboard asks the operator to confirm the path prefixes
+that should be excluded from graph scanning. The defaults handle common
+generated folders, but the operator must catch project-local names such as
+`node`, `vendor`, generated clients, embedded example repos, temporary
+worktrees, and large downloaded assets. Those reviewed paths are passed into
+bootstrap as graph excludes. Source-controlled projects can also keep the same
+contract in `.aming-claw.yaml` under `graph.exclude_paths`,
+`graph.ignore_globs`, or `graph.nested_projects`; otherwise unwanted folders
+may be materialized as real nodes and pollute review context until the project
+is reconfigured and rebuilt.
+
 For Aming Claw internals, an active local `project_id="aming-claw"` graph is not
 required for the plugin to be usable. Use `aming-claw://seed-graph-summary` as
 the packaged MVP navigation map when no active self graph exists. Use
@@ -804,7 +822,6 @@ aming-claw backlog import --project-id <id> --input backlog.json --dry-run
 aming-claw start           # start governance locally
 aming-claw open            # open the dashboard
 aming-claw status          # check governance health
-aming-claw mf precommit-check # run manual-fix plugin update guards
 aming-claw bootstrap       # register a project workspace
 aming-claw scan            # scan an external project
 ```
@@ -813,6 +830,7 @@ Repo-local diagnostic helper:
 
 ```bash
 python scripts/check_self_graph_bundle.py --json-output
+python -m agent.cli mf precommit-check --json-output
 ```
 
 ## Packaging

@@ -325,6 +325,11 @@ function verifyProjectImportUiContract() {
   assert(viewSource.includes("Directory picker unavailable. Paste the path manually."), "Projects page should gracefully fall back to manual path entry");
   assert(viewSource.includes("AbortController"), "Projects page directory picker must client-timeout instead of hanging");
   assert(viewSource.includes("actionState?.key === \"bootstrap\""), "Bootstrap button should remain usable while directory picker is trying");
+  assert(viewSource.includes('data-testid="project-import-exclude-paths"'), "Projects bootstrap form should expose exclude path review");
+  assert(viewSource.includes('data-testid="project-import-exclude-confirm"'), "Projects bootstrap form should require exclude path confirmation");
+  assert(viewSource.includes("parseBootstrapExcludePaths"), "Projects bootstrap should normalize exclude path input before submit");
+  assert(viewSource.includes("config_override: { graph: { exclude_paths: excludePaths } }"), "Projects bootstrap should send reviewed excludes into project config");
+  assert(apiSource.includes("exclude_patterns?: string[]"), "dashboard API client missing bootstrap exclude pattern contract");
   assert(apiSource.includes("/api/local/choose-directory"), "dashboard API client missing directory picker endpoint");
   assert(apiSource.includes("timeout_seconds?: number"), "dashboard API client missing directory picker timeout contract");
   assert(serverSource.includes("_open_local_directory_picker_windows"), "backend missing Windows directory picker fallback");

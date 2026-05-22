@@ -1092,9 +1092,55 @@ a:hover { text-decoration: underline; }
   min-width: 0;
 }
 
-.project-bootstrap input:focus {
+.project-bootstrap textarea {
+  min-height: 78px;
+  border: 1px solid var(--ink-200);
+  border-radius: 6px;
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--ink-800);
+  background: #fff;
+  min-width: 0;
+  resize: vertical;
+}
+
+.project-bootstrap input:focus,
+.project-bootstrap textarea:focus {
   outline: 2px solid rgba(79, 70, 229, 0.16);
   border-color: var(--indigo);
+}
+
+.project-bootstrap-excludes {
+  grid-column: 1 / -1;
+}
+
+.project-bootstrap-excludes small {
+  color: var(--ink-500);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.project-bootstrap-confirm {
+  grid-column: 1 / -2;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+}
+
+.project-bootstrap-confirm input {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+}
+
+.project-bootstrap-confirm span {
+  color: var(--ink-700) !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  text-transform: none !important;
+  letter-spacing: 0 !important;
 }
 
 .project-import-directory-btn {

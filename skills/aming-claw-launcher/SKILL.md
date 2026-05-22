@@ -124,8 +124,17 @@ POST http://127.0.0.1:40000/api/project/bootstrap
 
 For explicit bootstrap, infer the project id from the folder name and use common
 excludes such as `node_modules`, `dist`, `build`, `.expo`, `.next`, and
-`coverage`. Bootstrap builds a commit-bound graph; if the workspace is a dirty
-git repo, ask the user to commit/stash first.
+`coverage`. Before calling bootstrap, inspect the target root or ask the user
+to confirm the dashboard exclude-path field: project-specific generated,
+vendored, nested, or tool-owned directories such as `node`, `vendor`,
+generated clients, fixture clones, scratch worktrees, or downloaded assets
+should be added before graph build. Source-controlled projects can keep the
+same rule in `graph.exclude_paths`, `graph.ignore_globs`, or
+`graph.nested_projects`. When bootstrapping from an AI session instead of the
+dashboard form, surface this as an explicit visible reminder before calling the
+bootstrap API/CLI, and include the reviewed exclude list in the bootstrap
+request. Bootstrap builds a commit-bound graph; if the workspace is a dirty git
+repo, ask the user to commit/stash first.
 
 ## MVP Graph Model
 

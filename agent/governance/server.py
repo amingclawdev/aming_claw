@@ -969,7 +969,7 @@ def handle_project_bootstrap(ctx: RequestContext):
     Body: {
         "workspace_path": "/path/to/project" (required),
         "project_name": "my-project" (optional),
-        "config_override": {} (optional),
+        "config_override": {"graph": {"exclude_paths": [], "ignore_globs": []}} (optional),
         "scan_depth": 3 (optional),
         "exclude_patterns": [] (optional),
     }

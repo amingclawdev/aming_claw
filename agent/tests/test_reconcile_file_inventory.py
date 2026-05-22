@@ -418,3 +418,27 @@ def test_phase_z_artifact_contains_file_inventory(tmp_path):
     assert service_row["file_hash"].startswith("sha256:")
     assert service_row["size_bytes"] > 0
     assert "confidence" not in json.dumps(service_row)
+
+
+def test_phase_z_artifact_respects_runtime_extra_excludes(tmp_path):
+    from agent.governance.reconcile_phases.phase_z_v2 import build_graph_v2_from_symbols
+
+    project = tmp_path / "project"
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    _write(str(project / "agent" / "service.py"), "def run():\n    return 1\n")
+    _write(str(project / "node" / "tool.py"), "def local_tool():\n    return 2\n")
+
+    result = build_graph_v2_from_symbols(
+        str(project),
+        dry_run=True,
+        scratch_dir=str(scratch),
+        run_id="phase-z-runtime-excludes",
+        extra_exclude_roots=["node"],
+    )
+
+    inventory_paths = {row["path"] for row in result["file_inventory"]}
+    graph_paths = json.dumps(result)
+    assert "agent/service.py" in inventory_paths
+    assert "node/tool.py" not in inventory_paths
+    assert "node/tool.py" not in graph_paths

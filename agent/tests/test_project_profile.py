@@ -123,6 +123,26 @@ def test_project_profile_respects_graph_exclude_paths_and_nested_projects(tmp_pa
     )
 
 
+def test_project_profile_respects_runtime_extra_excludes(tmp_path):
+    project = tmp_path / "project"
+    _write(str(project / "src" / "app.py"), "def app():\n    pass\n")
+    _write(str(project / "node" / "tool.py"), "def local_tool():\n    pass\n")
+    _write(str(project / "generated" / "client.py"), "def generated_client():\n    pass\n")
+
+    profile = discover_project_profile(
+        str(project),
+        extra_exclude_roots=["node"],
+        extra_ignore_globs=["generated/**"],
+    )
+
+    assert "node" in profile.exclude_roots
+    assert "src" in profile.source_roots
+    assert "node" not in profile.source_roots
+    assert profile.is_production_source_path("src/app.py")
+    assert not profile.is_production_source_path("node/tool.py")
+    assert not profile.is_production_source_path("generated/client.py")
+
+
 def test_project_profile_respects_graph_ignore_globs(tmp_path):
     project = tmp_path / "project"
     _write(

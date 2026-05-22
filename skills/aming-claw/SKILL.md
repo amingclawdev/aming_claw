@@ -63,6 +63,14 @@ A missing active graph for `aming-claw` is not an install failure. A missing
 active graph for the user's target project means the project should be
 registered/bootstraped before graph-backed governance is available.
 
+For Aming Claw internals, prefer live graph queries and the active semantic
+projection when available. If a new session needs a compact orientation, use
+these fallback references after checking graph/runtime status:
+
+- `skills/aming-claw/references/architecture-map.md`
+- `skills/aming-claw/references/semantic-control-loop.md`
+- `skills/aming-claw/references/graph-repair-and-reconcile.md`
+
 ## Commit-Bound Graph
 
 Graph snapshots are commit-bound. They represent the selected ref/HEAD commit,
@@ -121,7 +129,16 @@ initialization, registration, or bootstrap. Use governance, not ServiceManager:
 For an explicit "initialize this project" request, infer `project_id` from the
 folder name, `workspace_path` from the current workspace root, language from
 project files when obvious, and common excludes such as `node_modules`, `dist`,
-`build`, `.expo`, `.next`, and `coverage`. After bootstrap, open:
+`build`, `.expo`, `.next`, and `coverage`. Before bootstrapping, inspect the
+target root or ask the user to confirm the dashboard exclude-path field:
+project-specific generated, vendored, nested, or tool-owned directories such as
+`node`, `vendor`, generated clients, fixture clones, scratch worktrees, or
+downloaded assets should be added before graph build. Source-controlled
+projects can keep the same rule in `graph.exclude_paths`, `graph.ignore_globs`,
+or `graph.nested_projects`. When bootstrapping from an AI session instead of
+the dashboard form, surface this as an explicit visible reminder before calling
+the bootstrap API/CLI, and include the reviewed exclude list in the bootstrap
+request. After bootstrap, open:
 `http://127.0.0.1:40000/dashboard?project_id=<project_id>&view=projects`.
 
 ## Semantic Enrichment MVP
@@ -435,8 +452,11 @@ Before closing a row:
 3. Commit explicit files only.
 4. Restart/redeploy governance or ServiceManager when runtime code changed.
 5. Re-run `version_check` and confirm runtime matches HEAD.
-6. Re-run `preflight_check` or `aming-claw mf precommit-check` and confirm
-   `plugin_update_state` has no blockers.
+6. Re-run `preflight_check` when MCP is available and confirm
+   `plugin_update_state` has no blockers. As supplemental local evidence from
+   the repo checkout, `python -m agent.cli mf precommit-check --json-output`
+   can be used. Do not assume a stale installed `aming-claw` shell command has
+   the same subcommands until plugin/CLI update aftercare has run.
 7. Check graph status and operations queue; if graph is stale, run direct Update graph/scope reconcile before claiming dashboard state is current. Explicit pending-scope queueing is legacy/debug only.
 8. Confirm E2E impact is current, deferred with a backlog row, or explicitly not applicable.
 9. Close the backlog row with commit evidence.

@@ -43,7 +43,11 @@ Use `[observer-hotfix]` or `manual fix:` in the subject when this is a true MF b
 
 1. Restart/redeploy changed runtime services when needed.
 2. Run `version_check`; require `ok=true`, `dirty=false`, and runtime matching HEAD for runtime changes.
-3. Run `preflight_check` or `aming-claw mf precommit-check`; require no `plugin_update_state` blockers.
+3. Run MCP `preflight_check`; require no `plugin_update_state` blockers. As
+   supplemental local evidence from the repo checkout, run
+   `python -m agent.cli mf precommit-check --json-output`. Do not assume a
+   stale installed `aming-claw` shell command has the same subcommands until
+   plugin/CLI update aftercare has run.
 4. Check graph status. If HEAD is ahead of the active graph, run direct Update graph/scope reconcile before telling a dashboard user the graph is current. Explicit pending-scope queueing is legacy/debug only.
 5. Rebuild or refresh semantic projection when dashboard semantic state changed.
 6. Confirm the E2E impact decision is current, deferred with a backlog row, or explicitly not applicable.

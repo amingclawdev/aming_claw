@@ -2854,6 +2854,7 @@ def append_filetree_fallback_source_nodes(
             run_id="filetree-fallback",
             nodes=nodes,
             feature_clusters=[],
+            profile=profile,
         )
     except Exception:
         return []
@@ -4754,6 +4755,8 @@ def build_graph_v2_from_symbols(
     owner: Optional[str] = None,
     scratch_dir: Optional[str] = None,
     run_id: Optional[str] = None,
+    extra_exclude_roots: Optional[List[str]] = None,
+    extra_ignore_globs: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Orchestrate the full symbol-level topology pipeline.
 
@@ -4768,7 +4771,11 @@ def build_graph_v2_from_symbols(
     # Step 1: PR1 — parse + call graph + SCC
     from agent.governance.project_profile import discover_project_profile
 
-    profile = discover_project_profile(project_root)
+    profile = discover_project_profile(
+        project_root,
+        extra_exclude_roots=extra_exclude_roots,
+        extra_ignore_globs=extra_ignore_globs,
+    )
     modules = parse_production_modules(project_root, profile=profile)
     call_graph = build_call_graph(modules)
     graph_enrich_config_rules = _load_graph_enrich_config_rules(project_root)
@@ -4863,6 +4870,7 @@ def build_graph_v2_from_symbols(
             run_id=run_id,
             nodes=nodes,
             feature_clusters=feature_clusters,
+            profile=profile,
         )
         file_inventory_summary = summarize_file_inventory(file_inventory)
     except Exception:

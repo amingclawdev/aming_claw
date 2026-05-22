@@ -741,6 +741,12 @@ def bootstrap_project(
                     for value in graph_override.get("exclude_paths") or []
                     if str(value or "").strip()
                 ]
+            if "ignore_globs" in graph_override:
+                config.graph.ignore_globs = [
+                    str(value).replace("\\", "/").strip().strip("/")
+                    for value in graph_override.get("ignore_globs") or []
+                    if str(value or "").strip()
+                ]
         if "ai" in config_override and isinstance(config_override["ai"], dict):
             ai_override = config_override["ai"]
             if isinstance(ai_override.get("routing"), dict):
@@ -797,6 +803,11 @@ def bootstrap_project(
             message="Scanning files and building graph snapshot.",
         )
         configured_excludes = effective_graph_exclude_roots(config)
+        configured_ignore_globs = [
+            str(value).replace("\\", "/").strip().strip("/")
+            for value in (getattr(getattr(config, "graph", None), "ignore_globs", []) or [])
+            if str(value or "").strip()
+        ]
         effective_excludes = sorted({
             str(value).replace("\\", "/").strip().strip("/")
             for value in ((exclude_patterns or []) + configured_excludes)
@@ -834,12 +845,15 @@ def bootstrap_project(
                 notes_extra={
                     "source": "bootstrap_project_v2",
                     "effective_exclude_roots": effective_excludes,
+                    "effective_ignore_globs": configured_ignore_globs,
                     "scan_depth": scan_depth,
                     "git_gate": git_gate,
                 },
                 semantic_enrich=True,
                 semantic_use_ai=False,
                 semantic_enqueue_stale=False,
+                graph_exclude_paths=effective_excludes,
+                graph_ignore_globs=configured_ignore_globs,
             )
             conn.commit()
 

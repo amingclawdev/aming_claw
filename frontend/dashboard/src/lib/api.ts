@@ -120,7 +120,13 @@ export const api = {
     );
   },
   bootstrapProject(
-    payload: { workspace_path: string; project_name?: string; scan_depth?: number },
+    payload: {
+      workspace_path: string;
+      project_name?: string;
+      scan_depth?: number;
+      exclude_patterns?: string[];
+      config_override?: { graph?: { exclude_paths?: string[]; ignore_globs?: string[] } };
+    },
     signal?: AbortSignal,
   ) {
     return postJSON<BootstrapProjectResponse>("/api/project/bootstrap", payload, signal);

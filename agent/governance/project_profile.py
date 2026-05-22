@@ -10,7 +10,7 @@ import os
 import fnmatch
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 
 from agent.governance.language_policy import DEFAULT_LANGUAGE_POLICY, LanguagePolicy
 
@@ -70,7 +70,11 @@ class ProjectProfile:
         )
 
 
-def discover_project_profile(project_root: str) -> ProjectProfile:
+def discover_project_profile(
+    project_root: str,
+    extra_exclude_roots: Optional[Iterable[str]] = None,
+    extra_ignore_globs: Optional[Iterable[str]] = None,
+) -> ProjectProfile:
     """Discover a minimal language/profile boundary map for *project_root*."""
     root = Path(project_root).resolve()
     manifests = _discover_manifests(root)
@@ -80,8 +84,9 @@ def discover_project_profile(project_root: str) -> ProjectProfile:
     exclude_roots = _merge_roots(
         _discover_existing_excludes(root),
         _configured_exclude_roots(root),
+        extra_exclude_roots or [],
     )
-    ignore_globs = _configured_ignore_globs(root)
+    ignore_globs = _merge_roots(_configured_ignore_globs(root), extra_ignore_globs or [])
     source_roots = _discover_source_roots(root, test_roots, doc_roots, exclude_roots)
 
     if not source_roots:

@@ -39,9 +39,11 @@ because `/api/projects` is empty.
 Use the dashboard Projects page first:
 
 1. Choose or paste the target workspace path.
-2. Give it a project name/id.
-3. Click Bootstrap or Build graph.
-4. Watch progress in Projects/Operations Queue.
+2. Review the exclude-path field. Confirm which generated, vendored, nested, or
+   tool-owned directories should be excluded before graph build.
+3. Give it a project name/id.
+4. Click Bootstrap or Build graph.
+5. Watch progress in Projects/Operations Queue.
 
 Bootstrap mutates Aming Claw governance state: it writes project registry/DB
 rows, scans the workspace, and creates a commit-bound graph snapshot. It uses
@@ -57,6 +59,26 @@ Use common excludes for generated folders:
 
 ```text
 node_modules, dist, build, .expo, .next, coverage
+```
+
+Also check for project-specific names that are not safe defaults, such as
+`node`, `vendor`, generated SDK/client folders, local model downloads, embedded
+example repositories, fixture clones, scratch worktrees, and large build/cache
+roots. The dashboard bootstrap form requires this review before it submits. If
+they should not become governed L4/L7 nodes, add them before first bootstrap:
+
+```yaml
+graph:
+  exclude_paths:
+    - "node"
+    - "vendor"
+    - "generated"
+  ignore_globs:
+    - "**/*.generated.*"
+  nested_projects:
+    mode: "exclude"
+    roots:
+      - "examples/fixture-app"
 ```
 
 If the target workspace is a dirty git repo, commit/stash first. Dirty

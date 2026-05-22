@@ -198,7 +198,7 @@ These rules are **not guidelines**. Violation constitutes a governance breach:
 | R12 | Per-project chain history cache | Every manual fix commit | After commit, the per-project chain history cache at `agent/governance/chain_history/{project_id}.json` will be updated on next governance startup or bootstrap. Manual fixes that add commits without trailers will be detected as `legacy_inferred` entries in the cache. No manual action needed — the cache updates incrementally. |
 | R13 | Graph-first reuse check | Every AI-authored manual fix or implementation task | MUST inspect the active graph or graph snapshot for target files, nearby modules, existing nodes, and reusable subsystems before creating new modules or abstractions. The execution record must list reused graph nodes/modules or state that the graph was unavailable and why. |
 | R14 | E2E impact gate | New feature, user-visible behavior change, dashboard operator path, graph/reconcile/bootstrap/project-config behavior, semantic job/review/cancel/backlog behavior, or any change to a feature already covered by an E2E suite | MUST record an E2E impact decision before close: run or add/update the relevant E2E and record evidence, or file a follow-up backlog row when the E2E is deferred. Live-AI, DB-mutating, or human-approval E2E may be deferred, but only with an explicit backlog row and reason. |
-| R15 | Plugin update state gate | Every manual fix before commit and before close | MUST run `preflight_check` or `aming-claw mf precommit-check` and resolve any `plugin_update_state` blocker. `update_available` and missing state are warnings that must be recorded, not blockers. `applied_pending_restart`, failed update state, or unsatisfied MCP/governance/ServiceManager restart obligations MUST be resolved before closing the MF row. |
+| R15 | Plugin update state gate | Every manual fix before commit and before close | MUST run MCP `preflight_check` and resolve any `plugin_update_state` blocker. `python -m agent.cli mf precommit-check --json-output` can be used as supplemental local evidence from the repo checkout; do not assume a stale installed `aming-claw` shell command has the same subcommands until plugin/CLI update aftercare has run. `update_available` and missing state are warnings that must be recorded, not blockers. `applied_pending_restart`, failed update state, or unsatisfied MCP/governance/ServiceManager restart obligations MUST be resolved before closing the MF row. |
 
 ---
 
@@ -291,7 +291,7 @@ A false positive classification requires **at least 3 of the following 5 criteri
 | E3 | Node has other primary files that are unchanged | Node's `primary` field lists multiple files; others are not in the dirty set |
 | E4 | Related tests pass | `pytest agent/tests/test_<module>.py` exits 0 |
 | E5 | Preflight baseline unchanged | `preflight_check` shows no new blockers compared to Phase 0 |
-| E6 | Plugin update state clear | `preflight_check` / `aming-claw mf precommit-check` reports no `plugin_update_state` blockers |
+| E6 | Plugin update state clear | MCP `preflight_check` reports no `plugin_update_state` blockers; optional checkout-local CLI guard agrees |
 
 ### Required Documentation
 
@@ -730,7 +730,7 @@ Phase 4: POST-COMMIT VERIFY
   $ restart governance
   $ version_check -> ok=true, dirty=false
   $ preflight_check -> compare: 0 blockers (same as baseline), no regression
-  $ aming-claw mf precommit-check -> plugin_update_state has no blockers
+  $ python -m agent.cli mf precommit-check --json-output -> plugin_update_state has no blockers
   $ wf_impact(server.py) -> confirm 15 nodes (unchanged)
   $ task_create type=test for L4.15 verification (Rule R3)
 
