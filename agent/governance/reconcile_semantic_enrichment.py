@@ -11,6 +11,7 @@ import copy
 import hashlib
 import json
 import sqlite3
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import nullcontext
@@ -2515,8 +2516,12 @@ def _aggregate_chunked_semantic_response(
             "slice_index": slice_plan.get("slice_index", 0),
             "covered_functions": slice_plan.get("covered_functions") or [],
             "function_hashes": slice_plan.get("function_hashes") or {},
+            "feature_name": str(response.get("feature_name") or ""),
             "semantic_summary": str(response.get("semantic_summary") or response.get("purpose") or ""),
+            "intent": str(response.get("intent") or response.get("purpose") or ""),
+            "domain_label": str(response.get("domain_label") or ""),
             "self_check": response.get("self_check") if isinstance(response.get("self_check"), dict) else {},
+            "reused": bool(response.get("_semantic_slice_reused")),
         })
     def collect(key: str) -> list[Any]:
         out: list[Any] = []
@@ -2560,6 +2565,7 @@ def _aggregate_chunked_semantic_response(
             "function_count": plan.get("function_count", 0),
             "slice_count": len(slice_records),
             "completed_slice_count": len(slice_records),
+            "reused_slice_count": sum(1 for item in ok_responses if item.get("_semantic_slice_reused")),
             "slices": slice_records,
         },
         "_ai_route": first.get("_ai_route") or {},
@@ -2569,6 +2575,40 @@ def _aggregate_chunked_semantic_response(
             if isinstance(item.get("_ai_elapsed_ms") or 0, int)
         ),
     }
+
+
+def _reusable_semantic_slice_response(
+    existing_semantic: dict[str, Any],
+    slice_plan: dict[str, Any],
+) -> dict[str, Any] | None:
+    chunking = existing_semantic.get("semantic_chunking") if isinstance(existing_semantic, dict) else {}
+    if not isinstance(chunking, dict) or chunking.get("mode") != "function_slices":
+        return None
+    if chunking.get("status") not in {"complete", "not_needed"}:
+        return None
+    target_hashes = _hash_map(slice_plan.get("function_hashes"))
+    if not target_hashes:
+        return None
+    for raw in chunking.get("slices") or []:
+        if not isinstance(raw, dict):
+            continue
+        stored_hashes = _hash_map(raw.get("function_hashes"))
+        if stored_hashes != target_hashes:
+            continue
+        summary = str(raw.get("semantic_summary") or raw.get("purpose") or "").strip()
+        if not summary:
+            return None
+        self_check = raw.get("self_check") if isinstance(raw.get("self_check"), dict) else {}
+        return {
+            "feature_name": str(raw.get("feature_name") or ""),
+            "semantic_summary": summary,
+            "intent": str(raw.get("intent") or raw.get("purpose") or ""),
+            "domain_label": str(raw.get("domain_label") or ""),
+            "self_check": self_check,
+            "_semantic_slice_reused": True,
+            "_semantic_slice_reuse_reason": "function_hashes_match",
+        }
+    return None
 
 
 def _safe_node_filename(node_id: str) -> str:
@@ -3432,6 +3472,8 @@ def _carry_forward_semantic_graph_state(
         return {
             "base_snapshot_id": base_snapshot_id,
             "carried_forward_count": 0,
+            "carried_forward_source_match_count": 0,
+            "carried_forward_partial_count": 0,
             "skipped_existing_count": 0,
             "skipped_missing_node_count": 0,
             "skipped_hash_mismatch_count": 0,
@@ -3442,6 +3484,8 @@ def _carry_forward_semantic_graph_state(
         }
 
     carried = 0
+    carried_source_match = 0
+    carried_partial = 0
     skipped_existing = 0
     skipped_missing = 0
     skipped_hash = 0
@@ -3459,22 +3503,36 @@ def _carry_forward_semantic_graph_state(
                 continue
             base_hash = str(raw_entry.get("feature_hash") or "")
             current_hash = str(feature.get("feature_hash") or "")
-            if not base_hash or not current_hash or base_hash != current_hash:
+            validation = _semantic_state_validation(feature, raw_entry)
+            source_valid = bool(validation.get("source_semantic_valid"))
+            function_mismatch = str(validation.get("function_hash_status") or "") == "mismatch"
+            if not source_valid and not function_mismatch:
                 skipped_hash += 1
                 continue
             entry = dict(raw_entry)
             entry["carried_forward_from_snapshot_id"] = base_snapshot_id
             entry["carried_forward_at"] = updated_at
-            entry["feature_hash"] = current_hash
+            entry["semantic_state_carry_forward_validation"] = validation
+            entry["semantic_state_carry_forward_valid"] = bool(source_valid)
+            entry["semantic_state_carry_forward_hash_validation"] = str(
+                validation.get("hash_validation") or ""
+            )
+            if source_valid:
+                carried_source_match += 1
+                entry["feature_hash"] = current_hash or base_hash
+            else:
+                carried_partial += 1
+                entry["feature_hash"] = base_hash
             entry["primary"] = _path_list(feature.get("primary"))
             entry["secondary"] = _path_list(feature.get("secondary"))
             entry["test"] = _path_list(feature.get("test"))
             entry["config"] = _path_list(feature.get("config"))
-            entry["file_hashes"] = feature.get("file_hashes") or entry.get("file_hashes") or {}
-            entry["function_hashes"] = feature.get("function_hashes") or entry.get("function_hashes") or {}
-            entry["test_function_hashes"] = (
-                feature.get("test_function_hashes") or entry.get("test_function_hashes") or {}
-            )
+            if source_valid:
+                entry["file_hashes"] = feature.get("file_hashes") or entry.get("file_hashes") or {}
+                entry["function_hashes"] = feature.get("function_hashes") or entry.get("function_hashes") or {}
+                entry["test_function_hashes"] = (
+                    feature.get("test_function_hashes") or entry.get("test_function_hashes") or {}
+                )
             entry["test_functions"] = _path_list(feature.get("test_functions") or entry.get("test_functions"))
             entry["test_function_lines"] = (
                 feature.get("test_function_lines") or entry.get("test_function_lines") or {}
@@ -3522,6 +3580,8 @@ def _carry_forward_semantic_graph_state(
     return {
         "base_snapshot_id": base_snapshot_id,
         "carried_forward_count": carried,
+        "carried_forward_source_match_count": carried_source_match,
+        "carried_forward_partial_count": carried_partial,
         "skipped_existing_count": skipped_existing,
         "skipped_missing_node_count": skipped_missing,
         "skipped_hash_mismatch_count": skipped_hash,
@@ -3952,41 +4012,144 @@ def _rebuild_semantic_graph_state_indexes(state: dict[str, Any]) -> None:
     state["semantic_job_counts"] = dict(sorted(job_counts.items()))
 
 
+def _hash_map(raw: Any) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(key): str(value)
+        for key, value in raw.items()
+        if str(key) and str(value)
+    }
+
+
+def _hash_map_status(current: Any, stored: Any) -> str:
+    current_hashes = _hash_map(current)
+    stored_hashes = _hash_map(stored)
+    if not current_hashes or not stored_hashes:
+        return "unknown"
+    return "match" if current_hashes == stored_hashes else "mismatch"
+
+
+def _hash_map_diff(current: Any, stored: Any, *, label: str) -> dict[str, Any]:
+    current_hashes = _hash_map(current)
+    stored_hashes = _hash_map(stored)
+    changed_key = f"changed_{label}_ids"
+    missing_key = f"missing_{label}_ids"
+    removed_key = f"removed_{label}_ids"
+    status_key = f"{label}_hash_status"
+    match_key = f"{label}_hash_match"
+    if not current_hashes or not stored_hashes:
+        return {
+            status_key: "unknown",
+            match_key: True,
+            changed_key: [],
+            missing_key: [],
+            removed_key: [],
+        }
+    changed = sorted(
+        item_id
+        for item_id, value in current_hashes.items()
+        if item_id in stored_hashes and str(stored_hashes.get(item_id) or "") != str(value or "")
+    )
+    missing = sorted(item_id for item_id in current_hashes if item_id not in stored_hashes)
+    removed = sorted(item_id for item_id in stored_hashes if item_id not in current_hashes)
+    status = "mismatch" if changed or missing or removed else "match"
+    return {
+        status_key: status,
+        match_key: status == "match",
+        changed_key: changed,
+        missing_key: missing,
+        removed_key: removed,
+    }
+
+
 def _file_hashes_match(current: Any, stored: Any) -> bool:
-    current_hashes = current if isinstance(current, dict) else {}
-    stored_hashes = stored if isinstance(stored, dict) else {}
+    current_hashes = _hash_map(current)
+    stored_hashes = _hash_map(stored)
     if not current_hashes or not stored_hashes:
         return True
     return current_hashes == stored_hashes
 
 
 def _semantic_state_validation(feature: dict[str, Any], state_entry: dict[str, Any]) -> dict[str, Any]:
+    started = time.perf_counter()
     current_hash = str(feature.get("feature_hash") or "")
     stored_hash = str(state_entry.get("feature_hash") or "")
     feature_hash_match = bool(current_hash and stored_hash and current_hash == stored_hash)
-    file_hash_match = _file_hashes_match(feature.get("file_hashes"), state_entry.get("file_hashes"))
-    function_hash_match = _file_hashes_match(
+    file_hash_status = _hash_map_status(feature.get("file_hashes"), state_entry.get("file_hashes"))
+    file_hash_match = file_hash_status in {"match", "unknown"}
+    function_hash_diff = _hash_map_diff(
         feature.get("function_hashes"),
         state_entry.get("function_hashes"),
+        label="function",
     )
-    test_function_hash_match = _file_hashes_match(
+    test_function_hash_diff = _hash_map_diff(
         feature.get("test_function_hashes"),
         state_entry.get("test_function_hashes"),
+        label="test_function",
     )
-    status = (
-        "current"
-        if feature_hash_match and file_hash_match and function_hash_match and test_function_hash_match
-        else "stale_hash_mismatch"
+    function_hash_status = str(function_hash_diff.get("function_hash_status") or "unknown")
+    test_function_hash_status = str(test_function_hash_diff.get("test_function_hash_status") or "unknown")
+    function_hash_match = bool(function_hash_diff.get("function_hash_match", True))
+    test_function_hash_match = bool(test_function_hash_diff.get("test_function_hash_match", True))
+    stored_function_hashes = _hash_map(state_entry.get("function_hashes"))
+    current_function_hashes = _hash_map(feature.get("function_hashes"))
+    strict_valid = bool(
+        feature_hash_match
+        and file_hash_match
+        and function_hash_match
+        and test_function_hash_match
     )
+    source_function_matched = bool(
+        function_hash_status == "match"
+        and stored_function_hashes
+        and current_function_hashes
+    )
+    source_semantic_valid = strict_valid or source_function_matched
+    context_valid = bool(strict_valid or (source_function_matched and test_function_hash_match and file_hash_match))
+    if strict_valid:
+        status = "current"
+        hash_validation = "matched"
+    elif source_function_matched:
+        status = "source_current_context_stale" if not context_valid else "source_current"
+        if not test_function_hash_match:
+            hash_validation = "test_function_hash_mismatch"
+        elif not file_hash_match:
+            hash_validation = "file_hash_mismatch"
+        else:
+            hash_validation = "function_hash_matched"
+    elif function_hash_status == "mismatch":
+        status = "stale_hash_mismatch"
+        hash_validation = "function_hash_mismatch"
+    elif test_function_hash_status == "mismatch":
+        status = "stale_hash_mismatch"
+        hash_validation = "test_function_hash_mismatch"
+    elif not feature_hash_match:
+        status = "stale_hash_mismatch"
+        hash_validation = "mismatch"
+    else:
+        status = "stale_hash_mismatch"
+        hash_validation = "file_hash_mismatch" if not file_hash_match else "mismatch"
+    elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
     return {
         "status": status,
-        "valid": status == "current",
+        "valid": source_semantic_valid,
+        "strict_valid": strict_valid,
+        "source_semantic_valid": source_semantic_valid,
+        "context_valid": context_valid,
+        "hash_validation": hash_validation,
         "feature_hash": current_hash,
         "stored_feature_hash": stored_hash,
         "feature_hash_match": feature_hash_match,
+        "file_hash_status": file_hash_status,
         "file_hash_match": file_hash_match,
+        "function_hash_status": function_hash_status,
         "function_hash_match": function_hash_match,
+        "test_function_hash_status": test_function_hash_status,
         "test_function_hash_match": test_function_hash_match,
+        "elapsed_ms": elapsed_ms,
+        **function_hash_diff,
+        **test_function_hash_diff,
     }
 
 
@@ -4196,7 +4359,7 @@ def _materialize_semantic_graph(
         )
         validation = _semantic_state_validation(feature, semantics[node_id])
         metadata["semantic_status"] = validation
-        if validation["valid"]:
+        if validation.get("source_semantic_valid") or validation.get("valid"):
             metadata["semantic"] = semantics[node_id]
         else:
             metadata.pop("semantic", None)
@@ -4508,6 +4671,8 @@ def run_semantic_enrichment(
     carry_forward_report = {
         "base_snapshot_id": str(semantic_base_snapshot_id or ""),
         "carried_forward_count": 0,
+        "carried_forward_source_match_count": 0,
+        "carried_forward_partial_count": 0,
         "skipped_existing_count": 0,
         "skipped_missing_node_count": 0,
         "skipped_hash_mismatch_count": 0,
@@ -4543,6 +4708,8 @@ def run_semantic_enrichment(
     ai_selected_count = 0
     ai_skipped_selector_count = 0
     semantic_hash_mismatch_count = 0
+    semantic_context_stale_count = 0
+    semantic_state_validation_elapsed_ms = 0.0
     requested_ai_batch_size = _normal_batch_size(semantic_ai_batch_size)
     ai_input_mode = _normal_ai_input_mode(
         semantic_ai_input_mode,
@@ -4598,6 +4765,7 @@ def run_semantic_enrichment(
     ai_chunk_call_count = 0
     ai_chunk_complete_count = 0
     ai_chunk_error_count = 0
+    ai_chunk_reused_slice_count = 0
     ai_chunk_fix_call_count = 0
     ai_chunk_fix_complete_count = 0
     ai_chunk_fix_error_count = 0
@@ -4630,6 +4798,9 @@ def run_semantic_enrichment(
             if existing_semantic
             else {"status": "missing", "valid": False}
         )
+        semantic_state_validation_elapsed_ms += float(
+            semantic_state_validation.get("elapsed_ms") or 0.0
+        )
         skipped_completed = bool(
             semantic_state_enabled
             and semantic_skip_completed
@@ -4639,14 +4810,23 @@ def run_semantic_enrichment(
         )
         if (
             existing_semantic.get("status") == "ai_complete"
-            and not semantic_state_validation.get("valid")
+            and not semantic_state_validation.get("source_semantic_valid")
         ):
             semantic_hash_mismatch_count += 1
+        elif (
+            existing_semantic.get("status") == "ai_complete"
+            and semantic_state_validation.get("source_semantic_valid")
+            and not semantic_state_validation.get("strict_valid")
+        ):
+            semantic_context_stale_count += 1
         if skipped_completed:
             selected_for_ai = False
             selection_reasons = list(selection_reasons) + ["semantic_graph_state_complete"]
         elif existing_semantic.get("status") == "ai_complete" and existing_semantic:
-            selection_reasons = list(selection_reasons) + ["semantic_graph_state_hash_mismatch"]
+            if semantic_state_validation.get("source_semantic_valid"):
+                selection_reasons = list(selection_reasons) + ["semantic_graph_state_context_stale"]
+            else:
+                selection_reasons = list(selection_reasons) + ["semantic_graph_state_hash_mismatch"]
         if selected_for_ai:
             ai_selected_count += 1
         payload_feature = _compact_feature_for_semantic_ai(
@@ -4771,6 +4951,7 @@ def run_semantic_enrichment(
         nonlocal ai_chunk_call_count
         nonlocal ai_chunk_complete_count
         nonlocal ai_chunk_error_count
+        nonlocal ai_chunk_reused_slice_count
         nonlocal ai_chunk_fix_call_count
         nonlocal ai_chunk_fix_complete_count
         nonlocal ai_chunk_fix_error_count
@@ -4799,14 +4980,25 @@ def run_semantic_enrichment(
             }
         ai_chunked_node_count += 1
         slice_jobs: list[dict[str, Any]] = []
+        reused_slice_responses: dict[int, dict[str, Any]] = {}
+        existing_semantic = (
+            record.get("existing_semantic")
+            if isinstance(record.get("existing_semantic"), dict)
+            else {}
+        )
         for slice_plan in slices:
+            slice_index = int(slice_plan.get("slice_index") or 0)
+            reusable_response = _reusable_semantic_slice_response(existing_semantic, slice_plan)
+            if reusable_response is not None:
+                reused_slice_responses[slice_index] = reusable_response
+                continue
             slice_payload = copy.deepcopy(record["payload"])
             slice_payload["feature"] = slice_plan.get("feature") if isinstance(slice_plan.get("feature"), dict) else {}
             slice_payload["semantic_chunk"] = {
                 "mode": "function_slice",
                 "node_id": node_id,
                 "slice_id": slice_plan.get("slice_id") or "",
-                "slice_index": slice_plan.get("slice_index", 0),
+                "slice_index": slice_index,
                 "slice_count": len(slices),
                 "function_count": plan.get("function_count", 0),
                 "context_mode": plan.get("context_mode") or chunk_context_mode,
@@ -4842,7 +5034,7 @@ def run_semantic_enrichment(
                 "slice_plan": slice_plan,
                 "slice_payload": slice_payload,
                 "slice_name": slice_name,
-                "slice_index": int(slice_plan.get("slice_index") or 0),
+                "slice_index": slice_index,
             })
 
         def call_slice(job: dict[str, Any]) -> tuple[int, dict[str, Any], dict[str, Any]]:
@@ -4855,7 +5047,8 @@ def run_semantic_enrichment(
                 response = {"_ai_error": "ai_response_missing"}
             return int(job["slice_index"]), job, response
 
-        responses_by_index: dict[int, dict[str, Any]] = {}
+        responses_by_index: dict[int, dict[str, Any]] = dict(reused_slice_responses)
+        ai_chunk_reused_slice_count += len(reused_slice_responses)
 
         def record_slice_result(slice_index: int, job: dict[str, Any], response: dict[str, Any]) -> None:
             nonlocal ai_chunk_call_count
@@ -4882,17 +5075,18 @@ def run_semantic_enrichment(
                 )
 
         max_slice_workers = min(chunk_slice_max_concurrency, len(slice_jobs))
-        if max_slice_workers <= 1:
-            for job in slice_jobs:
-                record_slice_result(*call_slice(job))
-        else:
-            with ThreadPoolExecutor(
-                max_workers=max_slice_workers,
-                thread_name_prefix="semantic-slice",
-            ) as slice_pool:
-                futures = [slice_pool.submit(call_slice, job) for job in slice_jobs]
-                for future in as_completed(futures):
-                    record_slice_result(*future.result())
+        if slice_jobs:
+            if max_slice_workers <= 1:
+                for job in slice_jobs:
+                    record_slice_result(*call_slice(job))
+            else:
+                with ThreadPoolExecutor(
+                    max_workers=max_slice_workers,
+                    thread_name_prefix="semantic-slice",
+                ) as slice_pool:
+                    futures = [slice_pool.submit(call_slice, job) for job in slice_jobs]
+                    for future in as_completed(futures):
+                        record_slice_result(*future.result())
         responses = [
             responses_by_index.get(int(slice_plan.get("slice_index") or 0), {"_ai_error": "ai_response_missing"})
             for slice_plan in slices
@@ -4903,6 +5097,9 @@ def run_semantic_enrichment(
             plan,
             responses,
         )
+        if isinstance(aggregate.get("semantic_chunking"), dict):
+            aggregate["semantic_chunking"]["dirty_slice_count"] = len(slice_jobs)
+            aggregate["semantic_chunking"]["reused_slice_count"] = len(reused_slice_responses)
         if aggregate.get("_ai_error") or not chunk_fix_enabled:
             return aggregate
         if not _chunk_fix_needed(aggregate):
@@ -5442,6 +5639,9 @@ def run_semantic_enrichment(
             if validation.get("status") == "stale_hash_mismatch":
                 semantic_entry.setdefault("quality_flags", []).append("semantic_hash_mismatch")
                 semantic_entry["semantic_state_validation"] = validation
+            elif validation.get("source_semantic_valid") and not validation.get("strict_valid"):
+                semantic_entry.setdefault("quality_flags", []).append("semantic_context_stale")
+                semantic_entry["semantic_state_validation"] = validation
             if ai_response and ai_response.get("_ai_error"):
                 semantic_entry.setdefault("quality_flags", []).append("semantic_ai_error")
                 semantic_entry["semantic_ai_error"] = ai_response.get("_ai_error")
@@ -5512,6 +5712,8 @@ def run_semantic_enrichment(
         "health_issue_count": len(semantic_state.get("health_issues") or []),
         "semantic_job_counts": semantic_state.get("semantic_job_counts") or {},
         "hash_mismatch_count": semantic_hash_mismatch_count,
+        "context_stale_count": semantic_context_stale_count,
+        "validation_elapsed_ms": round(semantic_state_validation_elapsed_ms, 3),
         "base_snapshot_id": carry_forward_report.get("base_snapshot_id", ""),
         "carried_forward_count": carry_forward_report.get("carried_forward_count", 0),
         "carry_forward": carry_forward_report,
@@ -5581,6 +5783,7 @@ def run_semantic_enrichment(
             "chunk_call_count": ai_chunk_call_count,
             "chunk_complete_count": ai_chunk_complete_count,
             "chunk_error_count": ai_chunk_error_count,
+            "chunk_reused_slice_count": ai_chunk_reused_slice_count,
             "chunk_fix_enabled": bool(chunk_fix_enabled),
             "chunk_fix_call_count": ai_chunk_fix_call_count,
             "chunk_fix_complete_count": ai_chunk_fix_complete_count,
@@ -5612,6 +5815,8 @@ def run_semantic_enrichment(
         "ai_attempted_count": ai_attempted_count,
         "ai_skipped_selector_count": ai_skipped_selector_count,
         "semantic_hash_mismatch_count": semantic_hash_mismatch_count,
+        "semantic_context_stale_count": semantic_context_stale_count,
+        "semantic_state_validation_elapsed_ms": round(semantic_state_validation_elapsed_ms, 3),
         "ai_input_mode": ai_input_mode,
         "dynamic_semantic_graph_state": bool(dynamic_graph_state and semantic_state_enabled),
         "requested_ai_batch_size": requested_ai_batch_size,
@@ -5624,6 +5829,7 @@ def run_semantic_enrichment(
         "ai_chunk_call_count": ai_chunk_call_count,
         "ai_chunk_complete_count": ai_chunk_complete_count,
         "ai_chunk_error_count": ai_chunk_error_count,
+        "ai_chunk_reused_slice_count": ai_chunk_reused_slice_count,
         "ai_chunk_fix_call_count": ai_chunk_fix_call_count,
         "ai_chunk_fix_complete_count": ai_chunk_fix_complete_count,
         "ai_chunk_fix_error_count": ai_chunk_fix_error_count,
@@ -5640,6 +5846,7 @@ def run_semantic_enrichment(
             "chunk_call_count": ai_chunk_call_count,
             "chunk_complete_count": ai_chunk_complete_count,
             "chunk_error_count": ai_chunk_error_count,
+            "chunk_reused_slice_count": ai_chunk_reused_slice_count,
             "chunk_fix_enabled": bool(chunk_fix_enabled),
             "chunk_fix_call_count": ai_chunk_fix_call_count,
             "chunk_fix_complete_count": ai_chunk_fix_complete_count,
@@ -5691,6 +5898,8 @@ def run_semantic_enrichment(
             "ai_attempted_count": ai_attempted_count,
             "ai_skipped_selector_count": ai_skipped_selector_count,
             "semantic_hash_mismatch_count": semantic_hash_mismatch_count,
+            "semantic_context_stale_count": semantic_context_stale_count,
+            "semantic_state_validation_elapsed_ms": round(semantic_state_validation_elapsed_ms, 3),
             "ai_input_mode": ai_input_mode,
             "dynamic_semantic_graph_state": bool(dynamic_graph_state and semantic_state_enabled),
             "requested_ai_batch_size": requested_ai_batch_size,

@@ -14,6 +14,7 @@ from agent.governance import reconcile_feedback
 from agent.governance.reconcile_semantic_enrichment import (
     NODE_SEMANTIC_SELF_CHECK_RULES,
     _batch_key,
+    _carry_forward_semantic_graph_state,
     _ensure_semantic_state_schema,
     _persist_semantic_state_to_db,
     _slice_response_self_check,
@@ -1336,6 +1337,154 @@ def test_semantic_enrichment_chunks_large_function_node_and_aggregates(conn, tmp
     assert chunk_payload["semantic_retrieval"]["mode"] == "function_index"
     output = json.loads((project / "semantic-trace" / "feature-outputs" / "L7.large.json").read_text())
     assert output["semantic_entry"]["semantic_chunking"]["mode"] == "function_slices"
+
+
+def test_semantic_enrichment_reuses_unchanged_function_slices_on_function_hash_mismatch(conn, tmp_path):
+    project = tmp_path / "project"
+    functions = [
+        {
+            "name": f"generated_{idx}",
+            "path": "agent/governance/large_node.py",
+            "lineno": idx * 3 + 1,
+        }
+        for idx in range(6)
+    ]
+    base_graph = {
+        "deps_graph": {
+            "nodes": [
+                {
+                    "id": "L7.large",
+                    "layer": "L7",
+                    "title": "Large Semantic Node",
+                    "kind": "service_runtime",
+                    "primary": ["agent/governance/large_node.py"],
+                    "metadata": {
+                        "subsystem": "semantic",
+                        "function_count": len(functions),
+                        "functions": functions,
+                        "function_hashes": {
+                            f"agent.governance.large_node::generated_{idx}": f"sha256:fn-{idx}"
+                            for idx in range(6)
+                        },
+                    },
+                }
+            ],
+            "edges": [],
+        }
+    }
+    store.create_graph_snapshot(
+        conn,
+        PID,
+        snapshot_id="full-semantic-test",
+        commit_sha="abc1234",
+        snapshot_kind="full",
+        graph_json=base_graph,
+        notes=json.dumps({"state_only": True}),
+    )
+    store.index_graph_snapshot(
+        conn,
+        PID,
+        "full-semantic-test",
+        nodes=base_graph["deps_graph"]["nodes"],
+        edges=[],
+    )
+    conn.commit()
+    calls: list[dict] = []
+
+    def fake_ai(stage: str, payload: dict) -> dict:
+        calls.append({"stage": stage, "payload": payload})
+        assert stage == "reconcile_semantic_feature_slice"
+        chunk = payload["semantic_chunk"]
+        names = ", ".join(item["name"] for item in chunk["covered_functions"])
+        return {
+            "feature_name": f"Slice {chunk['slice_index']}",
+            "semantic_summary": f"Slice covers {names}.",
+            "intent": f"slice-{chunk['slice_index']}",
+            "domain_label": "semantic.chunk",
+            "self_check": {
+                "required": True,
+                "valid": True,
+                "status": "passed",
+                "checked_rules": [
+                    "required_fields_present",
+                    "source_payload_only",
+                    "no_project_mutation",
+                    "review_feedback_accounted_for",
+                    "graph_suggestions_contract_checked",
+                ],
+                "checked_rules_count": 5,
+                "repair_attempts": 0,
+                "max_repair_attempts": 1,
+                "known_risks": [],
+            },
+        }
+
+    first = run_semantic_enrichment(
+        conn,
+        PID,
+        "full-semantic-test",
+        project,
+        use_ai=True,
+        ai_call=fake_ai,
+        semantic_ai_scope="selected",
+        semantic_node_ids=["L7.large"],
+        semantic_ai_chunk_function_threshold=3,
+        semantic_ai_chunk_max_functions_per_slice=2,
+        semantic_ai_chunk_max_slices=8,
+        semantic_ai_chunk_fix_enabled=False,
+        created_by="semantic-worker-test",
+    )
+    assert first["summary"]["ai_chunk_call_count"] == 3
+    assert first["summary"]["ai_chunk_reused_slice_count"] == 0
+
+    current_graph = json.loads(json.dumps(base_graph))
+    current_hashes = current_graph["deps_graph"]["nodes"][0]["metadata"]["function_hashes"]
+    current_hashes["agent.governance.large_node::generated_2"] = "sha256:fn-2b"
+    store.create_graph_snapshot(
+        conn,
+        PID,
+        snapshot_id="scope-semantic-test",
+        commit_sha="def5678",
+        snapshot_kind="scope",
+        parent_snapshot_id="full-semantic-test",
+        graph_json=current_graph,
+        notes=json.dumps({"state_only": True}),
+    )
+    store.index_graph_snapshot(
+        conn,
+        PID,
+        "scope-semantic-test",
+        nodes=current_graph["deps_graph"]["nodes"],
+        edges=[],
+    )
+    conn.commit()
+    calls.clear()
+
+    second = run_semantic_enrichment(
+        conn,
+        PID,
+        "scope-semantic-test",
+        project,
+        use_ai=True,
+        ai_call=fake_ai,
+        semantic_ai_scope="selected",
+        semantic_node_ids=["L7.large"],
+        semantic_base_snapshot_id="full-semantic-test",
+        semantic_ai_chunk_function_threshold=3,
+        semantic_ai_chunk_max_functions_per_slice=2,
+        semantic_ai_chunk_max_slices=8,
+        semantic_ai_chunk_fix_enabled=False,
+        created_by="semantic-worker-test",
+    )
+
+    assert [call["payload"]["semantic_chunk"]["slice_index"] for call in calls] == [1]
+    assert second["summary"]["ai_chunk_call_count"] == 1
+    assert second["summary"]["ai_chunk_reused_slice_count"] == 2
+    assert second["summary"]["semantic_graph_state"]["carry_forward"]["carried_forward_partial_count"] == 1
+    chunking = second["semantic_index"]["features"][0]["semantic_chunking"]
+    assert chunking["dirty_slice_count"] == 1
+    assert chunking["reused_slice_count"] == 2
+    assert [item["reused"] for item in chunking["slices"]] == [True, False, True]
 
 
 def test_semantic_enrichment_chunk_fix_repairs_slice_scoped_aggregate(conn, tmp_path):
@@ -2787,7 +2936,7 @@ def test_semantic_graph_state_hash_mismatch_forces_resemanticization(conn, tmp_p
     assert second["semantic_index"]["features"][0]["feature_name"] == "Run 2"
 
 
-def test_semantic_state_validation_marks_test_function_hash_mismatch_stale():
+def test_semantic_state_validation_keeps_source_current_when_only_test_function_hash_changes():
     feature = {
         "feature_hash": "sha256:feature-a",
         "file_hashes": {"agent/governance/backlog_runtime.py": "sha256:file-a"},
@@ -2811,12 +2960,108 @@ def test_semantic_state_validation_marks_test_function_hash_mismatch_stale():
 
     validation = _semantic_state_validation(feature, state_entry)
 
-    assert validation["status"] == "stale_hash_mismatch"
-    assert validation["valid"] is False
+    assert validation["status"] == "source_current_context_stale"
+    assert validation["valid"] is True
+    assert validation["strict_valid"] is False
+    assert validation["source_semantic_valid"] is True
+    assert validation["context_valid"] is False
+    assert validation["hash_validation"] == "test_function_hash_mismatch"
     assert validation["feature_hash_match"] is True
     assert validation["file_hash_match"] is True
     assert validation["function_hash_match"] is True
     assert validation["test_function_hash_match"] is False
+    assert validation["changed_test_function_ids"] == [
+        "agent.tests.test_backlog_runtime::test_claim_next",
+    ]
+    assert validation["elapsed_ms"] >= 0
+
+
+def test_semantic_state_validation_marks_source_function_hash_mismatch_stale():
+    feature = {
+        "feature_hash": "sha256:feature-b",
+        "file_hashes": {"agent/governance/backlog_runtime.py": "sha256:file-b"},
+        "function_hashes": {
+            "agent.governance.backlog_runtime::claim_next": "sha256:source-b",
+        },
+        "test_function_hashes": {
+            "agent.tests.test_backlog_runtime::test_claim_next": "sha256:test-a",
+        },
+    }
+    state_entry = {
+        "feature_hash": "sha256:feature-a",
+        "file_hashes": {"agent/governance/backlog_runtime.py": "sha256:file-a"},
+        "function_hashes": {
+            "agent.governance.backlog_runtime::claim_next": "sha256:source-a",
+        },
+        "test_function_hashes": {
+            "agent.tests.test_backlog_runtime::test_claim_next": "sha256:test-a",
+        },
+    }
+
+    validation = _semantic_state_validation(feature, state_entry)
+
+    assert validation["status"] == "stale_hash_mismatch"
+    assert validation["valid"] is False
+    assert validation["source_semantic_valid"] is False
+    assert validation["hash_validation"] == "function_hash_mismatch"
+    assert validation["function_hash_status"] == "mismatch"
+    assert validation["changed_function_ids"] == [
+        "agent.governance.backlog_runtime::claim_next",
+    ]
+
+
+def test_semantic_graph_state_carries_forward_when_source_function_hash_matches():
+    state = {"node_semantics": {}}
+    base_state = {
+        "node_semantics": {
+            "L7.1": {
+                "node_id": "L7.1",
+                "status": "ai_complete",
+                "feature_hash": "sha256:feature-a",
+                "file_hashes": {"agent/governance/backlog_runtime.py": "sha256:file-a"},
+                "function_hashes": {
+                    "agent.governance.backlog_runtime::claim_next": "sha256:source-a",
+                },
+                "test_function_hashes": {
+                    "agent.tests.test_backlog_runtime::test_claim_next": "sha256:test-a",
+                },
+                "semantic_summary": "Backlog runtime source semantics.",
+            }
+        }
+    }
+    feature_index = {
+        "L7.1": {
+            "node_id": "L7.1",
+            "feature_hash": "sha256:feature-b",
+            "primary": ["agent/governance/backlog_runtime.py"],
+            "secondary": [],
+            "test": ["agent/tests/test_backlog_runtime.py"],
+            "config": [],
+            "file_hashes": {"agent/governance/backlog_runtime.py": "sha256:file-b"},
+            "function_hashes": {
+                "agent.governance.backlog_runtime::claim_next": "sha256:source-a",
+            },
+            "test_function_hashes": {
+                "agent.tests.test_backlog_runtime::test_claim_next": "sha256:test-b",
+            },
+        }
+    }
+
+    report = _carry_forward_semantic_graph_state(
+        state,
+        base_state,
+        feature_index,
+        base_snapshot_id="full-a",
+        updated_at="2026-05-23T00:00:00Z",
+    )
+
+    assert report["carried_forward_count"] == 1
+    assert report["carried_forward_source_match_count"] == 1
+    carried = state["node_semantics"]["L7.1"]
+    assert carried["feature_hash"] == "sha256:feature-b"
+    assert carried["function_hashes"] == feature_index["L7.1"]["function_hashes"]
+    assert carried["semantic_state_carry_forward_hash_validation"] == "test_function_hash_mismatch"
+    assert carried["semantic_state_carry_forward_validation"]["source_semantic_valid"] is True
 
 
 def test_semantic_graph_state_carries_forward_unchanged_snapshot_entries(conn, tmp_path):
