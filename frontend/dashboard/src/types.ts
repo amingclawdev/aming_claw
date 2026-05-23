@@ -476,6 +476,140 @@ export interface TaskTimelineVerification {
   [key: string]: unknown;
 }
 
+export type AssetInboxStatus =
+  | "source_orphan"
+  | "doc_unbound"
+  | "doc_candidate"
+  | "accepted"
+  | "test_candidate"
+  | "config_pending_decision"
+  | "ignored"
+  | "archive"
+  | "stale";
+
+export type AssetInboxKind =
+  | "source"
+  | "doc"
+  | "index_doc"
+  | "test"
+  | "config"
+  | "generated"
+  | "unknown";
+
+export type AssetInboxBatchActionName =
+  | "queue_asset_binding_proposals"
+  | "queue_semantic_enrich"
+  | "reject_or_waive_candidates"
+  | "create_backlog_from_selection"
+  | "write_governance_hint";
+
+export interface AssetInboxResponse {
+  schema_version: "asset_inbox.v1" | string;
+  ok: boolean;
+  project_id: string;
+  snapshot_id: string;
+  commit_sha: string;
+  generated_at?: string;
+  source_artifacts?: Record<string, string>;
+  impact_scope_policy: "accepted_bindings_only" | string;
+  backlog_policy: AssetInboxBacklogPolicy;
+  summary: AssetInboxSummary;
+  items: AssetInboxItem[];
+  batch_actions: AssetInboxBatchAction[];
+}
+
+export interface AssetInboxBacklogPolicy {
+  default_container: false;
+  create_from_selected_assets_only: true;
+  reason?: string;
+}
+
+export interface AssetInboxSummary {
+  total: number;
+  by_status: Record<AssetInboxStatus | string, number>;
+  by_kind?: Record<AssetInboxKind | string, number>;
+  candidate_count?: number;
+  accepted_count?: number;
+  unbound_count?: number;
+  backlog_eligible_count?: number;
+  operator_review_count?: number;
+}
+
+export interface AssetInboxItem {
+  asset_id: string;
+  path: string;
+  asset_kind: AssetInboxKind | string;
+  language?: string;
+  asset_status: AssetInboxStatus | string;
+  scan_status?: string;
+  graph_status?: string;
+  doc_kind?: string;
+  binding_status?: string;
+  file_hash: string;
+  sha256?: string;
+  size_bytes?: number;
+  accepted_bindings: AssetInboxBinding[];
+  binding_candidates: AssetInboxBindingCandidate[];
+  recommended_actions: Array<AssetInboxBatchActionName | string>;
+  batch_eligible_actions?: Array<AssetInboxBatchActionName | string>;
+  risk?: "low" | "medium" | "high" | string;
+  evidence: AssetInboxEvidence[];
+  backlog: AssetInboxBacklogState;
+}
+
+export interface AssetInboxBinding {
+  node_id: string;
+  title?: string;
+  role: "doc" | "test" | "config" | string;
+  source: string;
+}
+
+export interface AssetInboxBindingCandidate {
+  schema_version: "asset_binding_proposal.v1" | string;
+  operation: string;
+  asset_kind: AssetInboxKind | string;
+  asset_path: string;
+  target_node_id: string;
+  target_title?: string;
+  evidence_kind: string;
+  source: string;
+  proposal_hash: string;
+  precheck: AssetInboxPrecheck;
+}
+
+export interface AssetInboxPrecheck {
+  schema_version: "asset_binding_precheck.v1" | string;
+  ok: boolean;
+  mode?: string;
+  decision?: "review_required" | "accepted" | "rejected" | string;
+  binding_strength?: "weak" | "strong" | string;
+  proposal_hash?: string;
+  errors?: string[];
+  warnings?: string[];
+}
+
+export interface AssetInboxEvidence {
+  kind: string;
+  message: string;
+  [key: string]: unknown;
+}
+
+export interface AssetInboxBacklogState {
+  eligible: boolean;
+  reason?: string;
+}
+
+export interface AssetInboxBatchAction {
+  action: AssetInboxBatchActionName | string;
+  label?: string;
+  allowed_statuses: Array<AssetInboxStatus | string>;
+  requires_selection?: boolean;
+  requires_review?: boolean;
+  mutates_source?: boolean;
+  creates_backlog?: boolean;
+  payload_example?: Record<string, unknown>;
+}
+
 export interface FileInventoryRow {
   path: string;
   file_kind?: string;

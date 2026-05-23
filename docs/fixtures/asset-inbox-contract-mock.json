@@ -1,0 +1,485 @@
+{
+  "schema_version": "asset_inbox.v1",
+  "ok": true,
+  "project_id": "asset-inbox-fixture",
+  "snapshot_id": "scope-fixture-asset-inbox",
+  "commit_sha": "abc1234567890abcdef1234567890abcdef1234",
+  "generated_at": "2026-05-23T00:00:00Z",
+  "source_artifacts": {
+    "file_inventory_path": "governance-index/scope-fixture-asset-inbox/file-inventory.json",
+    "doc_asset_state_path": "governance-index/scope-fixture-asset-inbox/doc-asset-state.json",
+    "coverage_state_path": "governance-index/scope-fixture-asset-inbox/coverage-state.json",
+    "active_snapshot_id": "scope-fixture-asset-inbox"
+  },
+  "impact_scope_policy": "accepted_bindings_only",
+  "backlog_policy": {
+    "default_container": false,
+    "create_from_selected_assets_only": true,
+    "reason": "Asset Inbox tracks graph/file hygiene state. Backlog rows are created only for selected actionable work."
+  },
+  "summary": {
+    "total": 9,
+    "by_status": {
+      "accepted": 1,
+      "archive": 1,
+      "config_pending_decision": 1,
+      "doc_candidate": 1,
+      "doc_unbound": 1,
+      "ignored": 1,
+      "source_orphan": 1,
+      "stale": 1,
+      "test_candidate": 1
+    },
+    "by_kind": {
+      "config": 1,
+      "doc": 4,
+      "generated": 1,
+      "source": 2,
+      "test": 1
+    },
+    "candidate_count": 2,
+    "accepted_count": 1,
+    "unbound_count": 1,
+    "backlog_eligible_count": 3,
+    "operator_review_count": 4
+  },
+  "items": [
+    {
+      "asset_id": "file:src/newFeature.ts",
+      "path": "src/newFeature.ts",
+      "asset_kind": "source",
+      "language": "typescript",
+      "asset_status": "source_orphan",
+      "scan_status": "orphan",
+      "graph_status": "unmapped",
+      "file_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "size_bytes": 1180,
+      "accepted_bindings": [],
+      "binding_candidates": [],
+      "recommended_actions": [
+        "queue_semantic_enrich",
+        "create_backlog_from_selection"
+      ],
+      "batch_eligible_actions": [
+        "queue_semantic_enrich",
+        "create_backlog_from_selection"
+      ],
+      "risk": "high",
+      "evidence": [
+        {
+          "kind": "file_inventory",
+          "message": "Tracked source file has no graph node."
+        }
+      ],
+      "backlog": {
+        "eligible": true,
+        "reason": "New source orphan may require graph ownership or adapter/config work."
+      }
+    },
+    {
+      "asset_id": "file:docs/service.md",
+      "path": "docs/service.md",
+      "asset_kind": "doc",
+      "language": "markdown",
+      "asset_status": "doc_unbound",
+      "scan_status": "orphan",
+      "graph_status": "unmapped",
+      "doc_kind": "doc",
+      "binding_status": "unbound",
+      "file_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "size_bytes": 920,
+      "accepted_bindings": [],
+      "binding_candidates": [],
+      "recommended_actions": [
+        "queue_asset_binding_proposals"
+      ],
+      "batch_eligible_actions": [
+        "queue_asset_binding_proposals"
+      ],
+      "risk": "medium",
+      "evidence": [
+        {
+          "kind": "doc_asset_state",
+          "message": "Documentation is tracked and hashed but has no accepted binding."
+        }
+      ],
+      "backlog": {
+        "eligible": false,
+        "reason": "Unbound docs are asset state until review finds actionable work."
+      }
+    },
+    {
+      "asset_id": "file:docs/runtime.md",
+      "path": "docs/runtime.md",
+      "asset_kind": "doc",
+      "language": "markdown",
+      "asset_status": "doc_candidate",
+      "scan_status": "orphan",
+      "graph_status": "unmapped",
+      "doc_kind": "doc",
+      "binding_status": "candidate",
+      "file_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+      "size_bytes": 1320,
+      "accepted_bindings": [],
+      "binding_candidates": [
+        {
+          "schema_version": "asset_binding_proposal.v1",
+          "operation": "propose_binding",
+          "asset_kind": "doc",
+          "asset_path": "docs/runtime.md",
+          "target_node_id": "L7.runtime",
+          "target_title": "src.runtime",
+          "evidence_kind": "path_reference",
+          "source": "doc_coverage",
+          "proposal_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "precheck": {
+            "schema_version": "asset_binding_precheck.v1",
+            "ok": true,
+            "mode": "self_precheck",
+            "decision": "review_required",
+            "binding_strength": "weak",
+            "proposal_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "errors": [],
+            "warnings": []
+          }
+        }
+      ],
+      "recommended_actions": [
+        "reject_or_waive_candidates",
+        "write_governance_hint"
+      ],
+      "batch_eligible_actions": [
+        "reject_or_waive_candidates"
+      ],
+      "risk": "medium",
+      "evidence": [
+        {
+          "kind": "path_reference",
+          "message": "Doc mentions src/runtime.ts; path mention is not trusted binding."
+        }
+      ],
+      "backlog": {
+        "eligible": false,
+        "reason": "Candidate binding should be reviewed or hinted before creating implementation work."
+      }
+    },
+    {
+      "asset_id": "file:docs/accepted-runtime.md",
+      "path": "docs/accepted-runtime.md",
+      "asset_kind": "doc",
+      "language": "markdown",
+      "asset_status": "accepted",
+      "scan_status": "secondary_attached",
+      "graph_status": "attached",
+      "doc_kind": "doc",
+      "binding_status": "accepted",
+      "file_hash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+      "size_bytes": 1410,
+      "accepted_bindings": [
+        {
+          "node_id": "L7.runtime",
+          "title": "src.runtime",
+          "role": "doc",
+          "source": "source_controlled_hint"
+        }
+      ],
+      "binding_candidates": [],
+      "recommended_actions": [],
+      "batch_eligible_actions": [],
+      "risk": "low",
+      "evidence": [
+        {
+          "kind": "governance_hint",
+          "message": "Committed hint materialized this doc binding."
+        }
+      ],
+      "backlog": {
+        "eligible": false,
+        "reason": "Accepted binding is already graph state."
+      }
+    },
+    {
+      "asset_id": "file:tests/test_runtime_bridge.py",
+      "path": "tests/test_runtime_bridge.py",
+      "asset_kind": "test",
+      "language": "python",
+      "asset_status": "test_candidate",
+      "scan_status": "orphan",
+      "graph_status": "unmapped",
+      "file_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+      "size_bytes": 1110,
+      "accepted_bindings": [],
+      "binding_candidates": [
+        {
+          "schema_version": "asset_binding_proposal.v1",
+          "operation": "propose_binding",
+          "asset_kind": "test",
+          "asset_path": "tests/test_runtime_bridge.py",
+          "target_node_id": "L7.runtime",
+          "target_title": "src.runtime",
+          "evidence_kind": "test_import_fanin",
+          "source": "test_consumer_fanin",
+          "proposal_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "precheck": {
+            "schema_version": "asset_binding_precheck.v1",
+            "ok": true,
+            "mode": "self_precheck",
+            "decision": "review_required",
+            "binding_strength": "weak",
+            "proposal_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "errors": [],
+            "warnings": []
+          }
+        }
+      ],
+      "recommended_actions": [
+        "reject_or_waive_candidates",
+        "create_backlog_from_selection"
+      ],
+      "batch_eligible_actions": [
+        "reject_or_waive_candidates",
+        "create_backlog_from_selection"
+      ],
+      "risk": "medium",
+      "evidence": [
+        {
+          "kind": "weak_tests",
+          "message": "Import fan-in exists, but no direct symbol coverage was proven."
+        }
+      ],
+      "backlog": {
+        "eligible": false,
+        "reason": "Weak test evidence should be reviewed before treating as coverage debt."
+      }
+    },
+    {
+      "asset_id": "file:config/runtime.yaml",
+      "path": "config/runtime.yaml",
+      "asset_kind": "config",
+      "language": "yaml",
+      "asset_status": "config_pending_decision",
+      "scan_status": "pending_decision",
+      "graph_status": "unmapped",
+      "file_hash": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+      "sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+      "size_bytes": 880,
+      "accepted_bindings": [],
+      "binding_candidates": [],
+      "recommended_actions": [
+        "queue_asset_binding_proposals",
+        "create_backlog_from_selection"
+      ],
+      "batch_eligible_actions": [
+        "queue_asset_binding_proposals",
+        "create_backlog_from_selection"
+      ],
+      "risk": "medium",
+      "evidence": [
+        {
+          "kind": "file_inventory",
+          "message": "Config file needs a project-specific decision."
+        }
+      ],
+      "backlog": {
+        "eligible": true,
+        "reason": "Config ownership may require a registered config rule or loader."
+      }
+    },
+    {
+      "asset_id": "file:dist/bundle.js",
+      "path": "dist/bundle.js",
+      "asset_kind": "generated",
+      "language": "javascript",
+      "asset_status": "ignored",
+      "scan_status": "ignored",
+      "graph_status": "ignored",
+      "file_hash": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      "sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+      "size_bytes": 9000,
+      "accepted_bindings": [],
+      "binding_candidates": [],
+      "recommended_actions": [],
+      "batch_eligible_actions": [],
+      "risk": "low",
+      "evidence": [
+        {
+          "kind": "ignore_rule",
+          "message": "Generated output is excluded from graph ownership."
+        }
+      ],
+      "backlog": {
+        "eligible": false,
+        "reason": "Ignored generated files are not backlog work."
+      }
+    },
+    {
+      "asset_id": "file:docs/dev/session-handoff.md",
+      "path": "docs/dev/session-handoff.md",
+      "asset_kind": "doc",
+      "language": "markdown",
+      "asset_status": "archive",
+      "scan_status": "archive",
+      "graph_status": "unmapped",
+      "doc_kind": "doc",
+      "binding_status": "archive",
+      "file_hash": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+      "sha256": "8888888888888888888888888888888888888888888888888888888888888888",
+      "size_bytes": 760,
+      "accepted_bindings": [],
+      "binding_candidates": [],
+      "recommended_actions": [],
+      "batch_eligible_actions": [],
+      "risk": "low",
+      "evidence": [
+        {
+          "kind": "archive_policy",
+          "message": "Session handoff is archival and should not be bound to product nodes by default."
+        }
+      ],
+      "backlog": {
+        "eligible": false,
+        "reason": "Archive docs stay out of impact scope."
+      }
+    },
+    {
+      "asset_id": "file:src/runtime.ts",
+      "path": "src/runtime.ts",
+      "asset_kind": "source",
+      "language": "typescript",
+      "asset_status": "stale",
+      "scan_status": "clustered",
+      "graph_status": "mapped",
+      "file_hash": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "sha256": "9999999999999999999999999999999999999999999999999999999999999999",
+      "size_bytes": 2010,
+      "stale": {
+        "is_stale": true,
+        "reason": "file_hash_changed_since_candidate",
+        "previous_file_hash": "sha256:9999999999999999999999999999999999999999999999999999999999999900"
+      },
+      "accepted_bindings": [
+        {
+          "node_id": "L7.runtime",
+          "title": "src.runtime",
+          "role": "primary",
+          "source": "graph_node"
+        }
+      ],
+      "binding_candidates": [],
+      "recommended_actions": [
+        "queue_semantic_enrich",
+        "create_backlog_from_selection"
+      ],
+      "batch_eligible_actions": [
+        "queue_semantic_enrich",
+        "create_backlog_from_selection"
+      ],
+      "risk": "high",
+      "evidence": [
+        {
+          "kind": "hash_drift",
+          "message": "Mapped source changed; semantic or candidate evidence should be refreshed."
+        }
+      ],
+      "backlog": {
+        "eligible": true,
+        "reason": "Stale mapped source may require semantic refresh or scoped implementation review."
+      }
+    }
+  ],
+  "batch_actions": [
+    {
+      "action": "queue_asset_binding_proposals",
+      "label": "AI propose binding",
+      "allowed_statuses": [
+        "doc_unbound",
+        "config_pending_decision"
+      ],
+      "requires_review": true,
+      "mutates_source": false,
+      "payload_example": {
+        "asset_ids": [
+          "file:docs/service.md"
+        ],
+        "actor": "observer",
+        "mode": "proposal_only"
+      }
+    },
+    {
+      "action": "queue_semantic_enrich",
+      "label": "Queue semantic enrich",
+      "allowed_statuses": [
+        "source_orphan",
+        "stale"
+      ],
+      "requires_review": true,
+      "mutates_source": false,
+      "payload_example": {
+        "asset_ids": [
+          "file:src/newFeature.ts"
+        ],
+        "actor": "observer"
+      }
+    },
+    {
+      "action": "reject_or_waive_candidates",
+      "label": "Reject or waive candidates",
+      "allowed_statuses": [
+        "doc_candidate",
+        "test_candidate"
+      ],
+      "requires_review": true,
+      "mutates_source": false,
+      "payload_example": {
+        "asset_ids": [
+          "file:docs/runtime.md"
+        ],
+        "decision": "reject",
+        "rationale": "Path mention is weak evidence only."
+      }
+    },
+    {
+      "action": "create_backlog_from_selection",
+      "label": "Create backlog from selected assets",
+      "allowed_statuses": [
+        "source_orphan",
+        "config_pending_decision",
+        "stale"
+      ],
+      "requires_review": false,
+      "requires_selection": true,
+      "mutates_source": false,
+      "creates_backlog": true,
+      "payload_example": {
+        "asset_ids": [
+          "file:src/newFeature.ts",
+          "file:config/runtime.yaml"
+        ],
+        "priority": "P1",
+        "reason": "Selected assets need implementation or rules work."
+      }
+    },
+    {
+      "action": "write_governance_hint",
+      "label": "Write governance hint",
+      "allowed_statuses": [
+        "doc_candidate",
+        "test_candidate",
+        "config_pending_decision"
+      ],
+      "requires_review": true,
+      "mutates_source": true,
+      "payload_example": {
+        "asset_id": "file:docs/runtime.md",
+        "target_node_id": "L7.runtime",
+        "role": "doc",
+        "actor": "observer"
+      }
+    }
+  ]
+}

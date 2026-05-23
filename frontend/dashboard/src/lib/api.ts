@@ -1,5 +1,6 @@
 import type {
   ActiveSummaryResponse,
+  AssetInboxResponse,
   AttachFileHintResponse,
   BacklogResponse,
   EdgesResponse,
@@ -175,6 +176,30 @@ export const api = {
   activeSummaryFor(projectId: string, signal?: AbortSignal) {
     return getJSON<ActiveSummaryResponse>(
       `/api/graph-governance/${pidFor(projectId)}/snapshots/active/summary`,
+      signal,
+    );
+  },
+  assetInbox(snapshotId: string, signal?: AbortSignal) {
+    return getJSON<AssetInboxResponse>(
+      `/api/graph-governance/${pid()}/snapshots/${encodeURIComponent(snapshotId)}/asset-inbox`,
+      signal,
+    );
+  },
+  assetInboxFor(projectId: string, snapshotId: string, signal?: AbortSignal) {
+    return getJSON<AssetInboxResponse>(
+      `/api/graph-governance/${pidFor(projectId)}/snapshots/${encodeURIComponent(snapshotId)}/asset-inbox`,
+      signal,
+    );
+  },
+  activeAssetInbox(signal?: AbortSignal) {
+    return getJSON<AssetInboxResponse>(
+      `/api/graph-governance/${pid()}/snapshots/active/asset-inbox`,
+      signal,
+    );
+  },
+  activeAssetInboxFor(projectId: string, signal?: AbortSignal) {
+    return getJSON<AssetInboxResponse>(
+      `/api/graph-governance/${pidFor(projectId)}/snapshots/active/asset-inbox`,
       signal,
     );
   },
