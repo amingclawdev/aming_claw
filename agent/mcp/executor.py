@@ -98,8 +98,9 @@ class WorkerSlot:
                 time.sleep(POLL_INTERVAL)
 
     def _claim(self) -> dict | None:
+        worker_id = f"mcp-{self.slot_id}"
         result = self.pool.api("POST", f"/api/task/{self.pool.project_id}/claim",
-                               {"worker_id": f"mcp-{self.slot_id}"})
+                               {"worker_id": worker_id, "caller_pid": os.getpid()})
         if "error" in result or "task" not in result:
             return None
         task_pair = result["task"]
@@ -109,7 +110,35 @@ class WorkerSlot:
         if not task_data or not isinstance(task_data, dict):
             return None
         task_data["_fence_token"] = fence_token
+        task_data["_worker_id"] = worker_id
         return task_data
+
+    def _timeline(self, task_id: str, event_type: str, *, status: str = "",
+                  payload: dict | None = None, verification: dict | None = None,
+                  artifact_refs: dict | None = None, metadata: dict | None = None,
+                  attempt_num: int = 0) -> None:
+        """Best-effort durable executor evidence."""
+        try:
+            from governance import task_timeline
+
+            metadata = metadata if isinstance(metadata, dict) else {}
+            task_timeline.enqueue_event(
+                self.pool.project_id,
+                task_id=task_id,
+                backlog_id=str(metadata.get("bug_id") or ""),
+                mf_id=str(metadata.get("mf_id") or ""),
+                attempt_num=int(attempt_num or metadata.get("attempt_num") or 0),
+                event_type=event_type,
+                actor=f"mcp-{self.slot_id}",
+                status=status,
+                payload=payload or {},
+                verification=verification or {},
+                artifact_refs=artifact_refs or {},
+                trace_id=str(metadata.get("trace_id") or ""),
+                wait=True,
+            )
+        except Exception:
+            log.debug("[%s] timeline write failed for %s", self.slot_id, event_type, exc_info=True)
 
     def _execute(self, task: dict) -> None:
         task_id = task["task_id"]
@@ -125,20 +154,42 @@ class WorkerSlot:
         self._current_task = task_id
         role, timeout = TASK_ROLE_MAP.get(task_type, ("dev", 300))
         log.info("[%s] Executing %s (type=%s, role=%s)", self.slot_id, task_id, task_type, role)
+        self._timeline(
+            task_id,
+            "task.execution.started",
+            status="running",
+            metadata=metadata,
+            attempt_num=int(task.get("attempt_num") or 0),
+            payload={
+                "task_type": task_type,
+                "role": role,
+                "worker_id": task.get("_worker_id", f"mcp-{self.slot_id}"),
+                "fence_token_present": bool(task.get("_fence_token")),
+            },
+        )
 
         try:
             # Merge is script-based
             if task_type == "merge":
                 outcome = self._execute_merge(task_id, metadata)
             else:
-                outcome = self._execute_ai(task_id, task_type, prompt, metadata, role, timeout)
+                outcome = self._execute_ai(
+                    task_id, task_type, prompt, metadata, role, timeout,
+                    attempt_num=int(task.get("attempt_num") or 0),
+                )
 
             status = outcome.get("status", "failed")
             result = outcome.get("result", {"error": outcome.get("error", "unknown")})
 
             completion = self.pool.api(
                 "POST", f"/api/task/{self.pool.project_id}/complete",
-                {"task_id": task_id, "status": status, "result": result},
+                {
+                    "task_id": task_id,
+                    "status": status,
+                    "result": result,
+                    "worker_id": task.get("_worker_id", f"mcp-{self.slot_id}"),
+                    "fence_token": task.get("_fence_token", ""),
+                },
             )
 
             chain = completion.get("auto_chain", {})
@@ -167,13 +218,19 @@ class WorkerSlot:
             log.exception("[%s] Execute failed: %s", self.slot_id, task_id)
             self.pool.api(
                 "POST", f"/api/task/{self.pool.project_id}/complete",
-                {"task_id": task_id, "status": "failed", "result": {"error": "executor exception"}},
+                {
+                    "task_id": task_id,
+                    "status": "failed",
+                    "result": {"error": "executor exception"},
+                    "worker_id": task.get("_worker_id", f"mcp-{self.slot_id}"),
+                    "fence_token": task.get("_fence_token", ""),
+                },
             )
         finally:
             self._current_task = None
             self._cli_proc = None
 
-    def _execute_ai(self, task_id, task_type, prompt, metadata, role, timeout) -> dict:
+    def _execute_ai(self, task_id, task_type, prompt, metadata, role, timeout, attempt_num: int = 0) -> dict:
         """Execute via Claude CLI, with worktree isolation for dev role."""
         from ai_lifecycle import AILifecycleManager
 
@@ -188,6 +245,14 @@ class WorkerSlot:
                 work_dir = worktree_path
                 log.info("[%s] Dev worktree created: %s (branch: %s)",
                          self.slot_id, worktree_path, branch_name)
+                self._timeline(
+                    task_id,
+                    "worktree.created",
+                    status="created",
+                    metadata=metadata,
+                    attempt_num=attempt_num,
+                    payload={"worktree": worktree_path, "branch": branch_name},
+                )
 
         context = {
             "task_id": task_id,
@@ -212,17 +277,85 @@ class WorkerSlot:
                 timeout_sec=timeout,
                 workspace=work_dir,
             )
+            self._timeline(
+                task_id,
+                "ai.session.started",
+                status="running",
+                metadata=metadata,
+                attempt_num=attempt_num,
+                payload={
+                    "session_id": session.session_id,
+                    "provider": session.provider,
+                    "model": session.model,
+                    "role": role,
+                    "pid": session.pid,
+                    "workspace": work_dir,
+                },
+                artifact_refs={
+                    "input_path": session.input_path,
+                    "output_path": session.output_path,
+                    "log_path": session.log_path,
+                },
+            )
 
             if session.status == "failed":
-                return {"status": "failed", "error": session.stderr}
+                failure = {"status": "failed", "error": session.stderr}
+                try:
+                    from governance import task_timeline
+                    failure["result"] = task_timeline.synthetic_failure_envelope(
+                        failure_class="ai_session_start_failed",
+                        phase="session_start",
+                        summary=session.stderr or "AI session failed before running",
+                        session_result={"session_id": session.session_id, "stderr": session.stderr},
+                    )
+                except Exception:
+                    pass
+                return failure
 
             # Track the subprocess for clean shutdown
             self._cli_proc = getattr(session, '_proc', None)
 
-            lifecycle.wait_for_output(session.session_id)
+            session_result = lifecycle.wait_for_output(session.session_id)
+            self._timeline(
+                task_id,
+                "ai.session.finished",
+                status=session_result.get("status", session.status),
+                metadata=metadata,
+                attempt_num=attempt_num,
+                payload={
+                    "session_id": session.session_id,
+                    "provider": session_result.get("provider", ""),
+                    "model": session_result.get("model", ""),
+                    "exit_code": session_result.get("exit_code"),
+                    "elapsed_sec": session_result.get("elapsed_sec"),
+                    "stdout_bytes": len(session_result.get("stdout", "") or ""),
+                    "stderr_bytes": len(session_result.get("stderr", "") or ""),
+                },
+                artifact_refs={
+                    "input_path": session_result.get("input_path", ""),
+                    "output_path": session_result.get("output_path", ""),
+                    "log_path": session_result.get("log_path", ""),
+                },
+            )
 
             if session.status in ("timeout", "failed"):
-                return {"status": "failed", "error": session.stderr[:500] if session.stderr else f"{session.status}"}
+                try:
+                    from governance import task_timeline
+                    failure_result = task_timeline.synthetic_failure_envelope(
+                        failure_class="provider_timeout" if session.status == "timeout" else "provider_failure",
+                        phase="ai_execution",
+                        summary=session.stderr[:500] if session.stderr else f"{session.status}",
+                        session_result=session_result,
+                    )
+                    failure_result["error"] = failure_result["failure"]["summary"]
+                    failure_result["_artifacts"] = {
+                        "input_path": session_result.get("input_path", ""),
+                        "output_path": session_result.get("output_path", ""),
+                        "log_path": session_result.get("log_path", ""),
+                    }
+                    return {"status": "failed", "result": failure_result}
+                except Exception:
+                    return {"status": "failed", "error": session.stderr[:500] if session.stderr else f"{session.status}"}
 
             # Git diff for ground truth (in the work directory)
             changed_files = self._get_git_changed(cwd=work_dir)
@@ -236,6 +369,18 @@ class WorkerSlot:
                     pass
 
             result = self._parse_output(session, task_type)
+            result.setdefault("_ai_session", {
+                "session_id": session_result.get("session_id", session.session_id),
+                "provider": session_result.get("provider", ""),
+                "model": session_result.get("model", ""),
+                "elapsed_sec": session_result.get("elapsed_sec"),
+                "exit_code": session_result.get("exit_code"),
+            })
+            result.setdefault("_artifacts", {
+                "input_path": session_result.get("input_path", ""),
+                "output_path": session_result.get("output_path", ""),
+                "log_path": session_result.get("log_path", ""),
+            })
             if changed_files:
                 result["changed_files"] = changed_files
             elif "changed_files" not in result:
@@ -245,6 +390,25 @@ class WorkerSlot:
             if worktree_path and branch_name:
                 result["_worktree"] = worktree_path
                 result["_branch"] = branch_name
+
+            try:
+                from governance import task_timeline
+                verification = task_timeline.completion_verification("succeeded", result)
+            except Exception:
+                verification = {}
+            self._timeline(
+                task_id,
+                "ai.output.parsed",
+                status="parsed",
+                metadata=metadata,
+                attempt_num=attempt_num,
+                payload={
+                    "result_keys": sorted(result.keys()),
+                    "changed_files": result.get("changed_files", []),
+                },
+                verification=verification,
+                artifact_refs=result.get("_artifacts", {}),
+            )
 
             return {"status": "succeeded", "result": result}
 

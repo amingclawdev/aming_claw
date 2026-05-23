@@ -14912,6 +14912,7 @@ def handle_task_complete(ctx: RequestContext):
             status=ctx.body.get("status", "succeeded"),
             result=ctx.body.get("result"),
             error_message=ctx.body.get("error_message", ""),
+            fence_token=ctx.body.get("fence_token", ""),
             project_id=project_id,
             completed_by=ctx.body.get("worker_id", ""),
             override_reason=ctx.body.get("override_reason", ""),
@@ -15064,6 +15065,50 @@ def handle_task_gates(ctx: RequestContext):
         ).fetchall()
     events = [dict(r) for r in rows]
     return {"task_id": task_id, "gate_events": events, "count": len(events)}
+
+
+@route("POST", "/api/task/{project_id}/timeline")
+def handle_task_timeline_append(ctx: RequestContext):
+    """Append task timeline evidence from executor/agent code."""
+    project_id = ctx.get_project_id()
+    from . import task_timeline
+
+    with DBContext(project_id) as conn:
+        return task_timeline.record_event(
+            conn,
+            project_id=project_id,
+            task_id=ctx.body.get("task_id", ""),
+            backlog_id=ctx.body.get("backlog_id", ""),
+            mf_id=ctx.body.get("mf_id", ""),
+            attempt_num=int(ctx.body.get("attempt_num", 0) or 0),
+            event_type=ctx.body.get("event_type", ""),
+            actor=ctx.body.get("actor", ""),
+            status=ctx.body.get("status", ""),
+            payload=ctx.body.get("payload") or {},
+            verification=ctx.body.get("verification") or {},
+            artifact_refs=ctx.body.get("artifact_refs") or {},
+            trace_id=ctx.body.get("trace_id", ""),
+            commit_sha=ctx.body.get("commit_sha", ""),
+        )
+
+
+@route("GET", "/api/task/{project_id}/{task_id}/timeline")
+def handle_task_timeline_get(ctx: RequestContext):
+    """List append-only task implementation timeline events."""
+    project_id = ctx.get_project_id()
+    task_id = ctx.path_params.get("task_id", "")
+    from . import task_timeline
+
+    with DBContext(project_id) as conn:
+        events = task_timeline.list_events(
+            conn,
+            project_id,
+            task_id=task_id,
+            backlog_id=ctx.query.get("backlog_id", ""),
+            trace_id=ctx.query.get("trace_id", ""),
+            limit=int(ctx.query.get("limit", "200")),
+        )
+    return {"task_id": task_id, "events": events, "count": len(events)}
 
 
 @route("GET", "/api/runtime/{project_id}")

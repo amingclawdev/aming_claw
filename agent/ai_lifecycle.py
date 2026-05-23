@@ -121,6 +121,13 @@ class AISession:
     stderr: str = ""
     exit_code: Optional[int] = None
     last_heartbeat: float = field(default_factory=time.time)  # updated on each stdout line
+    provider: str = ""
+    model: str = ""
+    workspace: str = ""
+    log_path: str = ""
+    input_path: str = ""
+    output_path: str = ""
+    prompt_file: str = ""
 
 
 class AILifecycleManager:
@@ -288,6 +295,9 @@ class AILifecycleManager:
         log_dir = os.path.join(workspace or os.getcwd(), "shared-volume", "codex-tasks", "logs")
         os.makedirs(log_dir, exist_ok=True)
         output_last = os.path.join(log_dir, f"last-message-{session_id.replace('ai-','')}.txt")
+        lifecycle_log_path = os.path.join(log_dir, f"ai-lifecycle-{session_id}.txt")
+        input_path = os.path.join(log_dir, f"input-{session_id.replace('ai-','')}.txt")
+        output_path = os.path.join(log_dir, f"output-{session_id.replace('ai-','')}.txt")
 
         # Write system prompt to file
         prompt_file = os.path.join(tempfile.gettempdir(), f"ctx-{session_id}.md")
@@ -334,6 +344,13 @@ class AILifecycleManager:
             context=context,
             started_at=time.time(),
             timeout_sec=timeout_sec,
+            provider=provider,
+            model=_model,
+            workspace=cwd,
+            log_path=lifecycle_log_path,
+            input_path=input_path,
+            output_path=output_path,
+            prompt_file=prompt_file,
         )
         with self._lock:
             self._sessions[session_id] = session
@@ -349,10 +366,8 @@ class AILifecycleManager:
             try:
                 # Save input for replay/debug
                 try:
-                    _input_path = os.path.join(workspace or os.getcwd(), "shared-volume", "codex-tasks", "logs",
-                                               f"input-{session_id.replace('ai-','')}.txt")
-                    os.makedirs(os.path.dirname(_input_path), exist_ok=True)
-                    with open(_input_path, "w", encoding="utf-8") as _f:
+                    os.makedirs(os.path.dirname(input_path), exist_ok=True)
+                    with open(input_path, "w", encoding="utf-8") as _f:
                         _f.write(f"=== SYSTEM PROMPT ({len(system_prompt)} chars) ===\n")
                         _f.write(system_prompt)
                         _f.write(f"\n\n=== STDIN PROMPT ({len(stdin_prompt)} chars) ===\n")
@@ -460,9 +475,7 @@ class AILifecycleManager:
                 _al_log(f"Popen done: rc={proc.returncode} stdout={len(session.stdout)} stderr={len(session.stderr)}")
                 # Save output for debug
                 try:
-                    _output_path = os.path.join(workspace or os.getcwd(), "shared-volume", "codex-tasks", "logs",
-                                                f"output-{session_id.replace('ai-','')}.txt")
-                    with open(_output_path, "w", encoding="utf-8") as _f:
+                    with open(output_path, "w", encoding="utf-8") as _f:
                         _f.write(f"=== STATUS: {session.status} rc={proc.returncode} elapsed={time.time()-session.started_at:.1f}s ===\n\n")
                         _f.write(f"=== STDOUT ({len(session.stdout)} chars) ===\n")
                         _f.write(session.stdout)
@@ -531,7 +544,7 @@ class AILifecycleManager:
 
         elapsed = time.time() - session.started_at
 
-        return {
+        result = {
             "status": session.status,
             "stdout": session.stdout,
             "stderr": session.stderr,
@@ -539,7 +552,16 @@ class AILifecycleManager:
             "elapsed_sec": round(elapsed, 1),
             "session_id": session_id,
             "role": session.role,
+            "provider": session.provider,
+            "model": session.model,
+            "workspace": session.workspace,
+            "pid": session.pid,
+            "log_path": session.log_path,
+            "input_path": session.input_path,
+            "output_path": session.output_path,
         }
+        self.audit_result(session_id, session.project_id, result)
+        return result
 
     def kill_session(self, session_id: str, reason: str = "") -> bool:
         """Force-terminate an AI process (tree-kill on Windows)."""

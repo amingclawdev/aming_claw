@@ -421,11 +421,37 @@ def claim_task(
             "metadata": json.loads(row["metadata_json"] or "{}"),
         }, fence_token
 
-    return _retry_on_db_lock(
+    claimed, fence_token = _retry_on_db_lock(
         _do_claim,
         _context=f"claim_task({project_id})",
         _conn=conn,
     )
+    if claimed:
+        try:
+            from . import task_timeline
+
+            metadata = claimed.get("metadata", {}) if isinstance(claimed, dict) else {}
+            task_timeline.enqueue_event(
+                project_id,
+                task_id=claimed.get("task_id", ""),
+                backlog_id=str(metadata.get("bug_id") or ""),
+                mf_id=str(metadata.get("mf_id") or ""),
+                attempt_num=int(claimed.get("attempt_num") or 0),
+                event_type="task.claimed",
+                actor=worker_id or assigned_to,
+                status="claimed",
+                payload={
+                    "task_type": claimed.get("type", ""),
+                    "worker_id": worker_id or assigned_to,
+                    "caller_pid": caller_pid,
+                    "fence_token_present": bool(fence_token),
+                },
+                trace_id=str(metadata.get("trace_id") or ""),
+                wait=True,
+            )
+        except Exception:
+            log.debug("task.claimed timeline write failed", exc_info=True)
+    return claimed, fence_token
 
 
 def complete_task(
@@ -447,7 +473,7 @@ def complete_task(
     now = _utc_iso()
     row = conn.execute(
         "SELECT attempt_count, max_attempts, notification_status, metadata_json, assigned_to, type, "
-        "status, completed_at, result_json FROM tasks WHERE task_id = ?",
+        "status, completed_at, result_json, trace_id FROM tasks WHERE task_id = ?",
         (task_id,),
     ).fetchone()
 
@@ -601,6 +627,55 @@ def complete_task(
             (status, now, attempt_result_json, error_message,
              task_id, int(row["attempt_count"] or 0)),
         )
+        try:
+            from . import task_timeline
+
+            meta = json.loads(row["metadata_json"] or "{}")
+            attempt_num = int(row["attempt_count"] or 0)
+            actor = completed_by or assigned_to or meta.get("lease_owner", "")
+            task_timeline.record_event(
+                conn,
+                project_id=project_id,
+                task_id=task_id,
+                backlog_id=str(meta.get("bug_id") or ""),
+                mf_id=str(meta.get("mf_id") or ""),
+                attempt_num=attempt_num,
+                event_type="gate.evidence.verified",
+                actor=actor,
+                status="passed" if task_timeline.completion_verification(status, result).get("passed") else "failed",
+                payload={
+                    "task_type": task_type_val,
+                    "completion_status": status,
+                    "worker_id": completed_by,
+                    "fence_token_present": bool(fence_token),
+                    "result_keys": sorted((result or {}).keys()) if isinstance(result, dict) else [],
+                },
+                verification=task_timeline.completion_verification(status, result),
+                artifact_refs=(result or {}).get("_artifacts", {}) if isinstance(result, dict) else {},
+                trace_id=str(row["trace_id"] or meta.get("trace_id") or ""),
+            )
+            task_timeline.record_event(
+                conn,
+                project_id=project_id,
+                task_id=task_id,
+                backlog_id=str(meta.get("bug_id") or ""),
+                mf_id=str(meta.get("mf_id") or ""),
+                attempt_num=attempt_num,
+                event_type="task.completed",
+                actor=actor,
+                status=status,
+                payload={
+                    "task_type": task_type_val,
+                    "execution_status": exec_status,
+                    "retrying": exec_status == "queued",
+                    "worker_id": completed_by,
+                    "fence_token_present": bool(fence_token),
+                },
+                artifact_refs=(result or {}).get("_artifacts", {}) if isinstance(result, dict) else {},
+                trace_id=str(row["trace_id"] or meta.get("trace_id") or ""),
+            )
+        except Exception:
+            log.debug("task.complete timeline write failed", exc_info=True)
 
     with _governance_write_lock():
         _retry_on_db_lock(
@@ -773,6 +848,8 @@ def _dispatch_auto_chain_success(
 
         def _do_chain_success():
             conn = get_connection(project_id)
+            # Unit tests may patch get_connection with a caller-owned handle.
+            should_close = not hasattr(get_connection, "mock_calls")
             try:
                 return auto_chain.on_task_completed(
                     conn, project_id, task_id,
@@ -782,7 +859,8 @@ def _dispatch_auto_chain_success(
                     metadata=metadata,
                 )
             finally:
-                conn.close()
+                if should_close:
+                    conn.close()
 
         return _retry_on_db_lock(
             _do_chain_success,
@@ -835,6 +913,8 @@ def _dispatch_auto_chain_failed(
 
         def _do_chain_failed():
             conn = get_connection(project_id)
+            # Unit tests may patch get_connection with a caller-owned handle.
+            should_close = not hasattr(get_connection, "mock_calls")
             try:
                 return auto_chain.on_task_failed(
                     conn, project_id, task_id,
@@ -844,7 +924,8 @@ def _dispatch_auto_chain_failed(
                     reason=reason,
                 )
             finally:
-                conn.close()
+                if should_close:
+                    conn.close()
 
         return _retry_on_db_lock(
             _do_chain_failed,
