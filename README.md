@@ -821,7 +821,9 @@ not a governance failure.
 8. Review and accept or reject proposed semantic memory.
 9. File backlog rows and PR opportunities with graph evidence.
 
-Backlog rows can be moved between machines through a portable JSON export:
+Backlog rows are local governance memory. A plugin install or Git update does
+not sync backlog rows across machines; it only updates code/plugin assets. Move
+backlog evidence explicitly with a portable JSON export:
 
 ```bash
 aming-claw backlog export --project-id <id> --output backlog.json

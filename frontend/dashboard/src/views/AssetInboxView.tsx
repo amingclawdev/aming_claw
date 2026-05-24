@@ -1,18 +1,33 @@
 import { useMemo, useState } from "react";
+import { api, ApiError } from "../lib/api";
 import type {
   AssetInboxBatchAction,
   AssetInboxItem,
   AssetInboxResponse,
   AssetInboxStatus,
+  NodeRecord,
 } from "../types";
 
 interface Props {
   assetInbox: AssetInboxResponse;
   projectId: string;
   snapshotId: string;
+  nodes: NodeRecord[];
 }
 
 type StatusFilter = AssetInboxStatus | "ALL";
+type AttachRole = "doc" | "test" | "config";
+type AttachState = "idle" | "writing" | "written_uncommitted" | "error";
+
+interface AttachDraft {
+  targetNodeId: string;
+  role: AttachRole;
+}
+
+interface AttachResult {
+  state: AttachState;
+  message: string;
+}
 
 const STATUS_ORDER: StatusFilter[] = [
   "ALL",
@@ -39,9 +54,11 @@ const STATUS_LABELS: Record<string, string> = {
   stale: "Stale",
 };
 
-export default function AssetInboxView({ assetInbox, projectId, snapshotId }: Props) {
+export default function AssetInboxView({ assetInbox, projectId, snapshotId, nodes }: Props) {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("ALL");
   const [query, setQuery] = useState("");
+  const [drafts, setDrafts] = useState<Record<string, AttachDraft>>({});
+  const [attachResults, setAttachResults] = useState<Record<string, AttachResult>>({});
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase();
     return (assetInbox.items ?? [])
@@ -67,6 +84,80 @@ export default function AssetInboxView({ assetInbox, projectId, snapshotId }: Pr
   const statusCounts = assetInbox.summary?.by_status ?? {};
   const reviewCount = assetInbox.summary?.operator_review_count ?? 0;
   const backlogEligible = assetInbox.summary?.backlog_eligible_count ?? 0;
+  const nodeOptions = useMemo(
+    () =>
+      nodes
+        .filter((node) => (node.layer || "").toUpperCase() === "L7")
+        .slice()
+        .sort((a, b) => (a.title || a.node_id).localeCompare(b.title || b.node_id)),
+    [nodes],
+  );
+  const hintableItems = useMemo(
+    () =>
+      (assetInbox.items ?? [])
+        .filter((item) => {
+          const kind = normalizeAssetKind(item.asset_kind);
+          const status = item.asset_status;
+          return (
+            ["doc", "test", "config"].includes(kind) &&
+            item.accepted_bindings.length === 0 &&
+            ["doc_unbound", "doc_candidate", "test_candidate", "config_pending_decision"].includes(status)
+          );
+        })
+        .slice()
+        .sort(compareAssets),
+    [assetInbox.items],
+  );
+
+  const updateDraft = (path: string, patch: Partial<AttachDraft>) => {
+    setDrafts((current) => {
+      const item = assetInbox.items.find((candidate) => candidate.path === path);
+      const existing = current[path] ?? {
+        targetNodeId: suggestedTargetNodeId(item, nodeOptions),
+        role: roleForAsset(item),
+      };
+      return { ...current, [path]: { ...existing, ...patch } };
+    });
+  };
+
+  const writeHint = async (item: AssetInboxItem) => {
+    const draft = drafts[item.path] ?? {
+      targetNodeId: suggestedTargetNodeId(item, nodeOptions),
+      role: roleForAsset(item),
+    };
+    if (!draft.targetNodeId) {
+      setAttachResults((current) => ({
+        ...current,
+        [item.path]: { state: "error", message: "Select a target node first." },
+      }));
+      return;
+    }
+    setAttachResults((current) => ({
+      ...current,
+      [item.path]: { state: "writing", message: "Writing governance hint..." },
+    }));
+    try {
+      const result = await api.attachFileGovernanceHintFor(projectId, snapshotId, {
+        path: item.path,
+        target_node_id: draft.targetNodeId,
+        role: draft.role,
+        actor: "dashboard_user",
+      });
+      setAttachResults((current) => ({
+        ...current,
+        [item.path]: {
+          state: "written_uncommitted",
+          message: result.message || "Hint written. Commit this file, then run Update graph.",
+        },
+      }));
+    } catch (error) {
+      const msg = error instanceof ApiError ? `${error.message} ${error.body}` : String(error);
+      setAttachResults((current) => ({
+        ...current,
+        [item.path]: { state: "error", message: msg },
+      }));
+    }
+  };
 
   return (
     <div className="view">
@@ -90,6 +181,107 @@ export default function AssetInboxView({ assetInbox, projectId, snapshotId }: Pr
         <Kpi label="Backlog eligible" value={backlogEligible} tone={backlogEligible > 0 ? "red" : "neutral"} />
         <Kpi label="Accepted" value={assetInbox.summary.accepted_count ?? countStatus(assetInbox, "accepted")} tone="green" />
         <Kpi label="Total" value={assetInbox.summary.total} tone="blue" />
+      </div>
+
+      <div className="section">
+        <div className="section-head">
+          Governance Hint / Orphan file binding{" "}
+          <span className="head-hint">
+            {hintableItems.length} candidate files · write hint, commit, then Update graph
+          </span>
+        </div>
+        <div className="backlog-guidance backlog-guidance-amber">
+          <div>
+            <strong>Source-controlled graph correction.</strong> This writes a governance hint into the selected file only.
+            Commit that file before clicking <span className="mono">Update graph</span>, because reconcile reads committed source.
+          </div>
+          <span className="mono">Asset Inbox owns file hygiene; Backlog stays a work ledger</span>
+        </div>
+        {hintableItems.length === 0 ? (
+          <div className="empty empty-compact">
+            No unbound doc/test/config assets are ready for direct hint binding in this snapshot.
+          </div>
+        ) : (
+          <div className="card">
+            <table className="table backlog-orphan-table">
+              <thead>
+                <tr>
+                  <th>File</th>
+                  <th style={{ width: 92 }}>Role</th>
+                  <th style={{ width: 280 }}>Target node</th>
+                  <th style={{ width: 168 }}>Action</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {hintableItems.slice(0, 20).map((item) => {
+                  const draft = drafts[item.path] ?? {
+                    targetNodeId: suggestedTargetNodeId(item, nodeOptions),
+                    role: roleForAsset(item),
+                  };
+                  const result = attachResults[item.path] ?? { state: "idle", message: "Not written." };
+                  const supported = canDirectWriteHint(item.path);
+                  const disabled =
+                    !snapshotId ||
+                    !supported ||
+                    nodeOptions.length === 0 ||
+                    result.state === "writing" ||
+                    result.state === "written_uncommitted";
+                  return (
+                    <tr key={item.asset_id}>
+                      <td>
+                        <div className="cell-strong mono">{item.path}</div>
+                        <div className="cell-mono-id">
+                          {item.asset_kind || "unknown"} · {item.asset_status || item.scan_status || "pending"}
+                        </div>
+                      </td>
+                      <td>
+                        <select
+                          value={draft.role}
+                          onChange={(event) => updateDraft(item.path, { role: event.target.value as AttachRole })}
+                          disabled={result.state === "writing" || result.state === "written_uncommitted"}
+                        >
+                          <option value="doc">doc</option>
+                          <option value="test">test</option>
+                          <option value="config">config</option>
+                        </select>
+                      </td>
+                      <td>
+                        <select
+                          className="backlog-node-select"
+                          value={draft.targetNodeId}
+                          onChange={(event) => updateDraft(item.path, { targetNodeId: event.target.value })}
+                          disabled={result.state === "writing" || result.state === "written_uncommitted"}
+                        >
+                          {nodeOptions.map((node) => (
+                            <option key={node.node_id} value={node.node_id}>
+                              {node.title || node.node_id} · {node.node_id}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td>
+                        <button
+                          className="action-btn action-btn-primary"
+                          disabled={disabled}
+                          onClick={() => writeHint(item)}
+                          title={supported ? "Write governance hint into the file" : "This file type cannot be safely commented"}
+                        >
+                          {result.state === "writing" ? "Writing..." : "Write hint"}
+                        </button>
+                      </td>
+                      <td>
+                        <div className={`attach-state attach-state-${result.state}`}>
+                          {supported ? result.message : "Direct write unsupported for this file type."}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       <div className="asset-inbox-toolbar card">
@@ -246,6 +438,56 @@ function ActionCard({ action }: { action: AssetInboxBatchAction }) {
       </button>
     </div>
   );
+}
+
+function normalizeAssetKind(kind?: string): string {
+  const value = (kind || "").trim().toLowerCase();
+  if (value === "index_doc") return "doc";
+  return value;
+}
+
+function roleForAsset(item?: AssetInboxItem): AttachRole {
+  const kind = normalizeAssetKind(item?.asset_kind);
+  if (kind === "test") return "test";
+  if (kind === "config") return "config";
+  return "doc";
+}
+
+function suggestedTargetNodeId(item: AssetInboxItem | undefined, nodes: NodeRecord[]): string {
+  const candidateTarget = item?.binding_candidates?.find((candidate) => candidate.target_node_id)?.target_node_id;
+  if (candidateTarget && nodes.some((node) => node.node_id === candidateTarget)) return candidateTarget;
+  return nodes[0]?.node_id ?? "";
+}
+
+function canDirectWriteHint(path: string): boolean {
+  const lower = path.toLowerCase();
+  const name = lower.split(/[\\/]/).pop() || "";
+  if (name === "dockerfile" || name === "makefile") return true;
+  return [
+    ".md",
+    ".mdx",
+    ".html",
+    ".htm",
+    ".py",
+    ".pyw",
+    ".sh",
+    ".bash",
+    ".ps1",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".txt",
+    ".rst",
+    ".adoc",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".mjs",
+    ".cjs",
+  ].some((suffix) => lower.endsWith(suffix));
 }
 
 function Kpi({ label, value, tone }: { label: string; value: number; tone: string }) {

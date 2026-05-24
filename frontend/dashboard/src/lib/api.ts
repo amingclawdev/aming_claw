@@ -350,6 +350,18 @@ export const api = {
       signal,
     );
   },
+  attachFileGovernanceHintFor(
+    projectId: string,
+    snapshotId: string,
+    payload: { path: string; target_node_id: string; role?: "doc" | "test" | "config"; actor?: string },
+    signal?: AbortSignal,
+  ) {
+    return postJSON<AttachFileHintResponse>(
+      `/api/graph-governance/${pidFor(projectId)}/snapshots/${encodeURIComponent(snapshotId)}/file-hygiene/hints/attach`,
+      { ...payload, actor: payload.actor ?? "dashboard_user" },
+      signal,
+    );
+  },
   fullReconcileFor(projectId: string, payload: GraphReconcilePayload, signal?: AbortSignal) {
     return postJSON<GraphReconcileResponse>(
       `/api/graph-governance/${pidFor(projectId)}/reconcile/full`,

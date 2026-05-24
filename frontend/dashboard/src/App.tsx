@@ -1216,14 +1216,13 @@ export default function App() {
               assetInbox={data.assetInbox}
               projectId={currentProjectId}
               snapshotId={data.status?.active_snapshot_id ?? data.summary?.snapshot_id ?? ""}
+              nodes={data.nodes}
             />
           ) : null}
           {view === "backlog" && data ? (
             <BacklogView
               backlog={data.backlog}
               projectId={currentProjectId}
-              snapshotId={data.status?.active_snapshot_id ?? data.summary?.snapshot_id ?? ""}
-              nodes={data.nodes}
             />
           ) : null}
           {!data && !error && view !== "projects" ? (
