@@ -91,7 +91,7 @@ agent/tests/test_asset_inbox_contract.py
 
 ## Read API Shape
 
-Future live endpoint:
+Live read endpoint:
 
 ```http
 GET /api/graph-governance/{project_id}/snapshots/{snapshot_id}/asset-inbox
@@ -124,9 +124,9 @@ Response contract:
 }
 ```
 
-The frontend has typed API client methods for this future surface, but the
-endpoint is not live in this slice. The next frontend worker should build its
-scenario tests from the fixture first.
+The frontend has typed API client methods for this surface. Mutation endpoints
+for the batch actions are intentionally separate and are not implied by the read
+endpoint.
 
 ## Batch Actions
 

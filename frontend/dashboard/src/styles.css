@@ -945,6 +945,154 @@ a:hover { text-decoration: underline; }
   color: var(--red-strong);
 }
 
+/* ---------- Asset Inbox ---------- */
+
+.asset-inbox-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.asset-chip-count {
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.08);
+  color: var(--ink-700);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.asset-action-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.asset-action-card {
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+  min-height: 118px;
+}
+
+.asset-action-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  font-weight: 700;
+  color: var(--ink-900);
+}
+
+.asset-action-safe,
+.asset-action-danger {
+  flex-shrink: 0;
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.asset-action-safe {
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.asset-action-danger {
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.asset-action-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.asset-action-meta span {
+  border: 1px solid var(--ink-200);
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 10.5px;
+  color: var(--ink-600);
+  background: var(--ink-50);
+}
+
+.asset-inbox-table-card {
+  overflow-x: auto;
+}
+
+.asset-inbox-table {
+  min-width: 1080px;
+}
+
+.asset-inbox-table td {
+  vertical-align: top;
+}
+
+.asset-risk-line {
+  margin-top: 6px;
+  font-size: 10.5px;
+  color: var(--ink-500);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.asset-binding-list,
+.asset-evidence-list,
+.asset-action-list {
+  display: grid;
+  gap: 5px;
+}
+
+.asset-binding {
+  display: inline-grid;
+  gap: 2px;
+  max-width: 230px;
+  border-radius: 6px;
+  padding: 5px 7px;
+  font-size: 11px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+}
+
+.asset-binding em {
+  font-style: normal;
+  color: var(--ink-500);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.asset-binding.accepted {
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.asset-binding.candidate {
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.asset-evidence-list span {
+  font-size: 11px;
+  color: var(--ink-600);
+  line-height: 1.35;
+}
+
+.asset-evidence-list strong {
+  color: var(--ink-800);
+}
+
+.asset-action-list .mono {
+  display: block;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .backlog-title-cell {
   min-width: 280px;
 }

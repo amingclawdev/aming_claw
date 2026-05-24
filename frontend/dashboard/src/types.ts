@@ -516,6 +516,7 @@ export interface AssetInboxResponse {
   summary: AssetInboxSummary;
   items: AssetInboxItem[];
   batch_actions: AssetInboxBatchAction[];
+  precheck?: AssetInboxResponsePrecheck;
 }
 
 export interface AssetInboxBacklogPolicy {
@@ -608,6 +609,15 @@ export interface AssetInboxBatchAction {
   mutates_source?: boolean;
   creates_backlog?: boolean;
   payload_example?: Record<string, unknown>;
+}
+
+export interface AssetInboxResponsePrecheck {
+  schema_version?: string;
+  ok?: boolean;
+  errors?: string[];
+  warnings?: string[];
+  status_count?: number;
+  item_count?: number;
 }
 
 export interface FileInventoryRow {

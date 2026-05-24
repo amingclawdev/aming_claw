@@ -18,6 +18,7 @@ interface Props {
   activeView: ViewName;
   opsCount: number;
   reviewCount: number;
+  assetCount: number;
   backlogCount: number;
   projectCount: number;
   loading: boolean;
@@ -52,6 +53,7 @@ export default function TreePanel(props: Props) {
     activeView,
     opsCount,
     reviewCount,
+    assetCount,
     backlogCount,
     projectCount,
     loading,
@@ -192,6 +194,14 @@ export default function TreePanel(props: Props) {
           active={activeView === "review"}
           collapsed={collapsed}
           onClick={() => props.onSelectView("review")}
+        />
+        <NavRow
+          icon="□"
+          label="Asset Inbox"
+          meta={loading ? "…" : String(assetCount)}
+          active={activeView === "assets"}
+          collapsed={collapsed}
+          onClick={() => props.onSelectView("assets")}
         />
         <NavRow
           icon="▤"

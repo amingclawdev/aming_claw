@@ -6725,6 +6725,24 @@ def handle_graph_governance_snapshot_files(ctx: RequestContext):
         conn.close()
 
 
+@route("GET", "/api/graph-governance/{project_id}/snapshots/{snapshot_id}/asset-inbox")
+def handle_graph_governance_snapshot_asset_inbox(ctx: RequestContext):
+    """Return the read-only Asset Inbox view for one snapshot."""
+    project_id = ctx.get_project_id()
+    raw_snapshot_id = ctx.path_params["snapshot_id"]
+    from .asset_inbox_contract import build_asset_inbox_response
+
+    conn = get_connection(project_id)
+    try:
+        snapshot_id = _resolve_graph_snapshot_id(conn, project_id, raw_snapshot_id)
+        try:
+            return build_asset_inbox_response(conn, project_id, snapshot_id)
+        except (KeyError, ValueError) as exc:
+            _raise_graph_api_validation(exc)
+    finally:
+        conn.close()
+
+
 _FILE_HYGIENE_ACTIONS = {
     "attach_to_node",
     "create_node",

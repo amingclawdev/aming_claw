@@ -10,6 +10,7 @@ import { computeNodeHealth } from "./lib/health";
 import { useEventStream } from "./lib/sse";
 import type {
   ActiveSummaryResponse,
+  AssetInboxResponse,
   BacklogResponse,
   EdgeRecord,
   FeedbackQueueResponse,
@@ -33,9 +34,10 @@ import OperationsQueueView from "./views/OperationsQueueView";
 import ReviewQueueView from "./views/ReviewQueueView";
 import GraphView from "./views/GraphView";
 import BacklogView from "./views/BacklogView";
+import AssetInboxView from "./views/AssetInboxView";
 import ProjectConsoleView from "./views/ProjectConsoleView";
 
-export type ViewName = "projects" | "overview" | "graph" | "operations" | "review" | "backlog";
+export type ViewName = "projects" | "overview" | "graph" | "operations" | "review" | "assets" | "backlog";
 
 const DASHBOARD_PROJECT_STORAGE_KEY = "aming-claw.dashboard.projectId";
 const DASHBOARD_SIDEBAR_COLLAPSED_STORAGE_KEY = "aming-claw.dashboard.sidebarCollapsed";
@@ -43,7 +45,7 @@ const DASHBOARD_PROJECT_ID_PARAM = "project_id";
 const DASHBOARD_LEGACY_PROJECT_PARAM = "project";
 const DASHBOARD_VIEW_PARAM = "view";
 const DASHBOARD_WORKSPACE_PARAM = "workspace";
-const DASHBOARD_VIEWS: readonly ViewName[] = ["projects", "overview", "graph", "operations", "review", "backlog"];
+const DASHBOARD_VIEWS: readonly ViewName[] = ["projects", "overview", "graph", "operations", "review", "assets", "backlog"];
 
 function normalizeProjectId(value: string | null | undefined): string {
   return (value ?? "").trim() || DEFAULT_PROJECT_ID;
@@ -129,6 +131,7 @@ interface DataBundle {
   edges: EdgeRecord[];
   ops: OperationsQueueResponse;
   feedback: FeedbackQueueResponse;
+  assetInbox: AssetInboxResponse;
   backlog: BacklogResponse;
   loadedAt: string;
 }
@@ -290,10 +293,11 @@ export default function App() {
       ]);
       setAiConfig(aiCfg);
       const snapshotId = status.active_snapshot_id || summary.snapshot_id;
-      const [nodesRes, edgesRes, feedback] = await Promise.all([
+      const [nodesRes, edgesRes, feedback, assetInbox] = await Promise.all([
         api.nodesFor(requestProjectId, snapshotId, 1000, signal),
         api.edgesFor(requestProjectId, snapshotId, 4000, signal),
         api.feedbackQueueFor(requestProjectId, snapshotId, signal),
+        api.assetInboxFor(requestProjectId, snapshotId, signal),
       ]);
       // projection.projection is null when the snapshot was just rebuilt and
       // the semantic projection hasn't been computed yet. mergeProjection
@@ -315,6 +319,7 @@ export default function App() {
         edges: edgesRes.edges,
         ops: emptyOperationsQueue(requestProjectId, snapshotId),
         feedback,
+        assetInbox,
         backlog,
         loadedAt: new Date().toISOString(),
       });
@@ -998,6 +1003,7 @@ export default function App() {
           activeView={view}
           opsCount={data?.ops?.count ?? 0}
           reviewCount={data?.feedback?.summary?.visible_group_count ?? 0}
+          assetCount={data?.assetInbox?.summary?.operator_review_count ?? 0}
           backlogCount={countOpenBacklog(data?.backlog)}
           projectCount={projects.length}
           onSelectNode={handleSelectNode}
@@ -1091,6 +1097,13 @@ export default function App() {
               onRetry={handleFeedbackRetry}
               onOpenNodeInGraph={handleSelectNodeFromReview}
               onOpenEdgeInGraph={handleSelectEdgeFromReview}
+            />
+          ) : null}
+          {view === "assets" && data ? (
+            <AssetInboxView
+              assetInbox={data.assetInbox}
+              projectId={currentProjectId}
+              snapshotId={data.status?.active_snapshot_id ?? data.summary?.snapshot_id ?? ""}
             />
           ) : null}
           {view === "backlog" && data ? (
