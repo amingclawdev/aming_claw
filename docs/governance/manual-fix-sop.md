@@ -1,3 +1,5 @@
+<!-- governance-hint {"attach_to_node": {"path": "docs/governance/manual-fix-sop.md", "role": "doc", "target_node_id": "L7.148"}} -->
+
 # Manual Fix SOP (Standard Operating Procedure)
 
 > Status: DRAFT v7 - trailer-priority chain anchor + graph-first/E2E impact gate

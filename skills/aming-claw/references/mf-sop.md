@@ -1,3 +1,5 @@
+<!-- governance-hint {"attach_to_node": {"path": "skills/aming-claw/references/mf-sop.md", "role": "doc", "target_node_id": "L7.159"}} -->
+
 # Manual-Fix Checklist
 
 Canonical source: `docs/governance/manual-fix-sop.md`. This file is only the short session checklist.
