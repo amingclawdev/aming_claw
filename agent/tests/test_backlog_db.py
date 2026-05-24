@@ -296,6 +296,69 @@ class TestBacklogRESTEndpoints(unittest.TestCase):
         self.assertEqual(result["required_docs"], ["docs/governance/manual-fix-sop.md"])
         self.assertEqual(result["provenance_paths"], ["agent/governance/server.py"])
 
+    def test_upsert_existing_preserves_evidence_when_only_docs_change(self):
+        from governance.server import handle_backlog_upsert, handle_backlog_get
+
+        handle_backlog_upsert(
+            self._make_ctx(
+                {"project_id": "test-project", "bug_id": "PATCH-DOCS"},
+                body={
+                    "title": "Evidence row",
+                    "status": "OPEN",
+                    "priority": "P0",
+                    "target_files": ["agent/governance/server.py"],
+                    "test_files": ["agent/tests/test_backlog_db.py"],
+                    "acceptance_criteria": ["preserve omitted evidence"],
+                    "details_md": "Original evidence details",
+                    "chain_trigger_json": {"parallel_contract": {"lane": "backlog-upsert-preserve"}},
+                    "required_docs": ["docs/original.md"],
+                    "provenance_paths": ["BACKLOG-ORIGINAL"],
+                    "force_admit": True,
+                },
+            )
+        )
+
+        handle_backlog_upsert(
+            self._make_ctx(
+                {"project_id": "test-project", "bug_id": "PATCH-DOCS"},
+                body={
+                    "required_docs": ["docs/replacement.md"],
+                    "provenance_paths": ["BACKLOG-UPDATED"],
+                },
+            )
+        )
+
+        result = handle_backlog_get(
+            self._make_ctx({"project_id": "test-project", "bug_id": "PATCH-DOCS"})
+        )
+        self.assertEqual(result["title"], "Evidence row")
+        self.assertEqual(result["status"], "OPEN")
+        self.assertEqual(result["priority"], "P0")
+        self.assertEqual(json.loads(result["target_files"]), ["agent/governance/server.py"])
+        self.assertEqual(json.loads(result["test_files"]), ["agent/tests/test_backlog_db.py"])
+        self.assertEqual(json.loads(result["acceptance_criteria"]), ["preserve omitted evidence"])
+        self.assertEqual(result["details_md"], "Original evidence details")
+        self.assertEqual(
+            json.loads(result["chain_trigger_json"]),
+            {"parallel_contract": {"lane": "backlog-upsert-preserve"}},
+        )
+        self.assertEqual(result["required_docs"], ["docs/replacement.md"])
+        self.assertEqual(result["provenance_paths"], ["BACKLOG-UPDATED"])
+
+        handle_backlog_upsert(
+            self._make_ctx(
+                {"project_id": "test-project", "bug_id": "PATCH-DOCS"},
+                body={"required_docs": []},
+            )
+        )
+
+        cleared = handle_backlog_get(
+            self._make_ctx({"project_id": "test-project", "bug_id": "PATCH-DOCS"})
+        )
+        self.assertEqual(cleared["required_docs"], [])
+        self.assertEqual(cleared["provenance_paths"], ["BACKLOG-UPDATED"])
+        self.assertEqual(cleared["title"], "Evidence row")
+
     def test_upsert_existing_allows_explicit_clear(self):
         from governance.server import handle_backlog_upsert, handle_backlog_get
 

@@ -9,10 +9,47 @@
   ],
   "worker_contract": {
     "required_fields": [
+      "task_id",
+      "parent_task_id",
+      "worker_role",
+      "fence_token",
       "owned_files",
       "responsibility",
-      "required_evidence"
+      "required_evidence",
+      "graph_queries",
+      "self_precheck",
+      "gate_alignment"
     ],
+    "runtime_identity": {
+      "worker_role": "mf_sub",
+      "required_fields": [
+        "task_id",
+        "parent_task_id",
+        "worker_role",
+        "fence_token"
+      ],
+      "description": "Observer must instantiate these values from durable task metadata before delegating work. Subagents must echo them in implementation and verification evidence."
+    },
+    "graph_queries": {
+      "audited": true,
+      "query_source": "mf_subagent",
+      "required_context_fields": [
+        "task_id",
+        "parent_task_id",
+        "worker_role",
+        "fence_token"
+      ],
+      "timeline_trace_requirement": "graph_trace_ids",
+      "description": "Any subagent graph lookup must use audited query_source=mf_subagent with task identity and fence context; returned trace ids must be recorded in timeline evidence."
+    },
+    "self_precheck": {
+      "required": true,
+      "description": "Observer must include the local self-precheck or gate precheck command/API expected for machine-consumed output, and the subagent must record compact self_check evidence."
+    },
+    "gate_alignment": {
+      "required": true,
+      "description": "Observer must align required evidence ids, focused tests, E2E decision, and finish-gate expectations before delegation."
+    },
     "forbidden_capabilities": [
       "merge",
       "push",
@@ -54,6 +91,13 @@
       "verification.requirement_id",
       "verification.requirement_ids",
       "verification.contract_evidence[].requirement_id"
+    ],
+    "trace_id_locations": [
+      "payload.graph_trace_ids",
+      "payload.graph_query_trace_ids",
+      "verification.graph_trace_ids",
+      "verification.graph_query_trace_ids",
+      "verification.contract_evidence[].graph_trace_ids"
     ],
     "passing_statuses": [
       "accepted",

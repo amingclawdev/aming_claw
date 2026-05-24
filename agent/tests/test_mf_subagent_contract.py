@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sys
 
@@ -24,6 +25,49 @@ from agent.governance.mf_subagent_contract import (
     validate_mf_subagent_finish_gate,
 )
 from agent.governance.parallel_branch_runtime import BranchTaskRuntimeContext
+
+
+def test_mf_parallel_template_requires_subagent_fence_and_graph_trace_contract() -> None:
+    template_path = (
+        _repo_root
+        / "agent"
+        / "governance"
+        / "contract_templates"
+        / "mf_parallel.v1.json"
+    )
+    template = json.loads(template_path.read_text(encoding="utf-8"))
+
+    worker_contract = template["worker_contract"]
+    assert set(worker_contract["required_fields"]).issuperset(
+        {
+            "task_id",
+            "parent_task_id",
+            "worker_role",
+            "fence_token",
+            "graph_queries",
+        }
+    )
+
+    runtime_identity = worker_contract["runtime_identity"]
+    assert runtime_identity["worker_role"] == "mf_sub"
+    assert set(runtime_identity["required_fields"]) == {
+        "task_id",
+        "parent_task_id",
+        "worker_role",
+        "fence_token",
+    }
+
+    graph_queries = worker_contract["graph_queries"]
+    assert graph_queries["query_source"] == "mf_subagent"
+    assert graph_queries["audited"] is True
+    assert set(graph_queries["required_context_fields"]).issuperset(
+        {"task_id", "parent_task_id", "worker_role", "fence_token"}
+    )
+    assert graph_queries["timeline_trace_requirement"] == "graph_trace_ids"
+
+    timeline_contract = template["timeline_contract"]
+    assert "payload.graph_trace_ids" in timeline_contract["trace_id_locations"]
+    assert "verification.graph_trace_ids" in timeline_contract["trace_id_locations"]
 
 
 def _context(**overrides: object) -> BranchTaskRuntimeContext:

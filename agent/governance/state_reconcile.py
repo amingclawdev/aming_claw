@@ -3611,15 +3611,26 @@ def _finalize_scope_reconcile_candidate(
         try:
             from agent.governance import asset_impact
 
-            pending_notes["asset_impact"] = asset_impact.record_scope_asset_impacts(
-                conn,
-                project_id,
-                snapshot_id=sid,
-                commit_sha=target,
-                scope_graph_delta=scope_graph_delta,
-                asset_kind="doc",
-                actor=created_by,
+            asset_impact_by_kind = {
+                kind: asset_impact.record_scope_asset_impacts(
+                    conn,
+                    project_id,
+                    snapshot_id=sid,
+                    commit_sha=target,
+                    scope_graph_delta=scope_graph_delta,
+                    asset_kind=kind,
+                    actor=created_by,
+                )
+                for kind in ("doc", "test", "config")
+            }
+            legacy_doc_result = dict(asset_impact_by_kind.get("doc") or {})
+            legacy_doc_result["by_asset_kind"] = asset_impact_by_kind
+            legacy_doc_result["asset_kinds"] = sorted(asset_impact_by_kind)
+            legacy_doc_result["total_event_count"] = sum(
+                int((result or {}).get("event_count") or 0)
+                for result in asset_impact_by_kind.values()
             )
+            pending_notes["asset_impact"] = legacy_doc_result
         except Exception as exc:
             pending_notes["asset_impact"] = {
                 "ok": False,

@@ -16,7 +16,7 @@ from agent.governance.asset_impact import (
     record_scope_asset_impacts,
     resolve_asset_impact_reminder,
 )
-from agent.governance.asset_projection import upsert_doc_asset_projection
+from agent.governance.asset_projection import upsert_asset_projection_rows, upsert_doc_asset_projection
 from agent.governance.db import _ensure_schema
 
 
@@ -290,6 +290,86 @@ def test_scope_doc_impact_requires_code_or_config_change() -> None:
     assert result["event_count"] == 0
     assert result["skipped_non_code_node_change"] == 1
     assert list_pending_asset_impact_reminders(conn, PID, asset_kind="doc") == []
+
+
+def test_scope_asset_impacts_cover_accepted_doc_test_config_bindings_only() -> None:
+    conn = _conn()
+    _index_runtime_snapshot(conn, "scope-assets", "c-assets")
+    for asset_kind, asset_path in (
+        ("doc", "docs/runtime.md"),
+        ("test", "tests/runtime_contract.py"),
+        ("config", "config/runtime-contract.yaml"),
+    ):
+        upsert_asset_projection_rows(
+            conn,
+            project_id=PID,
+            snapshot_id="scope-assets",
+            commit_sha="c-assets",
+            asset_kind=asset_kind,
+            rows=[
+                {
+                    "path": asset_path,
+                    "file_kind": asset_kind,
+                    "binding_status": "accepted",
+                    "accepted_bindings": [
+                        {
+                            "node_id": "L7.runtime",
+                            "title": "Runtime Service",
+                            "role": asset_kind,
+                            "source": "accepted-test-binding",
+                        }
+                    ],
+                    "binding_candidates": [],
+                    "impact_scope_policy": "accepted_bindings_only",
+                },
+                {
+                    "path": f"candidate/{asset_kind}-runtime.txt",
+                    "file_kind": asset_kind,
+                    "binding_status": "candidate",
+                    "accepted_bindings": [],
+                    "binding_candidates": [
+                        {
+                            "node_id": "L7.runtime",
+                            "title": "Runtime Service",
+                            "role": asset_kind,
+                            "source": "weak-candidate-test-binding",
+                            "precheck": {
+                                "ok": True,
+                                "decision": "review_required",
+                                "binding_strength": "weak",
+                            },
+                        }
+                    ],
+                    "impact_scope_policy": "accepted_bindings_only",
+                },
+            ],
+        )
+
+    results = {
+        asset_kind: record_scope_asset_impacts(
+            conn,
+            PID,
+            snapshot_id="scope-assets",
+            commit_sha="c-impact",
+            scope_graph_delta=_scope_delta("src/runtime.py"),
+            asset_kind=asset_kind,
+            actor="test",
+        )
+        for asset_kind in ("doc", "test", "config")
+    }
+
+    assert {kind: result["event_count"] for kind, result in results.items()} == {
+        "doc": 1,
+        "test": 1,
+        "config": 1,
+    }
+    reminders = list_pending_asset_impact_reminders(conn, PID)
+    assert {(row["asset_kind"], row["asset_path"]) for row in reminders} == {
+        ("doc", "docs/runtime.md"),
+        ("test", "tests/runtime_contract.py"),
+        ("config", "config/runtime-contract.yaml"),
+    }
+    assert not any(row["asset_path"].startswith("candidate/") for row in reminders)
 
 
 def test_db_migration_from_v43_adds_asset_impact_tables() -> None:

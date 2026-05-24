@@ -31,6 +31,19 @@ Canonical source: `docs/governance/manual-fix-sop.md`. This file is only the sho
 7. For parallel MF or subagent work, instantiate a source-controlled contract template before delegation:
    - start from `agent/governance/contract_templates/mf_parallel.v1.json`;
    - write the instance to `chain_trigger_json.parallel_contract`;
+   - fill each `mf_sub` worker's runtime identity from task metadata before dispatch:
+     `task_id`, `parent_task_id`, `worker_role=mf_sub`, and `fence_token`;
+   - require subagent graph lookups to use audited
+     `query_source=mf_subagent`, with `task_id`, `parent_task_id`,
+     `worker_role`, and `fence_token` in the query context;
+   - require subagent implementation or verification timeline evidence to
+     include returned graph trace ids in `payload.graph_trace_ids`,
+     `payload.graph_query_trace_ids`, `verification.graph_trace_ids`, or
+     `verification.graph_query_trace_ids`;
+   - align self-precheck and gate expectations before dispatch: required
+     evidence ids, focused test commands, E2E decision or defer row, finish-gate
+     fence expectations, and the compact `self_check` evidence the subagent must
+     report;
    - give every required evidence item a stable `id`;
    - require timeline evidence to reference ids through `payload.requirement_id(s)`,
      `verification.requirement_id(s)`, or `verification.contract_evidence[].requirement_id`;
