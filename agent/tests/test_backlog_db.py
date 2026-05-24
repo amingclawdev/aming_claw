@@ -253,6 +253,78 @@ class TestBacklogRESTEndpoints(unittest.TestCase):
         bug_ids = [b["bug_id"] for b in result2["bugs"]]
         self.assertIn("B99", bug_ids)
 
+    def test_upsert_existing_preserves_omitted_fields(self):
+        from governance.server import handle_backlog_upsert, handle_backlog_get
+
+        ctx = self._make_ctx(
+            {"project_id": "test-project", "bug_id": "PATCH-1"},
+            body={
+                "title": "Preserve me",
+                "status": "OPEN",
+                "priority": "P1",
+                "target_files": ["agent/governance/server.py"],
+                "test_files": ["agent/tests/test_backlog_db.py"],
+                "acceptance_criteria": ["original acceptance"],
+                "details_md": "Original details",
+                "chain_trigger_json": {"source": "test"},
+                "required_docs": ["docs/governance/manual-fix-sop.md"],
+                "provenance_paths": ["agent/governance/server.py"],
+                "force_admit": True,
+            },
+        )
+        handle_backlog_upsert(ctx)
+
+        patch_ctx = self._make_ctx(
+            {"project_id": "test-project", "bug_id": "PATCH-1"},
+            body={"status": "FIXED", "commit": "abc1234", "fixed_at": "2026-05-24T00:00:00Z"},
+        )
+        handle_backlog_upsert(patch_ctx)
+
+        result = handle_backlog_get(
+            self._make_ctx({"project_id": "test-project", "bug_id": "PATCH-1"})
+        )
+        self.assertEqual(result["title"], "Preserve me")
+        self.assertEqual(result["status"], "FIXED")
+        self.assertEqual(result["priority"], "P1")
+        self.assertEqual(result["commit"], "abc1234")
+        self.assertEqual(result["fixed_at"], "2026-05-24T00:00:00Z")
+        self.assertEqual(result["details_md"], "Original details")
+        self.assertEqual(json.loads(result["target_files"]), ["agent/governance/server.py"])
+        self.assertEqual(json.loads(result["test_files"]), ["agent/tests/test_backlog_db.py"])
+        self.assertEqual(json.loads(result["acceptance_criteria"]), ["original acceptance"])
+        self.assertEqual(json.loads(result["chain_trigger_json"]), {"source": "test"})
+        self.assertEqual(result["required_docs"], ["docs/governance/manual-fix-sop.md"])
+        self.assertEqual(result["provenance_paths"], ["agent/governance/server.py"])
+
+    def test_upsert_existing_allows_explicit_clear(self):
+        from governance.server import handle_backlog_upsert, handle_backlog_get
+
+        handle_backlog_upsert(
+            self._make_ctx(
+                {"project_id": "test-project", "bug_id": "PATCH-CLEAR"},
+                body={
+                    "title": "Clear me",
+                    "target_files": ["agent/governance/server.py"],
+                    "details_md": "Details",
+                    "force_admit": True,
+                },
+            )
+        )
+
+        handle_backlog_upsert(
+            self._make_ctx(
+                {"project_id": "test-project", "bug_id": "PATCH-CLEAR"},
+                body={"title": "", "target_files": [], "details_md": ""},
+            )
+        )
+
+        result = handle_backlog_get(
+            self._make_ctx({"project_id": "test-project", "bug_id": "PATCH-CLEAR"})
+        )
+        self.assertEqual(result["title"], "")
+        self.assertEqual(json.loads(result["target_files"]), [])
+        self.assertEqual(result["details_md"], "")
+
     def test_get_existing(self):
         from governance.server import handle_backlog_upsert, handle_backlog_get
 

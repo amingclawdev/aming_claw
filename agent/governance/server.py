@@ -16834,9 +16834,12 @@ def handle_backlog_upsert(ctx: RequestContext):
     now = _utc_now()
     conn = get_connection(pid)
     try:
+        existing_row = conn.execute(
+            "SELECT * FROM backlog_bugs WHERE bug_id = ?", (bug_id,)
+        ).fetchone()
         # --- AI triage gate (R2: before INSERT, skip if force_admit) ---
         decision = None
-        if not body.get("force_admit"):
+        if existing_row is None and not body.get("force_admit"):
             try:
                 from .backlog_triage import triage_backlog_insert
                 explicit_triage_action = str(body.get("triage_action") or "").strip()
@@ -16938,6 +16941,21 @@ def handle_backlog_upsert(ctx: RequestContext):
                 except Exception:
                     pass
                 decision = {"action": "admit", "reason": "agent failure", "related_bug_ids": [], "confidence": 0.0}
+
+        def _value(key: str, default: Any = "") -> Any:
+            if key in body:
+                return body.get(key)
+            if existing_row is not None:
+                return existing_row[key]
+            return default
+
+        def _json_value(key: str, default: Any) -> str:
+            if key in body:
+                return json.dumps(body.get(key, default))
+            if existing_row is not None:
+                return str(existing_row[key] or json.dumps(default))
+            return json.dumps(default)
+
         bypass_policy = backlog_runtime.parse_json_object(body.get("bypass_policy_json"))
         bypass_policy.update(backlog_runtime.parse_json_object(body.get("bypass_policy")))
         if body.get("mf_type"):
@@ -16982,20 +17000,20 @@ def handle_backlog_upsert(ctx: RequestContext):
             """,
             (
                 bug_id,
-                body.get("title", ""),
-                body.get("status", "OPEN"),
-                body.get("priority", "P3"),
-                json.dumps(body.get("target_files", [])),
-                json.dumps(body.get("test_files", [])),
-                json.dumps(body.get("acceptance_criteria", [])),
-                body.get("chain_task_id", ""),
-                body.get("commit", ""),
-                body.get("discovered_at", ""),
-                body.get("fixed_at", ""),
-                body.get("details_md", ""),
-                json.dumps(body.get("chain_trigger_json", {})),
-                json.dumps(body.get("required_docs", [])),
-                json.dumps(body.get("provenance_paths", [])),
+                _value("title", ""),
+                _value("status", "OPEN"),
+                _value("priority", "P3"),
+                _json_value("target_files", []),
+                _json_value("test_files", []),
+                _json_value("acceptance_criteria", []),
+                _value("chain_task_id", ""),
+                _value("commit", ""),
+                _value("discovered_at", ""),
+                _value("fixed_at", ""),
+                _value("details_md", ""),
+                _json_value("chain_trigger_json", {}),
+                _json_value("required_docs", []),
+                _json_value("provenance_paths", []),
                 bypass_policy_raw,
                 backlog_runtime.normalize_mf_type(body.get("mf_type"), bypass_policy) if body.get("mf_type") else "",
                 takeover_raw,
