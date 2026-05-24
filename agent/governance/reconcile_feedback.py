@@ -60,6 +60,60 @@ STATUS_REJECTED = "rejected"
 STATUS_BACKLOG_FILED = "backlog_filed"
 STATUS_NEEDS_HUMAN_SIGNOFF = "needs_human_signoff"
 
+FEEDBACK_CATEGORY_SEMANTIC = "semantic"
+FEEDBACK_CATEGORY_GRAPH_STRUCTURE = "graph_structure"
+FEEDBACK_CATEGORY_GRAPH_ENRICH_CONFIG = "graph_enrich_config"
+FEEDBACK_CATEGORY_ASSET_BINDING = "asset_binding"
+FEEDBACK_CATEGORY_DOC_BINDING = "doc_binding"
+FEEDBACK_CATEGORY_TEST_BINDING = "test_binding"
+FEEDBACK_CATEGORY_CONFIG_BINDING = "config_binding"
+FEEDBACK_CATEGORY_STATUS_OBSERVATION = "status_observation"
+FEEDBACK_CATEGORY_BACKLOG = "backlog"
+FEEDBACK_CATEGORY_OTHER = "other"
+
+FEEDBACK_CATEGORIES: dict[str, dict[str, str]] = {
+    FEEDBACK_CATEGORY_SEMANTIC: {
+        "label": "Semantic",
+        "description": "Semantic memory or AI enrichment review.",
+    },
+    FEEDBACK_CATEGORY_GRAPH_STRUCTURE: {
+        "label": "Graph structure",
+        "description": "Graph topology, relation, node, or role correction.",
+    },
+    FEEDBACK_CATEGORY_GRAPH_ENRICH_CONFIG: {
+        "label": "Graph enrich config",
+        "description": "Semantic enrichment configuration, predicate, or action registration.",
+    },
+    FEEDBACK_CATEGORY_ASSET_BINDING: {
+        "label": "Asset binding",
+        "description": "Generic source-controlled asset binding review.",
+    },
+    FEEDBACK_CATEGORY_DOC_BINDING: {
+        "label": "Doc binding",
+        "description": "Documentation asset binding or documentation coverage review.",
+    },
+    FEEDBACK_CATEGORY_TEST_BINDING: {
+        "label": "Test binding",
+        "description": "Test asset binding, stale expectation, or coverage review.",
+    },
+    FEEDBACK_CATEGORY_CONFIG_BINDING: {
+        "label": "Config binding",
+        "description": "Configuration asset binding or config coverage review.",
+    },
+    FEEDBACK_CATEGORY_STATUS_OBSERVATION: {
+        "label": "Status observation",
+        "description": "Informational observation kept out of action lanes by default.",
+    },
+    FEEDBACK_CATEGORY_BACKLOG: {
+        "label": "Backlog",
+        "description": "Project improvement or backlog filing candidate.",
+    },
+    FEEDBACK_CATEGORY_OTHER: {
+        "label": "Other",
+        "description": "Review item that does not match a more specific category.",
+    },
+}
+
 FEEDBACK_DECISION_ACTIONS = {
     "accept_graph_correction",
     "accept_project_improvement",
@@ -108,6 +162,8 @@ def feedback_action_catalog() -> dict[str, Any]:
         },
         "decision_actions": sorted(FEEDBACK_DECISION_ACTIONS),
         "review_decisions": sorted(REVIEW_DECISIONS),
+        "categories": FEEDBACK_CATEGORIES,
+        "category_order": list(FEEDBACK_CATEGORIES.keys()),
         "status_observation_categories": sorted(STATUS_OBSERVATION_CATEGORIES),
         "endpoints": {
             "submit_feedback": "POST /api/graph-governance/{project_id}/snapshots/{snapshot_id}/feedback",
@@ -842,6 +898,108 @@ def _feedback_lane(item: dict[str, Any]) -> str:
     return "graph_patch_candidate"
 
 
+def _feedback_category_text(item: dict[str, Any]) -> str:
+    evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+    raw_issue = evidence.get("raw_issue") if isinstance(evidence.get("raw_issue"), dict) else {}
+    return " ".join(
+        str(part or "").lower()
+        for part in [
+            item.get("feedback_kind"),
+            item.get("final_feedback_kind"),
+            item.get("issue_type"),
+            item.get("status_observation_category"),
+            item.get("reviewed_status_observation_category"),
+            item.get("target_type"),
+            item.get("target_id"),
+            item.get("source_round"),
+            item.get("issue"),
+            item.get("suggested_action"),
+            evidence.get("reason"),
+            raw_issue.get("reason"),
+            raw_issue.get("kind"),
+            raw_issue.get("type"),
+            raw_issue.get("source"),
+            raw_issue.get("category"),
+        ]
+    )
+
+
+def _feedback_category(item: dict[str, Any]) -> str:
+    """Derive a stable Review Queue category from server-side item metadata."""
+    kind = str(item.get("final_feedback_kind") or item.get("feedback_kind") or "").strip()
+    status = str(item.get("status") or "").strip()
+    target_type = str(item.get("target_type") or "").strip().lower()
+    issue_type = str(item.get("issue_type") or "").strip().lower()
+    status_category = str(
+        item.get("reviewed_status_observation_category")
+        or item.get("status_observation_category")
+        or ""
+    ).strip().lower()
+    text = _feedback_category_text(item)
+
+    if kind == KIND_STATUS_OBSERVATION:
+        return FEEDBACK_CATEGORY_STATUS_OBSERVATION
+    if kind == KIND_PROJECT_IMPROVEMENT or status == STATUS_BACKLOG_FILED or item.get("backlog_bug_id"):
+        return FEEDBACK_CATEGORY_BACKLOG
+    if kind == KIND_FALSE_POSITIVE:
+        return FEEDBACK_CATEGORY_OTHER
+    if (
+        "graph_enrich_config" in text
+        or "graph enrich config" in text
+        or "enrich_config" in text
+        or "semantic_enrichment_config" in text
+        or "semantic config" in text
+        or "config_patch" in text
+        or "registered_action" in text
+        or "enricher" in text
+        or "predicate" in text
+    ):
+        return FEEDBACK_CATEGORY_GRAPH_ENRICH_CONFIG
+    binding_text = (
+        "binding" in text
+        or "asset" in text
+        or "orphan" in text
+        or "unmapped" in text
+        or "coverage_gap" in text
+        or "coverage gap" in text
+    )
+    if binding_text:
+        if target_type == "doc" or "doc" in issue_type or "doc" in status_category:
+            return FEEDBACK_CATEGORY_DOC_BINDING
+        if target_type == "test" or "test" in issue_type or "test" in status_category:
+            return FEEDBACK_CATEGORY_TEST_BINDING
+        if target_type == "config" or "config" in issue_type or "config" in text:
+            return FEEDBACK_CATEGORY_CONFIG_BINDING
+        if "asset" in text or "binding" in text or "orphan" in text or "unmapped" in text:
+            return FEEDBACK_CATEGORY_ASSET_BINDING
+    if (
+        kind == KIND_GRAPH_CORRECTION
+        or "graph_structure" in text
+        or "graph structure" in text
+        or "add_relation" in issue_type
+        or "typed_relation" in issue_type
+        or "relation" in text
+        or "edge" in text
+        or "split" in text
+        or "merge" in text
+        or "reclassify" in text
+    ):
+        return FEEDBACK_CATEGORY_GRAPH_STRUCTURE
+    if (
+        "semantic" in text
+        or str(item.get("source_round") or "").startswith("round-")
+        or "ai_enrich" in text
+        or "ai enrich" in text
+    ):
+        return FEEDBACK_CATEGORY_SEMANTIC
+    return FEEDBACK_CATEGORY_OTHER
+
+
+def _feedback_category_label(category: str) -> str:
+    metadata = FEEDBACK_CATEGORIES.get(category) or FEEDBACK_CATEGORIES[FEEDBACK_CATEGORY_OTHER]
+    return metadata["label"]
+
+
 def _lane_rank(lane: str) -> int:
     return {
         "review_required": 0,
@@ -853,8 +1011,9 @@ def _lane_rank(lane: str) -> int:
 
 
 def _queue_group_key(item: dict[str, Any], lane: str, *, group_by: str = "target") -> str:
+    review_category = _feedback_category(item)
     if group_by == "lane":
-        return lane
+        return "|".join([lane, review_category])
     nodes = _source_nodes(item)
     node_key = ",".join(nodes) if nodes else ""
     category = str(
@@ -863,9 +1022,10 @@ def _queue_group_key(item: dict[str, Any], lane: str, *, group_by: str = "target
         or ""
     )
     if group_by in {"feature", "node", "source_node"} and node_key:
-        return "|".join([lane, node_key, category])
+        return "|".join([lane, review_category, node_key, category])
     parts = [
         lane,
+        review_category,
         node_key,
         str(item.get("target_type") or ""),
         str(item.get("target_id") or ""),
@@ -1078,6 +1238,7 @@ def build_feedback_review_queue(
     by_kind: dict[str, int] = {}
     by_status: dict[str, int] = {}
     by_lane_all: dict[str, int] = {}
+    by_category_all: dict[str, int] = {}
     hidden_status = 0
     hidden_resolved = 0
     hidden_claimed = 0
@@ -1095,7 +1256,9 @@ def build_feedback_review_queue(
         by_kind[kind] = by_kind.get(kind, 0) + 1
         by_status[item_status] = by_status.get(item_status, 0) + 1
         item_lane = _feedback_lane(item)
+        item_category = _feedback_category(item)
         by_lane_all[item_lane] = by_lane_all.get(item_lane, 0) + 1
+        by_category_all[item_category] = by_category_all.get(item_category, 0) + 1
         if lane and item_lane != lane:
             continue
         if item_lane == "status_only" and not include_status_observations:
@@ -1135,6 +1298,8 @@ def build_feedback_review_queue(
                 "queue_id": f"fq-{_short_hash({'snapshot_id': snapshot_id, 'key': key})}",
                 "group_by": group_by,
                 "lane": item_lane,
+                "category": item_category,
+                "category_label": _feedback_category_label(item_category),
                 "action_hint": _queue_action_hint(item_lane),
                 "priority": priority,
                 "source_node_ids": nodes,
@@ -1204,9 +1369,12 @@ def build_feedback_review_queue(
         grouped = grouped[: int(limit)]
 
     by_lane_visible: dict[str, int] = {}
+    by_category_visible: dict[str, int] = {}
     for group in grouped:
         group_lane = str(group.get("lane") or "")
+        group_category = str(group.get("category") or FEEDBACK_CATEGORY_OTHER)
         by_lane_visible[group_lane] = by_lane_visible.get(group_lane, 0) + 1
+        by_category_visible[group_category] = by_category_visible.get(group_category, 0) + 1
 
     return {
         "project_id": project_id,
@@ -1225,6 +1393,8 @@ def build_feedback_review_queue(
             "by_status": dict(sorted(by_status.items())),
             "by_lane_all_items": dict(sorted(by_lane_all.items())),
             "by_lane_visible_groups": dict(sorted(by_lane_visible.items())),
+            "by_category_all_items": dict(sorted(by_category_all.items())),
+            "by_category_visible_groups": dict(sorted(by_category_visible.items())),
         },
         "groups": grouped,
         "count": len(grouped),

@@ -6050,6 +6050,69 @@ def test_graph_governance_feedback_submit_creates_queue_item_and_graph_event(con
     assert lane_queue["groups"][0]["target_type"] == "feedback_lane"
 
 
+def test_graph_governance_feedback_queue_exposes_category_metadata(conn):
+    snapshot = store.create_graph_snapshot(
+        conn,
+        PID,
+        snapshot_id="full-feedback-category-api",
+        commit_sha="head",
+        snapshot_kind="full",
+        graph_json=_graph(),
+    )
+    conn.commit()
+    cases = [
+        ("graph_correction", "add_typed_relation", "dependency_patch_suggestions", "Add relation.", "graph_structure"),
+        ("graph_correction", "add_doc_binding", "asset_binding_proposal", "Bind docs/runbook.md.", "doc_binding"),
+        ("graph_correction", "test_binding_realign", "asset_binding_proposal", "Bind tests/test_router.py.", "test_binding"),
+        ("graph_correction", "config_binding_addition", "asset_binding_proposal", "Bind config/router.yml.", "config_binding"),
+        ("graph_correction", "asset_binding", "asset_binding_proposal", "Bind generated asset.", "asset_binding"),
+        ("needs_observer_decision", "semantic_memory_update", "ai_enrich", "Review semantic memory.", "semantic"),
+        ("needs_observer_decision", "graph_enrich_config", "registered_action_needed", "Add enricher predicate.", "graph_enrich_config"),
+        ("project_improvement", "unit_test_gap", "dashboard feedback", "Add focused tests.", "backlog"),
+        ("status_observation", "stale_test_expectation", "status_observation", "Stale test expectation.", "status_observation"),
+    ]
+    for index, (kind, issue_type, reason, summary, _category) in enumerate(cases):
+        reconcile_feedback.submit_feedback_item(
+            PID,
+            snapshot["snapshot_id"],
+            feedback_kind=kind,
+            source_round="round-category",
+            actor="observer",
+            issue={
+                "node_id": "L7.1",
+                "type": issue_type,
+                "reason": reason,
+                "summary": summary,
+                "target": f"target-{index}",
+            },
+        )
+
+    queue = server.handle_graph_governance_snapshot_feedback_queue(
+        _ctx(
+            {"project_id": PID, "snapshot_id": snapshot["snapshot_id"]},
+            query={
+                "source_round": "round-category",
+                "include_status_observations": "true",
+                "group_by": "target",
+            },
+        )
+    )
+
+    expected_categories = {category for *_prefix, category in cases}
+    assert queue["group_count"] == len(cases)
+    assert {group["category"] for group in queue["groups"]} == expected_categories
+    assert all(group["category_label"] for group in queue["groups"])
+    assert queue["summary"]["by_category_all_items"] == {
+        category: 1 for category in sorted(expected_categories)
+    }
+    assert queue["summary"]["by_category_visible_groups"] == {
+        category: 1 for category in sorted(expected_categories)
+    }
+    assert set(queue["action_catalog"]["categories"]) >= expected_categories
+    assert queue["action_catalog"]["categories"]["graph_structure"]["label"] == "Graph structure"
+    assert "category_order" in queue["action_catalog"]
+
+
 def test_graph_governance_feedback_file_backlog_allows_dashboard_overrides(conn, monkeypatch):
     monkeypatch.setattr(
         server,

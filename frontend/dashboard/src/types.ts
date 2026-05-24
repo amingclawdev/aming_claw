@@ -325,12 +325,15 @@ export interface FeedbackQueueResponse {
   count: number;
   groups: FeedbackQueueGroup[];
   summary: FeedbackQueueSummary;
+  action_catalog?: FeedbackActionCatalog;
 }
 
 export interface FeedbackQueueGroup {
   queue_id: string;
   group_by: string;
   lane: string;
+  category?: string;
+  category_label?: string;
   action_hint?: string;
   priority?: string;
   source_node_ids?: string[];
@@ -380,6 +383,25 @@ export interface FeedbackQueueSummary {
   by_status: Record<string, number>;
   by_lane_all_items: Record<string, number>;
   by_lane_visible_groups: Record<string, number>;
+  by_category_all_items?: Record<string, number>;
+  by_category_visible_groups?: Record<string, number>;
+}
+
+export interface FeedbackActionCatalog {
+  lanes?: Record<string, FeedbackActionCatalogEntry | string>;
+  categories?: Record<string, FeedbackActionCatalogEntry | string>;
+  category_order?: string[];
+  category_labels?: Record<string, string>;
+  decision_actions?: string[];
+  review_decisions?: string[];
+  status_observation_categories?: string[];
+  endpoints?: Record<string, string>;
+}
+
+export interface FeedbackActionCatalogEntry {
+  label?: string;
+  description?: string;
+  primary_actions?: string[];
 }
 
 export interface BacklogResponse {
