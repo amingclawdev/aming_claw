@@ -7,6 +7,7 @@ from pathlib import Path
 
 from agent.governance.db import _ensure_schema
 from agent.governance.doc_asset_state import build_doc_asset_state
+from agent.governance.asset_projection import list_asset_projection
 from agent.governance.governance_index import build_governance_index, persist_governance_index
 from agent.governance.reconcile_phases.phase_z_v2 import (
     build_graph_v2_from_symbols,
@@ -161,6 +162,18 @@ def test_governance_index_persists_doc_asset_state_artifact(tmp_path) -> None:
     row = {item["path"]: item for item in payload["docs"]}["docs/ref.md"]
 
     assert summary["doc_asset_state"]["by_status"]["candidate"] == 1
+    assert summary["asset_projection_rows_persisted"] == 1
+    assert summary["asset_binding_rows_persisted"] == 1
     assert payload["commit_sha"] == "abc1234"
     assert row["binding_status"] == "candidate"
     assert row["binding_candidates"][0]["target_title"] == "agent.mymod"
+
+    projection_rows = list_asset_projection(
+        conn,
+        project_id=PID,
+        snapshot_id="full-abc1234-doc-state",
+        asset_kind="doc",
+    )
+    assert [item["asset_path"] for item in projection_rows] == ["docs/ref.md"]
+    assert projection_rows[0]["binding_status"] == "candidate"
+    assert projection_rows[0]["binding_candidates"][0]["target_title"] == "agent.mymod"

@@ -105,6 +105,79 @@ def _features_from_nodes(conn, project_id: str, snapshot_id: str) -> list[dict[s
     return features
 
 
+def _table_exists(conn, table: str) -> bool:
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+            (table,),
+        ).fetchone()
+    except Exception:
+        return False
+    return row is not None
+
+
+def _merge_feature_path(feature: dict[str, Any], key: str, path: str) -> None:
+    values = _path_list(feature.get(key))
+    values.extend(_path_list(feature.get(f"{key}_files")))
+    values.append(path)
+    merged = sorted(set(_path_list(values)))
+    feature[key] = merged
+    feature[f"{key}_files"] = merged
+    if key == "config":
+        metadata = dict(feature.get("metadata") or {})
+        metadata["config_files"] = merged
+        feature["metadata"] = metadata
+
+
+def _overlay_asset_projection_bindings(
+    conn,
+    project_id: str,
+    snapshot_id: str,
+    features: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Add accepted DB-projected asset bindings to feature impact scope."""
+
+    if not features or not _table_exists(conn, "graph_asset_bindings"):
+        return features
+    by_node = {_node_id(feature): feature for feature in features if _node_id(feature)}
+    if not by_node:
+        return features
+    rows = conn.execute(
+        """
+        SELECT asset_kind, asset_path, node_id, source, evidence_json
+        FROM graph_asset_bindings
+        WHERE project_id = ?
+          AND snapshot_id = ?
+          AND binding_status = 'accepted'
+          AND asset_kind IN ('doc', 'test', 'config')
+        ORDER BY asset_kind, asset_path
+        """,
+        (project_id, snapshot_id),
+    ).fetchall()
+    key_by_kind = {
+        "doc": "secondary",
+        "test": "test",
+        "config": "config",
+    }
+    for row in rows:
+        feature = by_node.get(str(row["node_id"] or ""))
+        key = key_by_kind.get(str(row["asset_kind"] or ""))
+        path = str(row["asset_path"] or "").replace("\\", "/").strip("/")
+        if not feature or not key or not path:
+            continue
+        _merge_feature_path(feature, key, path)
+        metadata = dict(feature.get("metadata") or {})
+        projected = metadata.setdefault("asset_projection_bindings", [])
+        if isinstance(projected, list):
+            projected.append({
+                "asset_kind": str(row["asset_kind"] or ""),
+                "asset_path": path,
+                "source": str(row["source"] or ""),
+            })
+        feature["metadata"] = metadata
+    return features
+
+
 def _load_features(conn, project_id: str, snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     notes = _decode_notes(snapshot.get("notes"))
     path = (
@@ -423,6 +496,7 @@ def build_status_observation_issues(
     if not snapshot:
         raise KeyError(f"graph snapshot not found: {project_id}/{snapshot_id}")
     features = _load_features(conn, project_id, snapshot)
+    features = _overlay_asset_projection_bindings(conn, project_id, snapshot_id, features)
     file_rows = _load_file_inventory(conn, project_id, snapshot)
     coverage_state = _load_coverage_state(snapshot)
     delta = _scope_file_delta(snapshot) if include_scope_delta else {}

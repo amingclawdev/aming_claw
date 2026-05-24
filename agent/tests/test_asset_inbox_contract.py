@@ -16,6 +16,7 @@ from agent.governance.asset_inbox_contract import (
     build_asset_inbox_response,
     validate_asset_inbox_payload,
 )
+from agent.governance.asset_projection import upsert_doc_asset_projection
 from agent.governance.db import _ensure_schema
 from agent.governance.reconcile_semantic_enrichment import _ensure_semantic_state_schema
 
@@ -351,6 +352,62 @@ def test_live_asset_inbox_response_materializes_from_snapshot_state(asset_inbox_
     assert by_path["docs/accepted-runtime.md"]["asset_status"] == "accepted"
     assert by_path["src/runtime.py"]["asset_status"] == "stale"
     assert by_path["src/runtime.py"]["backlog"]["eligible"] is True
+
+
+def test_asset_inbox_uses_db_doc_asset_projection_before_json_artifact(asset_inbox_conn) -> None:
+    snapshot_id = _create_asset_inbox_snapshot(asset_inbox_conn)
+    upsert_doc_asset_projection(
+        asset_inbox_conn,
+        project_id="asset-inbox-live-test",
+        snapshot_id=snapshot_id,
+        doc_asset_state={
+            "run_id": "asset-inbox-live",
+            "commit_sha": "livecommit",
+            "docs": [
+                {
+                    "path": "docs/service.md",
+                    "doc_kind": "doc",
+                    "file_hash": "sha256:222",
+                    "sha256": "222",
+                    "binding_status": "candidate",
+                    "accepted_bindings": [],
+                    "binding_candidates": [
+                        {
+                            "schema_version": "asset_binding_proposal.v1",
+                            "operation": "propose_binding",
+                            "asset_kind": "doc",
+                            "asset_path": "docs/service.md",
+                            "target_node_id": "L7.runtime",
+                            "target_title": "src.runtime",
+                            "evidence_kind": "path_reference",
+                            "source": "db_projection_test",
+                            "proposal_hash": "sha256:service-doc-candidate",
+                            "precheck": {
+                                "schema_version": "asset_binding_precheck.v1",
+                                "ok": True,
+                                "mode": "deterministic_precheck",
+                                "decision": "review_required",
+                                "binding_strength": "weak",
+                                "proposal_hash": "sha256:service-doc-candidate",
+                                "errors": [],
+                                "warnings": [],
+                            },
+                        }
+                    ],
+                    "impact_scope_policy": "accepted_bindings_only",
+                }
+            ],
+        },
+    )
+    asset_inbox_conn.commit()
+
+    payload = build_asset_inbox_response(asset_inbox_conn, "asset-inbox-live-test", snapshot_id)
+    by_path = {item["path"]: item for item in payload["items"]}
+
+    assert payload["ok"] is True
+    assert payload["source_artifacts"]["doc_asset_projection_source"] == "db_projection"
+    assert by_path["docs/service.md"]["asset_status"] == "doc_candidate"
+    assert by_path["docs/service.md"]["binding_candidates"][0]["source"] == "db_projection_test"
 
 
 def test_asset_inbox_api_supports_active_snapshot(asset_inbox_conn) -> None:

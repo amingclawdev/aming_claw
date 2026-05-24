@@ -204,8 +204,11 @@ def build_asset_inbox_response(
     node_by_title = {str(node.get("title") or ""): node for node in nodes if node.get("title")}
     stale_paths = _stale_source_paths(conn, project_id, snapshot_id, nodes)
     doc_asset_state_path = _doc_asset_state_path(project_id, files)
-    doc_asset_state = _read_json_file(doc_asset_state_path, {}) if doc_asset_state_path else {}
-    doc_assets = _doc_assets_by_path(doc_asset_state)
+    doc_assets = _doc_assets_by_path_from_db(conn, project_id, snapshot_id)
+    doc_asset_source = "db_projection" if doc_assets else "json_artifact"
+    if not doc_assets:
+        doc_asset_state = _read_json_file(doc_asset_state_path, {}) if doc_asset_state_path else {}
+        doc_assets = _doc_assets_by_path(doc_asset_state)
 
     items: list[dict[str, Any]] = []
     for row in sorted(files, key=lambda item: str(item.get("path") or "")):
@@ -231,6 +234,7 @@ def build_asset_inbox_response(
         "source_artifacts": {
             "file_inventory_path": str(file_inventory_path),
             "doc_asset_state_path": str(doc_asset_state_path or ""),
+            "doc_asset_projection_source": doc_asset_source,
             "active_snapshot_id": snapshot_id,
         },
         "impact_scope_policy": "accepted_bindings_only",
@@ -721,6 +725,39 @@ def _doc_assets_by_path(doc_asset_state: Any) -> dict[str, dict[str, Any]]:
         for item in docs
         if isinstance(item, Mapping) and item.get("path")
     }
+
+
+def _doc_assets_by_path_from_db(
+    conn: sqlite3.Connection,
+    project_id: str,
+    snapshot_id: str,
+) -> dict[str, dict[str, Any]]:
+    try:
+        from .asset_projection import list_asset_projection
+
+        rows = list_asset_projection(
+            conn,
+            project_id=project_id,
+            snapshot_id=snapshot_id,
+            asset_kind="doc",
+            limit=5000,
+        )
+    except Exception:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        path = str(row.get("asset_path") or "")
+        if not path:
+            continue
+        out[path] = {
+            "path": path,
+            "doc_kind": str((row.get("metadata") or {}).get("doc_kind") or row.get("file_kind") or "doc"),
+            "binding_status": str(row.get("binding_status") or ""),
+            "accepted_bindings": row.get("accepted_bindings") if isinstance(row.get("accepted_bindings"), list) else [],
+            "binding_candidates": row.get("binding_candidates") if isinstance(row.get("binding_candidates"), list) else [],
+            "impact_scope_policy": str(row.get("impact_scope_policy") or "accepted_bindings_only"),
+        }
+    return out
 
 
 def _node_for_ref(

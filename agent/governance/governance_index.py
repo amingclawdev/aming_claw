@@ -22,6 +22,7 @@ from agent.governance.external_project_governance import (
     build_symbol_index,
 )
 from agent.governance.checkout_provenance import describe_checkout
+from agent.governance.asset_projection import upsert_doc_asset_projection
 from agent.governance.doc_asset_state import build_doc_asset_state
 from agent.governance.graph_snapshot_store import (
     ensure_schema as ensure_graph_snapshot_schema,
@@ -689,6 +690,8 @@ def persist_governance_index(
     _write_json(artifacts["coverage_state_path"], index.get("coverage_state") or {})
 
     inventory_count = 0
+    asset_projection_count = 0
+    asset_binding_count = 0
     if persist_inventory:
         inventory_count = upsert_file_inventory(
             conn,
@@ -696,6 +699,14 @@ def persist_governance_index(
             index.get("file_inventory") or [],
             replace_run=True,
         )
+        projection_summary = upsert_doc_asset_projection(
+            conn,
+            project_id=project_id,
+            snapshot_id=(index.get("active_snapshot") or {}).get("snapshot_id", ""),
+            doc_asset_state=index.get("doc_asset_state") or {},
+        )
+        asset_projection_count = int(projection_summary.get("projection_count") or 0)
+        asset_binding_count = int(projection_summary.get("binding_count") or 0)
 
     summary = {
         "schema_version": GOVERNANCE_INDEX_SCHEMA_VERSION,
@@ -710,6 +721,8 @@ def persist_governance_index(
         "symbol_count": (index.get("symbol_index") or {}).get("symbol_count", 0),
         "doc_heading_count": (index.get("doc_index") or {}).get("heading_count", 0),
         "doc_asset_state": (index.get("doc_asset_state") or {}).get("summary", {}),
+        "asset_projection_rows_persisted": asset_projection_count,
+        "asset_binding_rows_persisted": asset_binding_count,
         "feature_count": (index.get("feature_index") or {}).get("feature_count", 0),
         "inventory_rows_persisted": inventory_count,
         "artifacts": {name: str(path) for name, path in artifacts.items()},
