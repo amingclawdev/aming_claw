@@ -19,11 +19,27 @@ V1 is graph-first and local-first:
 - Manual Fix is the normal V1 implementation path while chain automation is
   experimental. MF still requires backlog-first, graph-first, focused tests,
   Chain trailers, post-commit Update Graph, and backlog close evidence.
+- Observer-only collaboration is the default for parallel MF work. The observer
+  clarifies scope, checks graph/backlog/runtime state, writes the backlog row
+  and `mf_parallel.v1` contract, starts agents only when the user explicitly
+  asks or an approved contract calls for it, and reviews merge candidates.
+  Implementation agents are assigned bounded branches/worktrees/files and stop
+  at `review_ready` or `waiting_merge` with structured evidence; they do not
+  merge, push, release gates, activate graph refs, close backlog, delete
+  worktrees, or mutate merge queues.
 - AI Enrich creates proposals that require Review Queue approval before they
   become trusted semantic memory.
 - Source-controlled hints/config/rules are the durable repair inputs for graph
   defects. Reconcile materializes the graph projection; direct DB graph edits
   are not the trusted repair path.
+
+Observer merge review checks contract fit, diff scope, focused test and E2E
+evidence, docs/test/config impact, generated assets policy, graph/reconcile
+plan, Chain trailers, and backlog close policy. The observer does not wait,
+merge, or push by default; those actions require an explicit user request or a
+documented governance transition. If changed docs/templates are not graph-bound,
+record an Asset Inbox binding or Governance Hint follow-up before claiming
+audit-grade node coverage.
 
 ## V1 Entry Points
 

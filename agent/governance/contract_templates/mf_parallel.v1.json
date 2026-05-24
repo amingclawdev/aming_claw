@@ -7,6 +7,39 @@
     "workers",
     "evidence_requirements"
   ],
+  "lifecycle_states": [
+    "contract_draft",
+    "implementation_in_progress",
+    "review_ready",
+    "waiting_merge",
+    "needs_revision",
+    "accepted_for_merge",
+    "merged",
+    "rejected"
+  ],
+  "observer_contract": {
+    "mode": "observer_only",
+    "default_state": "contract_draft",
+    "responsibilities": [
+      "clarify_requirements",
+      "check_runtime_graph_backlog",
+      "write_backlog_and_contract",
+      "start_agents_when_requested_or_contract_approved",
+      "review_merge_candidates"
+    ],
+    "default_forbidden_actions": [
+      "implement",
+      "wait_for_agents",
+      "merge",
+      "push",
+      "release_gates",
+      "activate_graph_refs",
+      "close_backlog",
+      "delete_worktrees",
+      "mutate_merge_queues"
+    ],
+    "exception_policy": "Observer implements, waits, merges, pushes, or performs privileged transitions only when the user explicitly asks or a documented governance transition requires it."
+  },
   "worker_contract": {
     "required_fields": [
       "task_id",
@@ -18,7 +51,14 @@
       "required_evidence",
       "graph_queries",
       "self_precheck",
-      "gate_alignment"
+      "gate_alignment",
+      "final_output"
+    ],
+    "allowed_terminal_states": [
+      "review_ready",
+      "waiting_merge",
+      "needs_revision",
+      "rejected"
     ],
     "runtime_identity": {
       "worker_role": "mf_sub",
@@ -50,13 +90,70 @@
       "required": true,
       "description": "Observer must align required evidence ids, focused tests, E2E decision, and finish-gate expectations before delegation."
     },
+    "final_output": {
+      "required": true,
+      "stop_states": [
+        "review_ready",
+        "waiting_merge"
+      ],
+      "required_fields": [
+        "status",
+        "branch",
+        "worktree",
+        "owned_changed_files",
+        "tests_run",
+        "graph_query_trace_ids",
+        "precheck_evidence",
+        "generated_assets_policy",
+        "risks_open_questions"
+      ],
+      "description": "Worker must stop with structured review evidence and must not merge, push, mutate merge queues, close backlog, activate graph refs, release gates, or delete worktrees."
+    },
     "forbidden_capabilities": [
       "merge",
       "push",
       "activate_graph",
-      "close_backlog"
+      "activate_graph_refs",
+      "release_gates",
+      "close_backlog",
+      "delete_worktrees",
+      "mutate_merge_queues"
     ]
   },
+  "merge_review_checklist": [
+    {
+      "id": "contract_fit",
+      "description": "Candidate output satisfies the instantiated worker contract and stops in an allowed review state."
+    },
+    {
+      "id": "diff_scope",
+      "description": "Changed files stay within the assigned branch/worktree/file fence and match the owned-file list."
+    },
+    {
+      "id": "test_e2e_evidence",
+      "description": "Focused tests and required E2E evidence are present, passing, or explicitly deferred with a follow-up backlog row."
+    },
+    {
+      "id": "docs_test_config_impact",
+      "description": "Docs, test, config, fixture, and generated artifact impact is declared and reviewed."
+    },
+    {
+      "id": "generated_assets_policy",
+      "description": "Generated assets are either source-of-truth updates, reproducible outputs, or excluded from review with a reason."
+    },
+    {
+      "id": "graph_reconcile_plan",
+      "description": "Graph binding, Asset Inbox/Governance Hint needs, and post-merge reconcile/update plan are recorded."
+    },
+    {
+      "id": "commit_trailers",
+      "description": "Expected Chain trailers and explicit commit file list are ready before merge."
+    },
+    {
+      "id": "backlog_close_policy",
+      "description": "Backlog close is deferred until merge, verification, reconcile/update, and close-ready evidence are complete."
+    }
+  ],
   "evidence_requirements": [
     {
       "id": "implementation_evidence",

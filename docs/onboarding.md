@@ -116,6 +116,23 @@ After graph build:
    commit → Update Graph → backlog close) lives in
    [skills/aming-claw/references/mf-sop.md](../skills/aming-claw/references/mf-sop.md).
 
+Parallel MF uses observer-only coordination by default. The observer writes the
+backlog row and `mf_parallel.v1` contract, starts bounded implementation agents
+only when the user explicitly asks or an approved contract calls for it, and
+reviews their `review_ready` or `waiting_merge` evidence. Agents do not merge,
+push, release gates, activate graph refs, close backlog, delete worktrees, or
+mutate merge queues. The observer also does not wait, merge, or push by default
+unless the user explicitly asks or a documented governance transition requires
+it.
+
+Worker final evidence should name the branch/worktree, owned changed files,
+tests run, graph query trace ids, precheck evidence, generated assets policy,
+and risks/open questions. Merge review checks contract fit, diff scope, test
+and E2E evidence, docs/test/config impact, generated assets policy,
+graph/reconcile plan, Chain trailers, and backlog close policy. If changed docs
+or templates are not graph-bound, add an Asset Inbox binding or Governance Hint
+follow-up so auditability can be materialized.
+
 ## 5. AI Enrich
 
 Configure the project's `semantic` provider/model in AI config before live

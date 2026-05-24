@@ -31,8 +31,18 @@ Canonical source: `docs/governance/manual-fix-sop.md`. This file is only the sho
 7. For parallel MF or subagent work, instantiate a source-controlled contract template before delegation:
    - start from `agent/governance/contract_templates/mf_parallel.v1.json`;
    - write the instance to `chain_trigger_json.parallel_contract`;
+   - use observer-only coordination by default: the observer clarifies scope,
+     checks runtime/graph/backlog state, creates the contract, may start agents
+     only when the user explicitly asks or an approved contract calls for it,
+     and reviews candidates; the observer does
+     not implement, wait, merge, push, release gates, activate graph refs, close
+     backlog, delete worktrees, or mutate merge queues unless the user
+     explicitly asks or a documented governance transition requires it;
    - fill each `mf_sub` worker's runtime identity from task metadata before dispatch:
      `task_id`, `parent_task_id`, `worker_role=mf_sub`, and `fence_token`;
+   - assign every worker a branch/worktree/file fence before dispatch, then
+     require it to stay inside that fence and stop at `review_ready` or
+     `waiting_merge`, never merge/push or mutate merge queues;
    - require subagent graph lookups to use audited
      `query_source=mf_subagent`, with `task_id`, `parent_task_id`,
      `worker_role`, and `fence_token` in the query context;
@@ -44,10 +54,18 @@ Canonical source: `docs/governance/manual-fix-sop.md`. This file is only the sho
      evidence ids, focused test commands, E2E decision or defer row, finish-gate
      fence expectations, and the compact `self_check` evidence the subagent must
      report;
+   - require structured worker final output with status, branch/worktree, owned
+     changed files, tests run, graph query trace ids, precheck evidence,
+     generated assets policy, and risks/open questions;
    - give every required evidence item a stable `id`;
    - require timeline evidence to reference ids through `payload.requirement_id(s)`,
      `verification.requirement_id(s)`, or `verification.contract_evidence[].requirement_id`;
-   - make E2E evidence required for dashboard/API/operator-path changes unless explicitly deferred with a follow-up backlog row.
+   - make E2E evidence required for dashboard/API/operator-path changes unless explicitly deferred with a follow-up backlog row;
+   - before accepting a merge candidate, check contract fit, diff scope,
+     focused test/E2E evidence, docs/test/config impact, generated assets
+     policy, graph/reconcile plan, Chain trailers, and backlog close policy;
+   - when changed docs/templates are not graph-bound, record Asset Inbox
+     binding or Governance Hint follow-up as needed for auditability.
 8. If an AI session or `mf_sub` worker proposes doc/test/config binding changes, require the local asset-binding precheck first:
    - run `agent.governance.asset_binding_proposals.precheck_asset_binding_proposal` against the draft proposal;
    - include compact `self_precheck` evidence with the submitted proposal;

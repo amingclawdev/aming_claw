@@ -254,6 +254,26 @@ graph reconcile/activation, backlog close, ServiceManager/governance restarts,
 worktree cleanup, and other privileged state changes. Do not tell a subagent to
 identify as observer to get graph access.
 
+Observer-only collaboration mode is the default for parallel MF work. The
+observer clarifies requirements, checks runtime/graph/backlog state, writes the
+backlog row and `mf_parallel.v1` task contract, starts implementation agents
+only when the user explicitly asks or an approved contract calls for it, and
+reviews their merge candidates. The
+observer does not implement, wait on agents, merge, push, or release gates by
+default; those actions require an explicit user request or a documented
+governance transition. Implementation agents must be assigned bounded
+branches/worktrees and files, then stop at `review_ready` or `waiting_merge`
+with structured evidence:
+branch/worktree, owned changed files, tests run, graph query trace ids,
+precheck evidence, generated assets policy, and risks/open questions.
+
+Observer merge review must check contract fit, diff scope, focused test and E2E
+evidence, docs/test/config impact, generated assets policy, graph/reconcile
+plan, Chain trailers, and backlog close policy before accepting a candidate for
+merge. If changed docs/templates are not graph-bound, record that Asset Inbox
+binding or Governance Hint follow-up is needed before claiming audit-grade node
+coverage.
+
 Before editing:
 
 1. Confirm the MF route is justified.
