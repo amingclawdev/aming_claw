@@ -404,6 +404,101 @@ export interface FeedbackActionCatalogEntry {
   primary_actions?: string[];
 }
 
+export type AssetImpactResolutionKind = "updated" | "keep_unchanged" | "waived";
+
+export interface AssetImpactRemindersResponse {
+  ok?: boolean;
+  project_id: string;
+  status?: string;
+  asset_kind?: string;
+  reminders?: AssetImpactReminder[];
+  items?: AssetImpactReminder[];
+  count?: number;
+  summary?: AssetImpactReminderSummary;
+  unavailable?: boolean;
+  error?: string;
+  request_id?: string;
+}
+
+export interface AssetImpactReminderSummary {
+  by_kind?: Record<string, number>;
+  by_asset_kind?: Record<string, number>;
+  by_status?: Record<string, number>;
+  total?: number;
+  pending?: number;
+}
+
+export interface AssetImpactReminder {
+  project_id?: string;
+  reminder_id: string;
+  impact_key?: string;
+  asset_kind: "doc" | "test" | "config" | string;
+  asset_path: string;
+  node_id: string;
+  node_title?: string;
+  status: "pending" | string;
+  lane?: string;
+  category?: string;
+  category_label?: string;
+  first_commit_sha?: string;
+  latest_commit_sha?: string;
+  first_event_id?: number;
+  latest_event_id?: number;
+  impact_count?: number;
+  open_event_ids?: number[];
+  evidence?: Record<string, unknown>;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface AssetImpactReminderEventsResponse {
+  ok?: boolean;
+  project_id: string;
+  reminder_id?: string;
+  reminder?: AssetImpactReminder;
+  events: AssetImpactEvent[];
+  count?: number;
+  request_id?: string;
+}
+
+export interface AssetImpactEvent {
+  id?: number;
+  project_id?: string;
+  event_type: "impact_detected" | "resolution_recorded" | string;
+  asset_kind?: string;
+  asset_path?: string;
+  node_id?: string;
+  node_title?: string;
+  commit_sha?: string;
+  snapshot_id?: string;
+  run_id?: string;
+  actor?: string;
+  status?: string;
+  impact_key?: string;
+  covers_event_ids?: number[];
+  evidence?: Record<string, unknown>;
+  created_at?: string;
+}
+
+export interface AssetImpactReminderResolveResponse {
+  ok?: boolean;
+  project_id?: string;
+  reminder_id?: string;
+  resolution?: {
+    resolution_kind?: AssetImpactResolutionKind | string;
+    actor?: string;
+    note?: string;
+    covers_event_ids?: number[];
+  };
+  resolution_kind?: AssetImpactResolutionKind | string;
+  reminder?: AssetImpactReminder;
+  event?: AssetImpactEvent;
+  events?: AssetImpactEvent[];
+  covers_event_ids?: number[];
+  projection?: Record<string, unknown>;
+  request_id?: string;
+}
+
 export interface BacklogResponse {
   bugs: BacklogBug[];
   count: number;

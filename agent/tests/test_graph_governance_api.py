@@ -13,6 +13,7 @@ from agent.tests.fixtures.rule_fingerprint_project import (
     create_rule_fingerprint_git_fixture_project,
     rule_fingerprint_mismatch_pair,
 )
+from agent.governance import asset_impact
 from agent.governance import graph_correction_patches
 from agent.governance import graph_events
 from agent.governance import graph_snapshot_store as store
@@ -168,6 +169,102 @@ def _graph_with_dependency() -> dict:
         }
     )
     return graph
+
+
+def test_graph_governance_asset_impact_reminders_api_lists_events_and_resolves(conn):
+    first = asset_impact.record_asset_impact_detected(
+        conn,
+        project_id=PID,
+        asset_kind="doc",
+        asset_path="docs/dev/proposal.md",
+        node_id="L7.1",
+        node_title="Feature Node",
+        commit_sha="c1",
+        snapshot_id="s1",
+        actor="scope-reconcile",
+    )
+    second = asset_impact.record_asset_impact_detected(
+        conn,
+        project_id=PID,
+        asset_kind="doc",
+        asset_path="docs/dev/proposal.md",
+        node_id="L7.1",
+        node_title="Feature Node",
+        commit_sha="c2",
+        snapshot_id="s2",
+        actor="scope-reconcile",
+    )
+    conn.commit()
+
+    queue = server.handle_graph_governance_asset_impact_reminders(
+        _ctx(
+            {"project_id": PID},
+            query={"asset_kind": "doc", "status": "pending"},
+        )
+    )
+
+    assert queue["ok"] is True
+    assert queue["count"] == 1
+    assert queue["summary"]["open_event_count"] == 2
+    assert "waived" in queue["action_catalog"]["resolution_kinds"]
+    reminder = queue["reminders"][0]
+    assert reminder["open_event_ids"] == [
+        first["event"]["id"],
+        second["event"]["id"],
+    ]
+
+    history = server.handle_graph_governance_asset_impact_reminder_events(
+        _ctx({"project_id": PID, "reminder_id": reminder["reminder_id"]})
+    )
+    assert history["ok"] is True
+    assert history["reminder"]["reminder_id"] == reminder["reminder_id"]
+    assert [event["event_type"] for event in history["events"]] == [
+        asset_impact.EVENT_IMPACT_DETECTED,
+        asset_impact.EVENT_IMPACT_DETECTED,
+    ]
+
+    resolved = server.handle_graph_governance_asset_impact_reminder_resolve(
+        _ctx(
+            {"project_id": PID, "reminder_id": reminder["reminder_id"]},
+            method="POST",
+            body={
+                "resolution_kind": "keep_unchanged",
+                "note": "Reviewed in Review Queue.",
+                "actor": "dashboard-user",
+            },
+        )
+    )
+
+    assert resolved["ok"] is True
+    assert resolved["resolution"]["covers_event_ids"] == reminder["open_event_ids"]
+    assert resolved["reminder"]["status"] == asset_impact.STATUS_RECORDED
+    resolution_events = [
+        event for event in resolved["events"]
+        if event["event_type"] == asset_impact.EVENT_RESOLUTION_RECORDED
+    ]
+    assert len(resolution_events) == 1
+    assert resolution_events[0]["actor"] == "dashboard-user"
+    assert resolution_events[0]["evidence"]["note"] == "Reviewed in Review Queue."
+
+    resolved_history = server.handle_graph_governance_asset_impact_reminder_events(
+        _ctx({"project_id": PID, "reminder_id": reminder["reminder_id"]})
+    )
+    assert resolved_history["reminder"]["status"] == asset_impact.STATUS_RECORDED
+    assert [
+        event["event_type"] for event in resolved_history["events"]
+    ] == [
+        asset_impact.EVENT_IMPACT_DETECTED,
+        asset_impact.EVENT_IMPACT_DETECTED,
+        asset_impact.EVENT_RESOLUTION_RECORDED,
+    ]
+
+    after = server.handle_graph_governance_asset_impact_reminders(
+        _ctx(
+            {"project_id": PID},
+            query={"asset_kind": "doc", "status": "pending"},
+        )
+    )
+    assert after["count"] == 0
 
 
 def test_graph_structure_hint_projection_api_returns_snapshot_notes(conn):

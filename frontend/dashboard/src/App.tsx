@@ -10,6 +10,9 @@ import { computeNodeHealth } from "./lib/health";
 import { useEventStream } from "./lib/sse";
 import type {
   ActiveSummaryResponse,
+  AssetImpactReminderEventsResponse,
+  AssetImpactRemindersResponse,
+  AssetImpactResolutionKind,
   AssetInboxResponse,
   BacklogResponse,
   EdgeRecord,
@@ -131,6 +134,7 @@ interface DataBundle {
   edges: EdgeRecord[];
   ops: OperationsQueueResponse;
   feedback: FeedbackQueueResponse;
+  assetImpactReminders: AssetImpactRemindersResponse;
   assetInbox: AssetInboxResponse;
   backlog: BacklogResponse;
   loadedAt: string;
@@ -171,6 +175,27 @@ function emptyOperationsQueue(projectId: string, snapshotId: string): Operations
       pending_scope_reconcile_count: 0,
     },
   };
+}
+
+function emptyAssetImpactReminders(
+  projectId: string,
+  opts: { unavailable?: boolean; error?: string } = {},
+): AssetImpactRemindersResponse {
+  return {
+    ok: opts.unavailable ? false : true,
+    project_id: projectId,
+    status: "pending",
+    asset_kind: "",
+    reminders: [],
+    count: 0,
+    summary: { total: 0, pending: 0, by_kind: {}, by_asset_kind: {}, by_status: {} },
+    unavailable: opts.unavailable,
+    error: opts.error,
+  };
+}
+
+function countAssetImpactReminders(response: AssetImpactRemindersResponse | null | undefined): number {
+  return (response?.reminders ?? response?.items ?? []).length;
 }
 
 const DEFAULT_AI_MODELS: Record<string, string[]> = {
@@ -216,6 +241,11 @@ export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
     readStoredFlag(DASHBOARD_SIDEBAR_COLLAPSED_STORAGE_KEY),
   );
+  const [assetImpactEventsByReminder, setAssetImpactEventsByReminder] = useState<
+    Record<string, AssetImpactReminderEventsResponse>
+  >({});
+  const [assetImpactBusyId, setAssetImpactBusyId] = useState<string | null>(null);
+  const [assetImpactError, setAssetImpactError] = useState<string | null>(null);
 
   useEffect(() => {
     multiSelectIdsRef.current = multiSelectIds;
@@ -242,6 +272,9 @@ export default function App() {
     setAiConfig(null);
     setMultiSelectIds(new Set());
     multiSelectIdsRef.current = new Set();
+    setAssetImpactEventsByReminder({});
+    setAssetImpactBusyId(null);
+    setAssetImpactError(null);
   }, []);
 
   useEffect(() => {
@@ -293,11 +326,22 @@ export default function App() {
       ]);
       setAiConfig(aiCfg);
       const snapshotId = status.active_snapshot_id || summary.snapshot_id;
-      const [nodesRes, edgesRes, feedback, assetInbox] = await Promise.all([
+      const [nodesRes, edgesRes, feedback, assetInbox, assetImpactReminders] = await Promise.all([
         api.nodesFor(requestProjectId, snapshotId, 1000, signal),
         api.edgesFor(requestProjectId, snapshotId, 4000, signal),
         api.feedbackQueueFor(requestProjectId, snapshotId, signal),
         api.assetInboxFor(requestProjectId, snapshotId, signal),
+        api
+          .assetImpactRemindersFor(requestProjectId, { asset_kind: "", status: "pending" }, signal)
+          .catch((assetImpactError) => {
+            if ((assetImpactError as { name?: string }).name === "AbortError") throw assetImpactError;
+            const msg =
+              assetImpactError instanceof ApiError
+                ? `${assetImpactError.message} ${assetImpactError.body}`
+                : (assetImpactError as Error).message;
+            console.warn("Asset impact reminders refresh failed", assetImpactError);
+            return emptyAssetImpactReminders(requestProjectId, { unavailable: true, error: msg });
+          }),
       ]);
       // projection.projection is null when the snapshot was just rebuilt and
       // the semantic projection hasn't been computed yet. mergeProjection
@@ -319,6 +363,7 @@ export default function App() {
         edges: edgesRes.edges,
         ops: emptyOperationsQueue(requestProjectId, snapshotId),
         feedback,
+        assetImpactReminders,
         assetInbox,
         backlog,
         loadedAt: new Date().toISOString(),
@@ -625,6 +670,64 @@ export default function App() {
       }
     },
     [data, fetchAll],
+  );
+
+  const handleLoadAssetImpactEvents = useCallback(async (reminderId: string) => {
+    const id = reminderId.trim();
+    if (!id) return;
+    setAssetImpactBusyId(`events:${id}`);
+    setAssetImpactError(null);
+    try {
+      const res = await api.assetImpactReminderEventsFor(currentProjectIdRef.current, id);
+      setAssetImpactEventsByReminder((current) => ({ ...current, [id]: res }));
+    } catch (e) {
+      const msg = e instanceof ApiError ? `${e.message} ${e.body}` : (e as Error).message;
+      setAssetImpactError(msg);
+      setToast({ kind: "error", msg: `Asset impact events failed: ${msg}` });
+    } finally {
+      setAssetImpactBusyId(null);
+    }
+  }, []);
+
+  const handleResolveAssetImpactReminder = useCallback(
+    async (reminderId: string, resolutionKind: AssetImpactResolutionKind, note: string) => {
+      const id = reminderId.trim();
+      if (!id) {
+        setToast({ kind: "error", msg: "No asset impact reminder selected." });
+        return;
+      }
+      const label = resolutionKind === "keep_unchanged" ? "keep unchanged" : resolutionKind;
+      const ok = window.confirm(`Resolve asset impact reminder ${id} as ${label}?`);
+      if (!ok) return;
+      setAssetImpactBusyId(`resolve:${id}`);
+      setAssetImpactError(null);
+      try {
+        const res = await api.resolveAssetImpactReminderFor(currentProjectIdRef.current, id, {
+          resolution_kind: resolutionKind,
+          note: note.trim(),
+          actor: "dashboard_user",
+        });
+        setToast({
+          kind: res.ok === false ? "error" : "success",
+          msg: `Asset impact ${label} · covers=${
+            (res.resolution?.covers_event_ids ?? res.covers_event_ids ?? []).length
+          }`,
+        });
+        setAssetImpactEventsByReminder((current) => {
+          const next = { ...current };
+          delete next[id];
+          return next;
+        });
+        fetchAll();
+      } catch (e) {
+        const msg = e instanceof ApiError ? `${e.message} ${e.body}` : (e as Error).message;
+        setAssetImpactError(msg);
+        setToast({ kind: "error", msg: `Asset impact resolve failed: ${msg}` });
+      } finally {
+        setAssetImpactBusyId(null);
+      }
+    },
+    [fetchAll],
   );
 
   // Multi-select handlers
@@ -1002,7 +1105,10 @@ export default function App() {
           selectedNodeId={selectedNodeId}
           activeView={view}
           opsCount={data?.ops?.count ?? 0}
-          reviewCount={data?.feedback?.summary?.visible_group_count ?? 0}
+          reviewCount={
+            (data?.feedback?.summary?.visible_group_count ?? 0) +
+            countAssetImpactReminders(data?.assetImpactReminders)
+          }
           assetCount={data?.assetInbox?.summary?.operator_review_count ?? 0}
           backlogCount={countOpenBacklog(data?.backlog)}
           projectCount={projects.length}
@@ -1093,8 +1199,14 @@ export default function App() {
           {view === "review" && data ? (
             <ReviewQueueView
               feedback={data.feedback}
+              assetImpactReminders={data.assetImpactReminders}
+              assetImpactReminderEvents={assetImpactEventsByReminder}
+              assetImpactBusyId={assetImpactBusyId}
+              assetImpactError={assetImpactError}
               onDecide={handleFeedbackDecision}
               onRetry={handleFeedbackRetry}
+              onLoadAssetImpactEvents={handleLoadAssetImpactEvents}
+              onResolveAssetImpactReminder={handleResolveAssetImpactReminder}
               onOpenNodeInGraph={handleSelectNodeFromReview}
               onOpenEdgeInGraph={handleSelectEdgeFromReview}
             />

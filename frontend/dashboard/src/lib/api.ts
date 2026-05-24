@@ -1,5 +1,9 @@
 import type {
   ActiveSummaryResponse,
+  AssetImpactReminderEventsResponse,
+  AssetImpactReminderResolveResponse,
+  AssetImpactRemindersResponse,
+  AssetImpactResolutionKind,
   AssetInboxResponse,
   AttachFileHintResponse,
   BacklogResponse,
@@ -52,6 +56,13 @@ function backlogTimelineQuery(backlogId: string, limit: number): string {
     backlog_id: backlogId,
     limit: String(limit),
   }).toString();
+}
+
+function assetImpactReminderQuery(opts: { asset_kind?: string; status?: string } = {}): string {
+  const q = new URLSearchParams();
+  q.set("asset_kind", opts.asset_kind ?? "");
+  q.set("status", opts.status ?? "pending");
+  return q.toString();
 }
 
 function base(): string {
@@ -200,6 +211,43 @@ export const api = {
   activeAssetInboxFor(projectId: string, signal?: AbortSignal) {
     return getJSON<AssetInboxResponse>(
       `/api/graph-governance/${pidFor(projectId)}/snapshots/active/asset-inbox`,
+      signal,
+    );
+  },
+  assetImpactReminders(
+    opts: { asset_kind?: string; status?: string } = {},
+    signal?: AbortSignal,
+  ) {
+    return getJSON<AssetImpactRemindersResponse>(
+      `/api/graph-governance/${pid()}/asset-impact/reminders?${assetImpactReminderQuery(opts)}`,
+      signal,
+    );
+  },
+  assetImpactRemindersFor(
+    projectId: string,
+    opts: { asset_kind?: string; status?: string } = {},
+    signal?: AbortSignal,
+  ) {
+    return getJSON<AssetImpactRemindersResponse>(
+      `/api/graph-governance/${pidFor(projectId)}/asset-impact/reminders?${assetImpactReminderQuery(opts)}`,
+      signal,
+    );
+  },
+  assetImpactReminderEventsFor(projectId: string, reminderId: string, signal?: AbortSignal) {
+    return getJSON<AssetImpactReminderEventsResponse>(
+      `/api/graph-governance/${pidFor(projectId)}/asset-impact/reminders/${encodeURIComponent(reminderId)}/events`,
+      signal,
+    );
+  },
+  resolveAssetImpactReminderFor(
+    projectId: string,
+    reminderId: string,
+    payload: { resolution_kind: AssetImpactResolutionKind; note: string; actor: string },
+    signal?: AbortSignal,
+  ) {
+    return postJSON<AssetImpactReminderResolveResponse>(
+      `/api/graph-governance/${pidFor(projectId)}/asset-impact/reminders/${encodeURIComponent(reminderId)}/resolve`,
+      payload,
       signal,
     );
   },

@@ -1093,6 +1093,88 @@ a:hover { text-decoration: underline; }
   text-overflow: ellipsis;
 }
 
+/* ---------- Review Queue asset impact reminders ---------- */
+
+.asset-impact-table-card {
+  overflow-x: auto;
+}
+
+.asset-impact-table {
+  min-width: 1180px;
+}
+
+.asset-impact-table td {
+  vertical-align: top;
+}
+
+.asset-impact-asset-path {
+  max-width: 360px;
+  overflow-wrap: anywhere;
+}
+
+.asset-impact-meta {
+  margin-top: 3px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  font-size: 10.5px;
+  color: var(--ink-500);
+}
+
+.asset-impact-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.asset-impact-note {
+  flex: 1 1 150px;
+  min-width: 140px;
+  max-width: 100%;
+  height: 26px;
+  border: 1px solid var(--ink-200);
+  border-radius: 5px;
+  background: #fff;
+  color: var(--ink-800);
+  font: inherit;
+  font-size: 10.5px;
+  padding: 0 8px;
+}
+
+.asset-impact-note:focus {
+  outline: 2px solid rgba(79, 70, 229, 0.16);
+  border-color: var(--indigo);
+}
+
+.asset-impact-detail-row td {
+  background: var(--ink-50);
+  padding: 10px 14px;
+}
+
+.asset-impact-detail {
+  color: var(--ink-500);
+  font-size: 11px;
+}
+
+.asset-impact-detail-error {
+  color: var(--red-strong);
+}
+
+.asset-impact-event-list {
+  display: grid;
+  gap: 6px;
+}
+
+.asset-impact-event {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: var(--ink-600);
+  font-size: 11px;
+}
+
 .backlog-title-cell {
   min-width: 280px;
 }

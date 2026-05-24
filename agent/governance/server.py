@@ -3363,6 +3363,96 @@ def handle_graph_governance_status(ctx: RequestContext):
         conn.close()
 
 
+@route("GET", "/api/graph-governance/{project_id}/asset-impact/reminders")
+def handle_graph_governance_asset_impact_reminders(ctx: RequestContext):
+    """Return pending asset impact reminders for Review Queue surfaces."""
+    project_id = ctx.get_project_id()
+    from . import asset_impact
+
+    conn = get_connection(project_id)
+    try:
+        _require_graph_governance_operator(ctx, conn, "graph-governance.asset-impact.reminders")
+        try:
+            result = asset_impact.build_asset_impact_reminder_projection(
+                conn,
+                project_id,
+                asset_kind=str(ctx.query.get("asset_kind") or ""),
+                node_id=str(ctx.query.get("node_id") or ""),
+                status=str(ctx.query.get("status") or asset_impact.STATUS_PENDING),
+                limit=_query_int(ctx.query, "limit", 500),
+            )
+        except ValueError as exc:
+            _raise_graph_api_validation(exc)
+        return {"ok": True, **result}
+    finally:
+        conn.close()
+
+
+@route("GET", "/api/graph-governance/{project_id}/asset-impact/reminders/{reminder_id}/events")
+def handle_graph_governance_asset_impact_reminder_events(ctx: RequestContext):
+    """Return one asset impact reminder and its event history."""
+    project_id = ctx.get_project_id()
+    reminder_id = unquote(str(ctx.path_params.get("reminder_id") or ""))
+    from . import asset_impact
+
+    conn = get_connection(project_id)
+    try:
+        _require_graph_governance_operator(ctx, conn, "graph-governance.asset-impact.reminder.events")
+        result = asset_impact.get_asset_impact_reminder_events(
+            conn,
+            project_id,
+            reminder_id,
+            limit=_query_int(ctx.query, "limit", 500),
+        )
+        if not result.get("reminder"):
+            raise GovernanceError("not_found", f"Asset impact reminder {reminder_id} not found", 404)
+        return {"ok": True, **result}
+    finally:
+        conn.close()
+
+
+@route("POST", "/api/graph-governance/{project_id}/asset-impact/reminders/{reminder_id}/resolve")
+def handle_graph_governance_asset_impact_reminder_resolve(ctx: RequestContext):
+    """Record an operator resolution for a pending asset impact reminder."""
+    project_id = ctx.get_project_id()
+    reminder_id = unquote(str(ctx.path_params.get("reminder_id") or ""))
+    body = ctx.body
+    from . import asset_impact
+
+    conn = get_connection(project_id)
+    try:
+        _require_graph_governance_operator(ctx, conn, "graph-governance.asset-impact.reminder.resolve")
+        try:
+            result = asset_impact.resolve_asset_impact_reminder(
+                conn,
+                project_id,
+                reminder_id,
+                resolution_kind=str(body.get("resolution_kind") or ""),
+                note=str(body.get("note") or ""),
+                actor=str(body.get("actor") or "observer"),
+            )
+        except KeyError as exc:
+            raise GovernanceError("not_found", str(exc), 404) from exc
+        except ValueError as exc:
+            _raise_graph_api_validation(exc)
+        audit_service.record(
+            conn,
+            project_id,
+            "asset_impact_reminder_resolved",
+            actor=str(body.get("actor") or "observer"),
+            request_id=ctx.request_id,
+            details=json.dumps({
+                "reminder_id": reminder_id,
+                "resolution_kind": result.get("resolution", {}).get("resolution_kind", ""),
+                "covers_event_ids": result.get("resolution", {}).get("covers_event_ids", []),
+            }, ensure_ascii=False, sort_keys=True),
+        )
+        conn.commit()
+        return {"ok": True, **result}
+    finally:
+        conn.close()
+
+
 @route("GET", "/api/graph-governance/{project_id}/parallel-branches")
 def handle_graph_governance_parallel_branches(ctx: RequestContext):
     """Return compact parallel branch lanes, queue, and rollback state."""

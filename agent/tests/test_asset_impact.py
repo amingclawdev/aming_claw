@@ -6,10 +6,15 @@ import sqlite3
 from agent.governance import graph_snapshot_store as store
 from agent.governance.asset_impact import (
     EVENT_IMPACT_DETECTED,
+    EVENT_RESOLUTION_RECORDED,
+    STATUS_RECORDED,
+    build_asset_impact_reminder_projection,
+    get_asset_impact_reminder_events,
     list_asset_impact_events,
     list_pending_asset_impact_reminders,
     record_asset_impact_resolution,
     record_scope_asset_impacts,
+    resolve_asset_impact_reminder,
 )
 from agent.governance.asset_projection import upsert_doc_asset_projection
 from agent.governance.db import _ensure_schema
@@ -182,6 +187,73 @@ def test_doc_asset_impacts_aggregate_until_resolution_covers_events() -> None:
     assert len(reopened) == 1
     assert reopened[0]["impact_count"] == 1
     assert reopened[0]["latest_commit_sha"] == "c3"
+
+
+def test_asset_impact_reminder_projection_history_and_resolve() -> None:
+    conn = _conn()
+    _index_runtime_snapshot(conn, "scope-c1", "c1")
+    record_scope_asset_impacts(
+        conn,
+        PID,
+        snapshot_id="scope-c1",
+        commit_sha="c1",
+        scope_graph_delta=_scope_delta("src/runtime.py"),
+        actor="test",
+    )
+    _index_runtime_snapshot(conn, "scope-c2", "c2")
+    record_scope_asset_impacts(
+        conn,
+        PID,
+        snapshot_id="scope-c2",
+        commit_sha="c2",
+        scope_graph_delta=_scope_delta("config/runtime.yaml"),
+        actor="test",
+    )
+
+    projection = build_asset_impact_reminder_projection(
+        conn,
+        PID,
+        asset_kind="doc",
+        status="pending",
+    )
+
+    assert projection["count"] == 1
+    assert projection["summary"]["pending_count"] == 1
+    assert projection["summary"]["open_event_count"] == 2
+    assert projection["action_catalog"]["primary_actions"] == [
+        "updated",
+        "keep_unchanged",
+        "waived",
+    ]
+    reminder = projection["reminders"][0]
+
+    history = get_asset_impact_reminder_events(conn, PID, reminder["reminder_id"])
+    assert history["reminder"]["impact_count"] == 2
+    assert [event["event_type"] for event in history["events"]] == [
+        EVENT_IMPACT_DETECTED,
+        EVENT_IMPACT_DETECTED,
+    ]
+
+    resolved = resolve_asset_impact_reminder(
+        conn,
+        PID,
+        reminder["reminder_id"],
+        resolution_kind="waived",
+        note="Docs intentionally stay terse.",
+        actor="operator",
+    )
+
+    assert resolved["resolution"]["covers_event_ids"] == reminder["open_event_ids"]
+    assert resolved["reminder"]["status"] == STATUS_RECORDED
+    assert list_pending_asset_impact_reminders(conn, PID, asset_kind="doc") == []
+    resolution_events = [
+        event for event in resolved["events"]
+        if event["event_type"] == EVENT_RESOLUTION_RECORDED
+    ]
+    assert len(resolution_events) == 1
+    assert resolution_events[0]["actor"] == "operator"
+    assert resolution_events[0]["evidence"]["resolution_kind"] == "waived"
+    assert resolution_events[0]["evidence"]["note"] == "Docs intentionally stay terse."
 
 
 def test_scope_doc_impact_skips_when_bound_doc_changed_in_same_commit() -> None:
