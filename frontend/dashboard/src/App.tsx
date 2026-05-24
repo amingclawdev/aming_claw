@@ -125,6 +125,20 @@ function writeDashboardLocation(projectId: string, view: ViewName, mode: "push" 
   else window.history.replaceState(state, "", nextUrl);
 }
 
+function ensureProjectOption(projects: ProjectListItem[], projectId: string): ProjectListItem[] {
+  const normalizedProjectId = normalizeProjectId(projectId);
+  if (projects.some((project) => project.project_id === normalizedProjectId)) return projects;
+  return [
+    {
+      project_id: normalizedProjectId,
+      name: normalizedProjectId,
+      status: "graph-active",
+      initialized: true,
+    },
+    ...projects,
+  ];
+}
+
 interface DataBundle {
   health: HealthResponse;
   status: StatusResponse;
@@ -300,21 +314,12 @@ export default function App() {
         api.health(signal),
         api.projects(signal),
       ]);
-      setProjects(projectList.projects ?? []);
-      const projectKnown = (projectList.projects ?? []).some((project) => project.project_id === requestProjectId);
+      const listedProjects = projectList.projects ?? [];
+      const projectKnown = listedProjects.some((project) => project.project_id === requestProjectId);
+      setProjects(projectKnown || view === "projects" ? listedProjects : ensureProjectOption(listedProjects, requestProjectId));
       if (!projectKnown && view === "projects") {
         setData(null);
         setAiConfig(null);
-        return;
-      }
-      if (!projectKnown && view !== "projects") {
-        setData(null);
-        setAiConfig(null);
-        setView("projects");
-        setToast({
-          kind: "info",
-          msg: `Project ${requestProjectId} is not registered yet. Use Projects to bootstrap it.`,
-        });
         return;
       }
       const [status, summary, projection, backlog, aiCfg] = await Promise.all([

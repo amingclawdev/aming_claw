@@ -162,18 +162,18 @@ export default function AssetInboxView({ assetInbox, projectId, snapshotId, node
   return (
     <div className="view">
       <div className="view-head">
-        <h2 className="view-title">Asset Inbox</h2>
+        <h2 className="view-title">Doc / Test / Config Assets</h2>
         <span className="view-subtitle">
-          source <span className="mono">/api/graph-governance/{projectId}/snapshots/{snapshotId}/asset-inbox</span> ·{" "}
+          Asset Inbox · source <span className="mono">/api/graph-governance/{projectId}/snapshots/{snapshotId}/asset-inbox</span> ·{" "}
           {rows.length} shown · {assetInbox.summary.total} total
         </span>
       </div>
 
       <div className="backlog-guidance">
         <div>
-          <strong>File and graph hygiene.</strong> Weak candidates stay reviewable; accepted bindings are the only assets used for impact scope.
+          <strong>File and graph hygiene.</strong> Docs, tests, and config files are reviewed here before they become trusted graph bindings.
         </div>
-        <span className="mono">backlog from explicit selection only</span>
+        <span className="mono">impact scope = accepted bindings only</span>
       </div>
 
       <div className="score-grid backlog-score-grid">
@@ -185,7 +185,7 @@ export default function AssetInboxView({ assetInbox, projectId, snapshotId, node
 
       <div className="section">
         <div className="section-head">
-          Governance Hint / Orphan file binding{" "}
+          Doc / Test / Config binding panel{" "}
           <span className="head-hint">
             {hintableItems.length} candidate files · write hint, commit, then Update graph
           </span>
