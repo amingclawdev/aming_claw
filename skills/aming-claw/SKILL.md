@@ -259,7 +259,10 @@ merge-queue entry.
 Before `spawn_agent`, the observer must run and record the local dispatch gate
 `agent.governance.mf_subagent_contract.validate_mf_subagent_dispatch_gate`.
 The gate must prove an isolated branch/worktree/file fence, `base_commit`,
-`target_head_commit`, `fence_token`, owned files, and dirty-scope evidence.
+`target_head_commit`, `merge_queue_id`, `fence_token`, owned files, current
+target graph evidence, and dirty-scope evidence. Existing branch adoption is
+allowed only with explicit adoption evidence; target/main worktree dispatch and
+active-graph-stale dispatch are blocked by default.
 Dispatch into the target/main worktree is blocked by default. A same-worktree
 exception requires `same_worktree_allowed=true`, an explicit operator reason,
 exact dirty-scope evidence, and observer timeline evidence before dispatch.
@@ -270,6 +273,11 @@ Observer/coordinator remains required for merge queue writes, merge execution,
 graph reconcile/activation, backlog close, ServiceManager/governance restarts,
 worktree cleanup, and other privileged state changes. Do not tell a subagent to
 identify as observer to get graph access.
+For deterministic MF workflow workers, use the privileged-stage graph
+`dispatch -> implementation_wait -> handoff_gate -> merge_gate ->
+merge_queue_entry -> merge_preview -> live_merge -> reconcile -> close_gate ->
+done`; every stage after handoff must carry compact precheck evidence and a
+token whose subject still matches the fenced commit/fence state.
 
 ## Observer Operating Modes
 

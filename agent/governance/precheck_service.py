@@ -22,11 +22,15 @@ GATE_KINDS = (
     "mf_subagent.dispatch",
     "mf_subagent.handoff",
     "workflow.merge",
+    "workflow.merge_queue_entry",
+    "workflow.merge_preview",
+    "workflow.live_merge",
     "workflow.reconcile_policy",
     "backlog.close",
 )
 
 PASS_STATUSES = {"accepted", "allow", "ok", "pass", "passed", "succeeded", "success"}
+GIT_EVIDENCE_IGNORED_PATH_LIMIT = 50
 
 
 class PrecheckServiceError(ValueError):
@@ -92,11 +96,25 @@ def _dispatch_gate(
     worker_git = _git_evidence(worker_path)
     target_git = _git_evidence(target_path)
     owned_files = _string_list(subject.get("owned_files") or subject.get("write_scope"))
+    branch_ref = _first_text(subject, "branch_ref", "branch")
+    merge_queue_id = _first_text(subject, "merge_queue_id")
     base_commit = _text(subject.get("base_commit"))
     target_head_commit = _text(subject.get("target_head_commit"))
+    graph_snapshot_commit = _text(
+        subject.get("graph_snapshot_commit") or subject.get("active_graph_commit")
+    )
+    adoption_mode = _text(
+        subject.get("branch_adoption_mode") or subject.get("adoption_mode")
+    ).lower()
 
     if not owned_files:
         errors.append("missing_write_scope")
+    if not branch_ref:
+        errors.append("missing_branch_ref")
+    if not worker_path:
+        errors.append("missing_worktree_path")
+    if not merge_queue_id:
+        errors.append("missing_merge_queue_id")
     if not _text(subject.get("fence_token")):
         errors.append("missing_fence_token")
     if worker_git["error"]:
@@ -117,6 +135,18 @@ def _dispatch_gate(
         errors.append("missing_base_commit")
     if not target_head_commit:
         errors.append("missing_target_head_commit")
+    if bool(subject.get("active_graph_stale")) or bool(subject.get("graph_stale")):
+        errors.append("active_graph_stale_at_dispatch")
+    if (
+        graph_snapshot_commit
+        and target_head_commit
+        and graph_snapshot_commit != target_head_commit
+    ):
+        errors.append("graph_snapshot_target_head_mismatch")
+    if adoption_mode in {"existing_branch", "adopt_existing_branch"} and not _has_pass_evidence(
+        subject.get("branch_adoption_evidence")
+    ):
+        errors.append("missing_existing_branch_adoption_evidence")
 
     return {
         "schema_version": PRECHECK_RESULT_SCHEMA_VERSION,
@@ -128,8 +158,23 @@ def _dispatch_gate(
         "worker_git": worker_git,
         "target_git": target_git,
         "owned_files": owned_files,
+        "branch_ref": branch_ref,
+        "worktree_path": worker_path,
+        "merge_queue_id": merge_queue_id,
         "base_commit": base_commit,
         "target_head_commit": target_head_commit,
+        "current_target_head": _text(target_git.get("head")),
+        "graph_snapshot_commit": graph_snapshot_commit,
+        "graph_current": not (
+            bool(subject.get("active_graph_stale"))
+            or bool(subject.get("graph_stale"))
+            or (
+                graph_snapshot_commit
+                and target_head_commit
+                and graph_snapshot_commit != target_head_commit
+            )
+        ),
+        "branch_adoption_mode": adoption_mode,
         "fence_token_present": bool(_text(subject.get("fence_token"))),
     }
 
@@ -245,6 +290,210 @@ def _merge_gate(
     }
 
 
+def _merge_queue_entry_gate(
+    contract_id: str,
+    stage: str,
+    subject: dict[str, Any],
+    actor: str,
+) -> dict[str, Any]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    errors.extend(_contract_errors(subject, contract_id, stage, "workflow.merge_queue_entry"))
+
+    main_git = _git_evidence(_path(subject, "main_worktree", "target_worktree"))
+    source_git = _git_evidence(_path(subject, "source_worktree", "worker_worktree", "worktree"))
+    subject_source_commit = _text(subject.get("source_commit"))
+    observed_source_head = _text(source_git.get("head"))
+    source_commit = observed_source_head or subject_source_commit
+    merge_queue_id = _first_text(subject, "merge_queue_id")
+    branch_ref = _first_text(subject, "branch_ref", "branch")
+    expected_target_head = _text(subject.get("target_head_commit"))
+    observed_target_head = _text(main_git.get("head"))
+    errors.extend(_token_errors(subject, current_commit=source_commit))
+
+    if main_git["error"]:
+        errors.append("main_git_unavailable")
+    if source_git["error"]:
+        errors.append("source_git_unavailable")
+    if main_git["dirty"]:
+        errors.append("dirty_main_worktree")
+    if source_git["dirty"]:
+        errors.append("source_candidate_uncommitted")
+    if not merge_queue_id:
+        errors.append("missing_merge_queue_id")
+    if not branch_ref:
+        errors.append("missing_branch_ref")
+    if not source_commit:
+        errors.append("missing_source_commit")
+    if (
+        subject_source_commit
+        and observed_source_head
+        and subject_source_commit != observed_source_head
+    ):
+        errors.append("source_commit_head_mismatch")
+    if expected_target_head and observed_target_head and expected_target_head != observed_target_head:
+        errors.append("merge_queue_target_head_stale")
+    if not _has_timeline_kind(subject.get("timeline_evidence"), {"implementation", "verification"}):
+        errors.append("missing_implementation_or_verification_timeline")
+
+    return {
+        "schema_version": PRECHECK_RESULT_SCHEMA_VERSION,
+        "actor": actor,
+        "gate_kind": "workflow.merge_queue_entry",
+        "stage": stage,
+        "errors": _dedupe(errors),
+        "warnings": _dedupe(warnings),
+        "merge_queue_id": merge_queue_id,
+        "branch_ref": branch_ref,
+        "main_git": main_git,
+        "source_git": source_git,
+        "source_commit": source_commit,
+        "subject_source_commit": subject_source_commit,
+        "observed_source_head": observed_source_head,
+        "target_head_commit": expected_target_head,
+        "observed_target_head": observed_target_head,
+        "timeline_evidence_present": _has_timeline_kind(
+            subject.get("timeline_evidence"),
+            {"implementation", "verification"},
+        ),
+    }
+
+
+def _merge_preview_gate(
+    contract_id: str,
+    stage: str,
+    subject: dict[str, Any],
+    actor: str,
+) -> dict[str, Any]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    errors.extend(_contract_errors(subject, contract_id, stage, "workflow.merge_preview"))
+
+    main_git = _git_evidence(_path(subject, "main_worktree", "target_worktree"))
+    source_git = _git_evidence(_path(subject, "source_worktree", "worker_worktree", "worktree"))
+    subject_source_commit = _text(subject.get("source_commit"))
+    observed_source_head = _text(source_git.get("head"))
+    source_commit = observed_source_head or subject_source_commit
+    merge_queue_id = _first_text(subject, "merge_queue_id")
+    merge_preview_id = _first_text(subject, "merge_preview_id")
+    expected_target_head = _text(subject.get("target_head_commit"))
+    observed_target_head = _text(main_git.get("head"))
+    preview_passed = _has_pass_evidence(subject.get("merge_preview_evidence"))
+    errors.extend(_token_errors(subject, current_commit=source_commit))
+
+    if main_git["error"]:
+        errors.append("main_git_unavailable")
+    if source_git["error"]:
+        errors.append("source_git_unavailable")
+    if main_git["dirty"]:
+        errors.append("dirty_main_worktree")
+    if source_git["dirty"]:
+        errors.append("source_candidate_uncommitted")
+    if not merge_queue_id:
+        errors.append("missing_merge_queue_id")
+    if not merge_preview_id:
+        errors.append("missing_merge_preview_id")
+    if not source_commit:
+        errors.append("missing_source_commit")
+    if (
+        subject_source_commit
+        and observed_source_head
+        and subject_source_commit != observed_source_head
+    ):
+        errors.append("source_commit_head_mismatch")
+    if expected_target_head and observed_target_head and expected_target_head != observed_target_head:
+        errors.append("merge_preview_target_head_stale")
+    if not preview_passed:
+        errors.append("missing_merge_preview_evidence")
+
+    return {
+        "schema_version": PRECHECK_RESULT_SCHEMA_VERSION,
+        "actor": actor,
+        "gate_kind": "workflow.merge_preview",
+        "stage": stage,
+        "errors": _dedupe(errors),
+        "warnings": _dedupe(warnings),
+        "merge_queue_id": merge_queue_id,
+        "merge_preview_id": merge_preview_id,
+        "main_git": main_git,
+        "source_git": source_git,
+        "source_commit": source_commit,
+        "subject_source_commit": subject_source_commit,
+        "observed_source_head": observed_source_head,
+        "target_head_commit": expected_target_head,
+        "observed_target_head": observed_target_head,
+        "merge_preview_evidence_present": preview_passed,
+    }
+
+
+def _live_merge_gate(
+    contract_id: str,
+    stage: str,
+    subject: dict[str, Any],
+    actor: str,
+) -> dict[str, Any]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    errors.extend(_contract_errors(subject, contract_id, stage, "workflow.live_merge"))
+
+    main_git = _git_evidence(_path(subject, "main_worktree", "target_worktree"))
+    source_git = _git_evidence(_path(subject, "source_worktree", "worker_worktree", "worktree"))
+    subject_source_commit = _text(subject.get("source_commit"))
+    observed_source_head = _text(source_git.get("head"))
+    source_commit = observed_source_head or subject_source_commit
+    merge_commit = _text(subject.get("merge_commit"))
+    target_head_before = _text(subject.get("target_head_before_merge") or subject.get("target_head_commit"))
+    target_head_after = _text(subject.get("target_head_after_merge"))
+    observed_target_head = _text(main_git.get("head"))
+    errors.extend(_token_errors(subject, current_commit=source_commit))
+
+    if main_git["error"]:
+        errors.append("main_git_unavailable")
+    if source_git["error"]:
+        errors.append("source_git_unavailable")
+    if main_git["dirty"]:
+        errors.append("dirty_main_worktree")
+    if source_git["dirty"]:
+        errors.append("source_candidate_uncommitted")
+    if not _first_text(subject, "merge_queue_id"):
+        errors.append("missing_merge_queue_id")
+    if not source_commit:
+        errors.append("missing_source_commit")
+    if (
+        subject_source_commit
+        and observed_source_head
+        and subject_source_commit != observed_source_head
+    ):
+        errors.append("source_commit_head_mismatch")
+    if not merge_commit:
+        errors.append("missing_merge_commit")
+    if target_head_after and merge_commit and target_head_after != merge_commit:
+        errors.append("target_head_after_merge_not_merge_commit")
+    if observed_target_head and merge_commit and observed_target_head != merge_commit:
+        errors.append("target_head_after_merge_mismatch")
+    if target_head_before and target_head_after and target_head_before == target_head_after:
+        errors.append("merge_did_not_advance_target_head")
+
+    return {
+        "schema_version": PRECHECK_RESULT_SCHEMA_VERSION,
+        "actor": actor,
+        "gate_kind": "workflow.live_merge",
+        "stage": stage,
+        "errors": _dedupe(errors),
+        "warnings": _dedupe(warnings),
+        "merge_queue_id": _first_text(subject, "merge_queue_id"),
+        "main_git": main_git,
+        "source_git": source_git,
+        "source_commit": source_commit,
+        "subject_source_commit": subject_source_commit,
+        "observed_source_head": observed_source_head,
+        "target_head_before_merge": target_head_before,
+        "target_head_after_merge": target_head_after,
+        "observed_target_head": observed_target_head,
+        "merge_commit": merge_commit,
+    }
+
+
 def _reconcile_policy_gate(
     contract_id: str,
     stage: str,
@@ -329,6 +578,9 @@ _GATE_REGISTRY: dict[str, _Gate] = {
     "mf_subagent.dispatch": _dispatch_gate,
     "mf_subagent.handoff": _handoff_gate,
     "workflow.merge": _merge_gate,
+    "workflow.merge_queue_entry": _merge_queue_entry_gate,
+    "workflow.merge_preview": _merge_preview_gate,
+    "workflow.live_merge": _live_merge_gate,
     "workflow.reconcile_policy": _reconcile_policy_gate,
     "backlog.close": _close_gate,
 }
@@ -386,6 +638,8 @@ def _git_evidence(path: str) -> dict[str, Any]:
             "tracked_dirty_files": [],
             "untracked_files": [],
             "ignored_files": [],
+            "ignored_files_omitted_count": 0,
+            "ignored_truncated": False,
             "untracked_count": 0,
             "ignored_count": 0,
             "error": "missing_path",
@@ -403,6 +657,8 @@ def _git_evidence(path: str) -> dict[str, Any]:
     tracked_dirty = sorted(item["path"] for item in rows if item["kind"] == "tracked")
     untracked = sorted(item["path"] for item in rows if item["kind"] == "untracked")
     ignored = sorted(item["path"] for item in rows if item["kind"] == "ignored")
+    ignored_sample = ignored[:GIT_EVIDENCE_IGNORED_PATH_LIMIT]
+    ignored_omitted = max(0, len(ignored) - len(ignored_sample))
     return {
         "path": str(Path(path).expanduser()),
         "root": _text(root),
@@ -411,7 +667,10 @@ def _git_evidence(path: str) -> dict[str, Any]:
         "dirty_files": dirty_files,
         "tracked_dirty_files": tracked_dirty,
         "untracked_files": untracked,
-        "ignored_files": ignored,
+        "ignored_files": ignored_sample,
+        "ignored_files_omitted_count": ignored_omitted,
+        "ignored_truncated": ignored_omitted > 0,
+        "ignored_path_limit": GIT_EVIDENCE_IGNORED_PATH_LIMIT,
         "untracked_count": len(untracked),
         "ignored_count": len(ignored),
         "error": error,

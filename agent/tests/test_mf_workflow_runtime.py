@@ -24,6 +24,7 @@ from agent.tests.fixtures.mf_workflow_runtime import (
     commit_worker_candidate,
     create_runtime_fixture,
     make_precheck_token,
+    merge_worker_candidate,
 )
 
 
@@ -37,7 +38,11 @@ def test_scn_mf_wf_001_contract_declares_runtime_stage_graph_and_lanes() -> None
             "SCN-MF-WF-002",
             "SCN-MF-WF-003",
             "SCN-MF-WF-004",
+            "SCN-MF-WF-005",
             "SCN-MF-WF-006",
+            "SCN-MF-WF-007",
+            "SCN-MF-WF-008",
+            "SCN-MF-WF-009",
         }
     )
     assert list(stages) == [
@@ -45,12 +50,18 @@ def test_scn_mf_wf_001_contract_declares_runtime_stage_graph_and_lanes() -> None
         "implementation_wait",
         "handoff_gate",
         "merge_gate",
+        "merge_queue_entry",
+        "merge_preview",
+        "live_merge",
         "reconcile",
         "close_gate",
     ]
     assert gate_kind_for_stage(contract, "dispatch") == "mf_subagent.dispatch"
     assert gate_kind_for_stage(contract, "handoff_gate") == "mf_subagent.handoff"
     assert gate_kind_for_stage(contract, "merge_gate") == "workflow.merge"
+    assert gate_kind_for_stage(contract, "merge_queue_entry") == "workflow.merge_queue_entry"
+    assert gate_kind_for_stage(contract, "merge_preview") == "workflow.merge_preview"
+    assert gate_kind_for_stage(contract, "live_merge") == "workflow.live_merge"
     assert gate_kind_for_stage(contract, "reconcile") == "workflow.reconcile_policy"
     assert gate_kind_for_stage(contract, "close_gate") == "backlog.close"
     assert set(contract["lane_policy"]) == {"green", "yellow", "red"}
@@ -69,13 +80,32 @@ def test_contract_declares_stage_inputs_and_outputs() -> None:
         assert spec["outputs"], stage_name
 
     assert set(stage_io["dispatch"]["inputs"]).issuperset(
-        {"worker_worktree", "target_worktree", "base_commit", "fence_token"}
+        {
+            "worker_worktree",
+            "target_worktree",
+            "branch_ref",
+            "merge_queue_id",
+            "base_commit",
+            "fence_token",
+        }
     )
     assert set(stage_io["merge_gate"]["inputs"]).issuperset(
-        {"main_worktree", "source_worktree", "source_commit", "precheck_token"}
+        {
+            "main_worktree",
+            "source_worktree",
+            "source_commit",
+            "merge_queue_id",
+            "precheck_token",
+        }
     )
     assert set(stage_io["merge_gate"]["outputs"]).issuperset(
         {"observed_source_head", "source_commit", "precheck_run_id", "decision"}
+    )
+    assert set(stage_io["merge_queue_entry"]["inputs"]).issuperset(
+        {"merge_queue_id", "branch_ref", "target_head_commit", "precheck_token"}
+    )
+    assert set(stage_io["live_merge"]["inputs"]).issuperset(
+        {"merge_commit", "target_head_before_merge", "target_head_after_merge"}
     )
     assert set(stage_io["close_gate"]["inputs"]).issuperset(
         {"merge_commit", "precheck_token", "contract_evidence", "timeline_evidence"}
@@ -184,4 +214,45 @@ def test_runtime_can_run_merge_to_close_gate_after_candidate_commit(
     )
 
     assert result["decision"] == "allow"
-    assert result["next_stage"] == "reconcile"
+    assert result["next_stage"] == "merge_queue_entry"
+
+
+def test_runtime_can_run_merge_queue_preview_and_live_merge_after_candidate_commit(
+    tmp_path: Path,
+) -> None:
+    contract = {**load_workflow_contract(), "contract_instance_id": CONTRACT_ID}
+    fixture = create_runtime_fixture(tmp_path)
+    source_commit = commit_worker_candidate(fixture)
+    token = make_precheck_token(source_commit)
+
+    queued = run_workflow_stage(
+        contract,
+        "merge_queue_entry",
+        fixture.merge_queue_subject(contract, source_commit=source_commit, precheck_token=token),
+        actor="pytest",
+    )
+    preview = run_workflow_stage(
+        contract,
+        "merge_preview",
+        fixture.merge_preview_subject(contract, source_commit=source_commit, precheck_token=token),
+        actor="pytest",
+    )
+    merge_commit = merge_worker_candidate(fixture)
+    live = run_workflow_stage(
+        contract,
+        "live_merge",
+        fixture.live_merge_subject(
+            contract,
+            source_commit=source_commit,
+            merge_commit=merge_commit,
+            precheck_token=token,
+        ),
+        actor="pytest",
+    )
+
+    assert queued["decision"] == "allow"
+    assert queued["next_stage"] == "merge_preview"
+    assert preview["decision"] == "allow"
+    assert preview["next_stage"] == "live_merge"
+    assert live["decision"] == "allow"
+    assert live["next_stage"] == "reconcile"

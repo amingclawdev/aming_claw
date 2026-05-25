@@ -55,6 +55,7 @@ _REQUIRED_CONTEXT_FIELDS = (
     "worktree_path",
     "base_commit",
     "target_head_commit",
+    "merge_queue_id",
     "fence_token",
 )
 _READY_STATUSES = {"completed", "succeeded", "ready_for_merge"}
@@ -75,12 +76,14 @@ _FINISH_IDENTITY_FIELDS = (
     "worktree_path",
     "base_commit",
     "target_head_commit",
+    "merge_queue_id",
 )
 _DISPATCH_REQUIRED_FIELDS = (
     "branch",
     "worktree",
     "base_commit",
     "target_head_commit",
+    "merge_queue_id",
     "fence_token",
 )
 
@@ -277,12 +280,22 @@ def validate_mf_subagent_dispatch_gate(
         names=("target_head_commit",),
         nested_keys=(("branch", ("target_head_commit", "head_commit")),),
     )
+    merge_queue_id = _dispatch_string(
+        payload,
+        names=("merge_queue_id",),
+        nested_keys=(
+            ("branch_context", ("merge_queue_id",)),
+            ("graph_identity", ("merge_queue_id",)),
+            ("branch", ("merge_queue_id",)),
+        ),
+    )
     fence_token = _dispatch_string(payload, names=("fence_token",))
     values = {
         "branch": branch,
         "worktree": worktree,
         "base_commit": base_commit,
         "target_head_commit": target_head_commit,
+        "merge_queue_id": merge_queue_id,
         "fence_token": fence_token,
     }
     missing = [field for field in _DISPATCH_REQUIRED_FIELDS if not values[field]]
@@ -359,6 +372,7 @@ def validate_mf_subagent_dispatch_gate(
         "worktree": worktree,
         "base_commit": base_commit,
         "target_head_commit": target_head_commit,
+        "merge_queue_id": merge_queue_id,
         "fence_token": fence_token,
         "owned_files": owned_files,
         "isolated_worktree": not same_worktree,
@@ -567,6 +581,7 @@ def validate_mf_subagent_finish_gate(
         "worktree_path": context.worktree_path,
         "base_commit": context.base_commit,
         "target_head_commit": context.target_head_commit,
+        "merge_queue_id": context.merge_queue_id,
         "head_commit": claimed_head or context.head_commit,
         "checkpoint_id": checkpoint_id,
         "fence_token": context.fence_token,

@@ -18,7 +18,11 @@
       "SCN-MF-WF-002",
       "SCN-MF-WF-003",
       "SCN-MF-WF-004",
-      "SCN-MF-WF-006"
+      "SCN-MF-WF-005",
+      "SCN-MF-WF-006",
+      "SCN-MF-WF-007",
+      "SCN-MF-WF-008",
+      "SCN-MF-WF-009"
     ]
   },
   "stage_graph": [
@@ -44,6 +48,27 @@
     {
       "stage": "merge_gate",
       "gate_kind": "workflow.merge",
+      "on_allow": "merge_queue_entry",
+      "on_review_required": "observer_review",
+      "on_block": "blocked"
+    },
+    {
+      "stage": "merge_queue_entry",
+      "gate_kind": "workflow.merge_queue_entry",
+      "on_allow": "merge_preview",
+      "on_review_required": "observer_review",
+      "on_block": "blocked"
+    },
+    {
+      "stage": "merge_preview",
+      "gate_kind": "workflow.merge_preview",
+      "on_allow": "live_merge",
+      "on_review_required": "observer_review",
+      "on_block": "blocked"
+    },
+    {
+      "stage": "live_merge",
+      "gate_kind": "workflow.live_merge",
       "on_allow": "reconcile",
       "on_review_required": "observer_review",
       "on_block": "blocked"
@@ -69,8 +94,11 @@
         "contract",
         "worker_worktree",
         "target_worktree",
+        "branch_ref",
+        "merge_queue_id",
         "base_commit",
         "target_head_commit",
+        "graph_snapshot_commit",
         "fence_token",
         "owned_files",
         "forbidden_paths"
@@ -80,6 +108,11 @@
         "decision",
         "worker_git",
         "target_git",
+        "branch_ref",
+        "worktree_path",
+        "merge_queue_id",
+        "current_target_head",
+        "graph_current",
         "next_stage"
       ]
     },
@@ -117,6 +150,8 @@
         "main_worktree",
         "source_worktree",
         "source_commit",
+        "merge_queue_id",
+        "branch_ref",
         "fence_token",
         "precheck_token",
         "contract_evidence",
@@ -129,6 +164,73 @@
         "source_commit",
         "main_git",
         "source_git",
+        "next_stage"
+      ]
+    },
+    "merge_queue_entry": {
+      "inputs": [
+        "contract",
+        "main_worktree",
+        "source_worktree",
+        "source_commit",
+        "target_head_commit",
+        "merge_queue_id",
+        "branch_ref",
+        "fence_token",
+        "precheck_token",
+        "timeline_evidence"
+      ],
+      "outputs": [
+        "precheck_run_id",
+        "decision",
+        "merge_queue_id",
+        "branch_ref",
+        "observed_target_head",
+        "source_commit",
+        "next_stage"
+      ]
+    },
+    "merge_preview": {
+      "inputs": [
+        "contract",
+        "main_worktree",
+        "source_worktree",
+        "source_commit",
+        "target_head_commit",
+        "merge_queue_id",
+        "merge_preview_id",
+        "fence_token",
+        "precheck_token",
+        "merge_preview_evidence"
+      ],
+      "outputs": [
+        "precheck_run_id",
+        "decision",
+        "merge_preview_id",
+        "observed_target_head",
+        "merge_preview_evidence_present",
+        "next_stage"
+      ]
+    },
+    "live_merge": {
+      "inputs": [
+        "contract",
+        "main_worktree",
+        "source_worktree",
+        "source_commit",
+        "merge_commit",
+        "target_head_before_merge",
+        "target_head_after_merge",
+        "merge_queue_id",
+        "fence_token",
+        "precheck_token"
+      ],
+      "outputs": [
+        "precheck_run_id",
+        "decision",
+        "merge_commit",
+        "target_head_after_merge",
+        "observed_target_head",
         "next_stage"
       ]
     },
@@ -178,6 +280,9 @@
       "isolated_worktree",
       "worker_head_matches_base_commit",
       "target_head_matches_target_head_commit",
+      "branch_ref_present",
+      "merge_queue_id_present",
+      "active_graph_current_at_dispatch",
       "write_scope_present",
       "contract_shape_valid"
     ],
@@ -194,6 +299,29 @@
       "subject_commit_matches_precheck_token",
       "contract_evidence_complete",
       "implementation_and_verification_timeline_present"
+    ],
+    "workflow.merge_queue_entry": [
+      "merge_queue_id_present",
+      "branch_ref_present",
+      "target_head_still_current",
+      "source_candidate_committed",
+      "subject_commit_matches_precheck_token",
+      "implementation_and_verification_timeline_present"
+    ],
+    "workflow.merge_preview": [
+      "merge_queue_id_present",
+      "merge_preview_id_present",
+      "target_head_still_current",
+      "source_candidate_committed",
+      "subject_commit_matches_precheck_token",
+      "merge_preview_evidence_present"
+    ],
+    "workflow.live_merge": [
+      "merge_queue_id_present",
+      "source_candidate_committed",
+      "merge_commit_recorded",
+      "target_head_after_merge_matches_merge_commit",
+      "subject_commit_matches_precheck_token"
     ],
     "workflow.reconcile_policy": [
       "docs_or_code_module_scope_reconcile_allowed",
@@ -232,7 +360,7 @@
       "review_required",
       "block"
     ],
-    "token_policy": "merge/reconcile/close must reference a precheck_run_id whose subject commit/path evidence still matches current state"
+    "token_policy": "merge, merge_queue_entry, merge_preview, live_merge, reconcile, and close must reference a precheck_run_id whose subject commit/path evidence still matches current state"
   },
   "observer_escalation": {
     "review_stages": [
@@ -281,6 +409,18 @@
     },
     {
       "id": "merge_close_gate_tests",
+      "required": true,
+      "phase": "verification",
+      "kind": "pytest"
+    },
+    {
+      "id": "merge_queue_gate_tests",
+      "required": true,
+      "phase": "verification",
+      "kind": "pytest"
+    },
+    {
+      "id": "compact_precheck_evidence",
       "required": true,
       "phase": "verification",
       "kind": "pytest"

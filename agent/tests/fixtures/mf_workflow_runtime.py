@@ -17,11 +17,17 @@ SCENARIOS = {
     "SCN-MF-WF-002": "dispatch clean/isolation/HEAD gate",
     "SCN-MF-WF-003": "handoff dirty scope with untracked and ignored files",
     "SCN-MF-WF-004": "merge token/source commit gate",
+    "SCN-MF-WF-005": "merge queue target-head stale gate",
     "SCN-MF-WF-006": "close gate evidence",
+    "SCN-MF-WF-007": "existing branch adoption evidence",
+    "SCN-MF-WF-008": "compact ignored-file precheck evidence",
+    "SCN-MF-WF-009": "active graph stale at dispatch",
 }
 
 CONTRACT_ID = "MF-WORKFLOW-PRECHECK-SERVICE-20260525"
 FENCE_TOKEN = "fence-mf-workflow-precheck-96c1289"
+MERGE_QUEUE_ID = "mq-mf-workflow-precheck-20260525"
+MERGE_PREVIEW_ID = "mp-mf-workflow-precheck-20260525"
 
 
 @dataclass(frozen=True)
@@ -32,6 +38,8 @@ class MfWorkflowFixture:
     base_commit: str
     target_head_commit: str
     branch: str
+    merge_queue_id: str
+    merge_preview_id: str
     owned_files: tuple[str, ...]
     forbidden_paths: tuple[str, ...]
 
@@ -39,10 +47,14 @@ class MfWorkflowFixture:
         return {
             "contract": {**contract, "contract_instance_id": CONTRACT_ID},
             "branch": self.branch,
+            "branch_ref": self.branch,
+            "worktree_path": str(self.worker_worktree),
             "worker_worktree": str(self.worker_worktree),
             "target_worktree": str(self.main_worktree),
             "base_commit": self.base_commit,
             "target_head_commit": self.target_head_commit,
+            "graph_snapshot_commit": self.target_head_commit,
+            "merge_queue_id": self.merge_queue_id,
             "fence_token": FENCE_TOKEN,
             "owned_files": list(self.owned_files),
             "forbidden_paths": list(self.forbidden_paths),
@@ -71,11 +83,79 @@ class MfWorkflowFixture:
             "main_worktree": str(self.main_worktree),
             "source_worktree": str(self.worker_worktree),
             "source_commit": source_commit,
+            "target_head_commit": self.target_head_commit,
+            "merge_queue_id": self.merge_queue_id,
+            "branch_ref": self.branch,
             "fence_token": FENCE_TOKEN,
             "precheck_token": precheck_token,
             "contract_evidence": complete_contract_evidence(contract),
             "timeline_evidence": implementation_verification_timeline(),
             "required_evidence_ids": required_evidence_ids(contract),
+        }
+
+    def merge_queue_subject(
+        self,
+        contract: dict[str, Any],
+        *,
+        source_commit: str,
+        precheck_token: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "contract": {**contract, "contract_instance_id": CONTRACT_ID},
+            "main_worktree": str(self.main_worktree),
+            "source_worktree": str(self.worker_worktree),
+            "source_commit": source_commit,
+            "target_head_commit": self.target_head_commit,
+            "merge_queue_id": self.merge_queue_id,
+            "branch_ref": self.branch,
+            "fence_token": FENCE_TOKEN,
+            "precheck_token": precheck_token,
+            "timeline_evidence": implementation_verification_timeline(),
+        }
+
+    def merge_preview_subject(
+        self,
+        contract: dict[str, Any],
+        *,
+        source_commit: str,
+        precheck_token: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "contract": {**contract, "contract_instance_id": CONTRACT_ID},
+            "main_worktree": str(self.main_worktree),
+            "source_worktree": str(self.worker_worktree),
+            "source_commit": source_commit,
+            "target_head_commit": self.target_head_commit,
+            "merge_queue_id": self.merge_queue_id,
+            "merge_preview_id": self.merge_preview_id,
+            "fence_token": FENCE_TOKEN,
+            "precheck_token": precheck_token,
+            "merge_preview_evidence": {
+                "status": "passed",
+                "preview_id": self.merge_preview_id,
+                "strategy": "git merge-tree",
+            },
+        }
+
+    def live_merge_subject(
+        self,
+        contract: dict[str, Any],
+        *,
+        source_commit: str,
+        merge_commit: str,
+        precheck_token: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "contract": {**contract, "contract_instance_id": CONTRACT_ID},
+            "main_worktree": str(self.main_worktree),
+            "source_worktree": str(self.worker_worktree),
+            "source_commit": source_commit,
+            "merge_commit": merge_commit,
+            "target_head_before_merge": self.target_head_commit,
+            "target_head_after_merge": merge_commit,
+            "merge_queue_id": self.merge_queue_id,
+            "fence_token": FENCE_TOKEN,
+            "precheck_token": precheck_token,
         }
 
     def close_subject(
@@ -123,6 +203,8 @@ def create_runtime_fixture(tmp_path: Path) -> MfWorkflowFixture:
         base_commit=base,
         target_head_commit=base,
         branch="mf/workflow-precheck-service-20260525",
+        merge_queue_id=MERGE_QUEUE_ID,
+        merge_preview_id=MERGE_PREVIEW_ID,
         owned_files=(
             "agent/governance/precheck_service.py",
             "agent/governance/mf_workflow_runtime.py",
@@ -149,11 +231,28 @@ def make_forbidden_change(fixture: MfWorkflowFixture) -> None:
     _write(fixture.worker_worktree / "frontend/dashboard/src/App.tsx", "forbidden\n")
 
 
+def make_many_ignored_files(fixture: MfWorkflowFixture, count: int = 70) -> None:
+    for index in range(count):
+        _write(fixture.worker_worktree / f"ignored/{index:03d}.ignored", "ignored\n")
+
+
+def advance_target_head(fixture: MfWorkflowFixture) -> str:
+    _write(fixture.main_worktree / "docs/governance/target-moved.md", "target moved\n")
+    _git(fixture.main_worktree, "add", "docs/governance/target-moved.md")
+    _git(fixture.main_worktree, "commit", "-m", "target moved")
+    return _git(fixture.main_worktree, "rev-parse", "HEAD")
+
+
 def commit_worker_candidate(fixture: MfWorkflowFixture, message: str = "candidate") -> str:
     _write(fixture.worker_worktree / "agent/governance/precheck_service.py", "BASE = 3\n")
     _git(fixture.worker_worktree, "add", "agent/governance/precheck_service.py")
     _git(fixture.worker_worktree, "commit", "-m", message)
     return _git(fixture.worker_worktree, "rev-parse", "HEAD")
+
+
+def merge_worker_candidate(fixture: MfWorkflowFixture) -> str:
+    _git(fixture.main_worktree, "merge", "--no-ff", fixture.branch, "-m", "merge candidate")
+    return _git(fixture.main_worktree, "rev-parse", "HEAD")
 
 
 def make_precheck_token(source_commit: str) -> dict[str, Any]:

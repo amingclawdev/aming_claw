@@ -86,6 +86,7 @@
         "worktree",
         "base_commit",
         "target_head_commit",
+        "merge_queue_id",
         "fence_token",
         "owned_files",
         "dirty_scope_check"

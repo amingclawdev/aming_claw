@@ -16,11 +16,14 @@ from agent.governance.precheck_service import run_precheck
 from agent.tests.fixtures.mf_workflow_runtime import (
     CONTRACT_ID,
     FENCE_TOKEN,
+    advance_target_head,
     commit_worker_candidate,
     create_runtime_fixture,
     make_forbidden_change,
     make_handoff_dirty_scope,
+    make_many_ignored_files,
     make_precheck_token,
+    merge_worker_candidate,
 )
 
 
@@ -44,6 +47,7 @@ def test_scn_mf_wf_002_dispatch_collects_git_evidence_and_blocks_bad_state(
     assert result["evidence"]["worker_git"]["head"] == fixture.base_commit
     assert result["evidence"]["target_git"]["head"] == fixture.target_head_commit
     assert result["evidence"]["worker_git"]["root"] != result["evidence"]["target_git"]["root"]
+    assert result["evidence"]["merge_queue_id"] == fixture.merge_queue_id
 
     dirty_main = fixture.dispatch_subject(contract)
     (fixture.main_worktree / "dirty.txt").write_text("dirty\n", encoding="utf-8")
@@ -79,6 +83,76 @@ def test_scn_mf_wf_002_dispatch_collects_git_evidence_and_blocks_bad_state(
         "pytest",
     )
     assert "worker_head_mismatch" in mismatch_result["evidence"]["errors"]
+
+
+def test_dispatch_blocks_missing_merge_queue_target_move_graph_stale_and_bad_adoption(
+    tmp_path: Path,
+) -> None:
+    contract = load_workflow_contract()
+    fixture = create_runtime_fixture(tmp_path)
+
+    missing_queue = fixture.dispatch_subject(contract)
+    missing_queue["merge_queue_id"] = ""
+    missing_result = run_precheck(
+        "mf_subagent.dispatch",
+        CONTRACT_ID,
+        "dispatch",
+        missing_queue,
+        "pytest",
+    )
+    assert missing_result["decision"] == "block"
+    assert "missing_merge_queue_id" in missing_result["evidence"]["errors"]
+
+    graph_stale = fixture.dispatch_subject(contract)
+    graph_stale["active_graph_stale"] = True
+    stale_graph_result = run_precheck(
+        "mf_subagent.dispatch",
+        CONTRACT_ID,
+        "dispatch",
+        graph_stale,
+        "pytest",
+    )
+    assert stale_graph_result["decision"] == "block"
+    assert "active_graph_stale_at_dispatch" in stale_graph_result["evidence"]["errors"]
+
+    bad_adoption = fixture.dispatch_subject(contract)
+    bad_adoption["adoption_mode"] = "existing_branch"
+    bad_adoption_result = run_precheck(
+        "mf_subagent.dispatch",
+        CONTRACT_ID,
+        "dispatch",
+        bad_adoption,
+        "pytest",
+    )
+    assert bad_adoption_result["decision"] == "block"
+    assert "missing_existing_branch_adoption_evidence" in bad_adoption_result["evidence"]["errors"]
+
+    good_adoption = fixture.dispatch_subject(contract)
+    good_adoption["adoption_mode"] = "existing_branch"
+    good_adoption["branch_adoption_evidence"] = {"status": "passed", "branch": fixture.branch}
+    good_adoption_result = run_precheck(
+        "mf_subagent.dispatch",
+        CONTRACT_ID,
+        "dispatch",
+        good_adoption,
+        "pytest",
+    )
+    assert good_adoption_result["decision"] == "allow"
+    assert good_adoption_result["evidence"]["branch_adoption_mode"] == "existing_branch"
+
+    moved_root = tmp_path / "target-move"
+    moved_root.mkdir()
+    moved_fixture = create_runtime_fixture(moved_root)
+    advance_target_head(moved_fixture)
+    moved_result = run_precheck(
+        "mf_subagent.dispatch",
+        CONTRACT_ID,
+        "dispatch",
+        moved_fixture.dispatch_subject(contract),
+        "pytest",
+    )
+    assert moved_result["decision"] == "block"
+    assert "target_head_mismatch" in moved_result["evidence"]["errors"]
 
 
 def test_unknown_gate_and_invalid_contract_block(tmp_path: Path) -> None:
@@ -137,6 +211,29 @@ def test_scn_mf_wf_003_handoff_allows_owned_dirty_scope_and_counts_files(
     assert "missing_tests_evidence" in missing_result["evidence"]["errors"]
 
 
+def test_scn_mf_wf_008_handoff_compacts_large_ignored_file_evidence(
+    tmp_path: Path,
+) -> None:
+    contract = load_workflow_contract()
+    fixture = create_runtime_fixture(tmp_path)
+    make_many_ignored_files(fixture, count=70)
+
+    result = run_precheck(
+        "mf_subagent.handoff",
+        CONTRACT_ID,
+        "handoff_gate",
+        fixture.handoff_subject(contract),
+        "pytest",
+    )
+
+    worker_git = result["evidence"]["worker_git"]
+    assert result["decision"] == "allow"
+    assert worker_git["ignored_count"] == 70
+    assert worker_git["ignored_truncated"] is True
+    assert worker_git["ignored_files_omitted_count"] == 20
+    assert len(worker_git["ignored_files"]) == worker_git["ignored_path_limit"]
+
+
 def test_handoff_blocks_forbidden_paths(tmp_path: Path) -> None:
     contract = load_workflow_contract()
     fixture = create_runtime_fixture(tmp_path)
@@ -190,6 +287,88 @@ def test_scn_mf_wf_004_merge_requires_clean_source_token_and_timeline(
     )
     assert stale["decision"] == "block"
     assert "precheck_token_subject_commit_mismatch" in stale["evidence"]["errors"]
+
+
+def test_scn_mf_wf_005_merge_queue_entry_blocks_stale_target_head(
+    tmp_path: Path,
+) -> None:
+    contract = load_workflow_contract()
+    fixture = create_runtime_fixture(tmp_path)
+    source_commit = commit_worker_candidate(fixture)
+    token = make_precheck_token(source_commit)
+
+    allowed = run_precheck(
+        "workflow.merge_queue_entry",
+        CONTRACT_ID,
+        "merge_queue_entry",
+        fixture.merge_queue_subject(contract, source_commit=source_commit, precheck_token=token),
+        "pytest",
+    )
+    assert allowed["decision"] == "allow"
+    assert allowed["evidence"]["merge_queue_id"] == fixture.merge_queue_id
+
+    advance_target_head(fixture)
+    stale = run_precheck(
+        "workflow.merge_queue_entry",
+        CONTRACT_ID,
+        "merge_queue_entry",
+        fixture.merge_queue_subject(contract, source_commit=source_commit, precheck_token=token),
+        "pytest",
+    )
+    assert stale["decision"] == "block"
+    assert "merge_queue_target_head_stale" in stale["evidence"]["errors"]
+
+
+def test_merge_preview_requires_preview_evidence_and_live_merge_records_target_head(
+    tmp_path: Path,
+) -> None:
+    contract = load_workflow_contract()
+    fixture = create_runtime_fixture(tmp_path)
+    source_commit = commit_worker_candidate(fixture)
+    token = make_precheck_token(source_commit)
+
+    preview = run_precheck(
+        "workflow.merge_preview",
+        CONTRACT_ID,
+        "merge_preview",
+        fixture.merge_preview_subject(contract, source_commit=source_commit, precheck_token=token),
+        "pytest",
+    )
+    assert preview["decision"] == "allow"
+    assert preview["evidence"]["merge_preview_evidence_present"] is True
+
+    missing_preview = fixture.merge_preview_subject(
+        contract,
+        source_commit=source_commit,
+        precheck_token=token,
+    )
+    missing_preview["merge_preview_evidence"] = {}
+    blocked_preview = run_precheck(
+        "workflow.merge_preview",
+        CONTRACT_ID,
+        "merge_preview",
+        missing_preview,
+        "pytest",
+    )
+    assert blocked_preview["decision"] == "block"
+    assert "missing_merge_preview_evidence" in blocked_preview["evidence"]["errors"]
+
+    merge_commit = merge_worker_candidate(fixture)
+    live = run_precheck(
+        "workflow.live_merge",
+        CONTRACT_ID,
+        "live_merge",
+        fixture.live_merge_subject(
+            contract,
+            source_commit=source_commit,
+            merge_commit=merge_commit,
+            precheck_token=token,
+        ),
+        "pytest",
+    )
+    assert live["decision"] == "allow"
+    assert live["evidence"]["merge_commit"] == merge_commit
+    assert live["evidence"]["observed_target_head"] == merge_commit
 
 
 def test_merge_reconcile_and_close_block_weak_empty_subject_token(

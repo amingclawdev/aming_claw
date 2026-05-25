@@ -26,6 +26,7 @@ REQUIRED_SCENARIOS = {
     "PB-013": "Existing long-lived ref governance",
     "PB-014": "Managed ref bootstrap/import",
     "PB-015": "MF subagent backend contract",
+    "PB-016": "Contract-driven MF workflow gates",
 }
 
 REQUIRED_ORACLE_DIMENSIONS = [
@@ -135,3 +136,6 @@ def test_mf_subagent_contract_is_bounded_to_branch_worker_actions(doc_text: str)
     assert "Build an `mf_sub` payload from `BranchTaskRuntimeContext`" in doc_text
     assert "reject stale fences and merge/push/graph activation attempts" in normalized
     assert "MF subagents are branch workers, not merge workers" in doc_text
+    assert "Contract-driven MF workflow gates" in doc_text
+    assert "merge_queue_entry" in doc_text
+    assert "active graph stale state" in normalized

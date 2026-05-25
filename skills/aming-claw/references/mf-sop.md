@@ -42,8 +42,9 @@ Canonical source: `docs/governance/manual-fix-sop.md`. This file is only the sho
      subject, actor)`;
    - use the workflow runtime stage graph
      `dispatch -> implementation_wait -> handoff_gate -> merge_gate ->
-     reconcile -> close_gate -> done`, with `observer_review` for yellow-lane
-     results and `blocked` for red-lane results;
+     merge_queue_entry -> merge_preview -> live_merge -> reconcile ->
+     close_gate -> done`, with `observer_review` for yellow-lane results and
+     `blocked` for red-lane results;
    - require every precheck result to carry `precheck_run_id`, `kind`,
      `contract_id`, `stage`, `decision`, `status`, `subject`, `evidence`,
      `evidence_hash`, and `created_at`; merge/reconcile/close gates must verify
@@ -61,7 +62,9 @@ Canonical source: `docs/governance/manual-fix-sop.md`. This file is only the sho
      backlog, delete worktrees, or mutate merge queues unless the user
      explicitly asks or a documented governance transition requires it;
    - fill each `mf_sub` worker's runtime identity from task metadata before dispatch:
-     `task_id`, `parent_task_id`, `worker_role=mf_sub`, and `fence_token`;
+     `task_id`, `parent_task_id`, `worker_role=mf_sub`, `branch_ref`,
+     `worktree_path`, `base_commit`, `target_head_commit`, `merge_queue_id`,
+     and `fence_token`;
    - assign every worker a branch/worktree/file fence before dispatch, then
      require it to stay inside that fence and stop at `review_ready` or
      `waiting_merge`, never merge/push or mutate merge queues;
@@ -72,8 +75,12 @@ Canonical source: `docs/governance/manual-fix-sop.md`. This file is only the sho
      `agent.governance.mf_subagent_contract.validate_mf_subagent_dispatch_gate`
      for each local `mf_sub` worker; the gate must pass with an isolated
      branch/worktree/file fence, `base_commit`, `target_head_commit`,
-     `fence_token`, owned files, and dirty-scope evidence before non-blocking
-     dispatch;
+     `merge_queue_id`, `fence_token`, owned files, current target graph
+     evidence, and dirty-scope evidence before non-blocking dispatch;
+   - block dispatch when the target/main HEAD moved after contract creation or
+     when the active target graph is stale. Existing branch/worktree adoption is
+     allowed only as a first-class recovery path with explicit adoption
+     evidence in the contract/timeline;
    - block target/main worktree dispatch by default. A same-worktree exception
      requires `same_worktree_allowed=true`, an explicit operator reason, exact
      dirty-scope evidence, and observer timeline evidence before dispatch;

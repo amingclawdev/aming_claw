@@ -83,6 +83,7 @@ def test_mf_parallel_template_requires_subagent_fence_and_graph_trace_contract()
             "worktree",
             "base_commit",
             "target_head_commit",
+            "merge_queue_id",
             "fence_token",
             "owned_files",
             "dirty_scope_check",
@@ -107,6 +108,7 @@ def _dispatch_payload(**overrides: object) -> dict[str, object]:
         "worktree": "/repo/.worktrees/mf-subagent-1",
         "base_commit": "base123",
         "target_head_commit": "target123",
+        "merge_queue_id": "mq-1",
         "fence_token": "fence-1",
         "owned_files": ["agent/governance/mf_subagent_contract.py"],
         "dirty_scope_check": {
@@ -132,6 +134,7 @@ def test_dispatch_gate_accepts_isolated_worktree_with_compact_evidence() -> None
     assert evidence["worktree_policy"] == WORKTREE_POLICY_MODE
     assert evidence["branch"] == "mf/subagent-1"
     assert evidence["worktree"] == "/repo/.worktrees/mf-subagent-1"
+    assert evidence["merge_queue_id"] == "mq-1"
     assert evidence["isolated_worktree"] is True
     assert evidence["same_worktree_allowed"] is False
     assert evidence["override"]["used"] is False
@@ -146,6 +149,7 @@ def test_dispatch_gate_accepts_isolated_worktree_with_compact_evidence() -> None
         ("fence_token", {"fence_token": ""}),
         ("base_commit", {"base_commit": ""}),
         ("target_head_commit", {"target_head_commit": ""}),
+        ("merge_queue_id", {"merge_queue_id": ""}),
     ],
 )
 def test_dispatch_gate_rejects_missing_branch_worktree_fence_or_commits(
@@ -281,7 +285,7 @@ def test_build_input_carries_branch_runtime_identity() -> None:
     ]
 
 
-@pytest.mark.parametrize("field", ["backlog_id", "worktree_path", "fence_token"])
+@pytest.mark.parametrize("field", ["backlog_id", "worktree_path", "fence_token", "merge_queue_id"])
 def test_build_input_rejects_missing_required_identity(field: str) -> None:
     with pytest.raises(MfSubagentContractError, match=field):
         build_mf_subagent_input(_context(**{field: ""}), prompt="Do work.")
@@ -370,6 +374,7 @@ def test_finish_gate_returns_validated_checkpoint_evidence() -> None:
             "worktree_path": "/tmp/aming-claw-wt/task-mf-sub-1",
             "base_commit": "base123",
             "target_head_commit": "target123",
+            "merge_queue_id": "mq-1",
             "head_commit": "head456",
             "status": "succeeded",
             "changed_files": ["agent/governance/mf_subagent_contract.py"],
@@ -384,6 +389,7 @@ def test_finish_gate_returns_validated_checkpoint_evidence() -> None:
     assert gate["schema_version"] == FINISH_GATE_SCHEMA_VERSION
     assert gate["checkpoint_id"] == "ckpt-finish"
     assert gate["head_commit"] == "head456"
+    assert gate["merge_queue_id"] == "mq-1"
     assert gate["replay_source"] == FINISH_GATE_REPLAY_SOURCE
     assert gate["merge_queue_ready"] is True
 

@@ -554,6 +554,16 @@ evidence, blockers, checkpoint, and merge-queue readiness. It cannot merge,
 push, activate graph refs, release gates, create tasks, delete worktrees, or
 modify merge queues.
 
+Implemented contract-driven MF workflow gates: deterministic MF workers now
+model privileged movement as `dispatch -> implementation_wait -> handoff_gate
+-> merge_gate -> merge_queue_entry -> merge_preview -> live_merge -> reconcile
+-> close_gate`. Dispatch requires durable branch/runtime identity, including
+`branch_ref`, `worktree_path`, `base_commit`, `target_head_commit`,
+`merge_queue_id`, and `fence_token`, and blocks target HEAD movement,
+active-graph-stale dispatch, same-worktree dispatch, and missing existing
+branch adoption evidence. Merge queue entry, preview, and live merge each
+produce their own compact precheck evidence before reconcile/close can proceed.
+
 Implemented MF subagent finish gate: `POST
 /api/graph-governance/{project_id}/parallel-branches/finish-gate` is the only
 trusted exit for `mf_sub` worker claims. The worker fills a structured result,
