@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useRef, useState, type ReactNode } from "react";
 import FileLink from "../components/FileLink";
 import type { AssetStatusFilter, AssetTreeSelection } from "../components/TreePanel";
 import { api, ApiError } from "../lib/api";
@@ -132,6 +132,7 @@ export default function AssetInboxView({
   const [attachResults, setAttachResults] = useState<Record<string, AttachResult>>({});
   const [actionResults, setActionResults] = useState<Record<string, ActionResult>>({});
   const [removeConfirm, setRemoveConfirm] = useState<RemoveConfirmState | null>(null);
+  const inspectorRef = useRef<HTMLDivElement | null>(null);
 
   const items = useMemo(() => (assetInbox.items ?? []).slice().sort(compareAssets), [assetInbox.items]);
   const groups = useMemo(() => buildGroups(assetInbox, items), [assetInbox, items]);
@@ -335,6 +336,14 @@ export default function AssetInboxView({
     await recordRelationAction(pending.item, pending.relation, "remove_binding", reason);
   };
 
+  const focusAddBindingFlow = () => {
+    inspectorRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+    const target = inspectorRef.current?.querySelector<HTMLSelectElement | HTMLButtonElement>(
+      ".asset-hint-controls select, .asset-hint-controls button",
+    );
+    target?.focus();
+  };
+
   return (
     <div className="view asset-browser-view">
       <div className="view-head">
@@ -397,25 +406,31 @@ export default function AssetInboxView({
                 actionResults={actionResults}
                 projectId={projectId}
                 onPropose={proposeRelationAction}
+                onAddBindingFocus={focusAddBindingFlow}
               />
 
-              <AssetInspector
-                item={selectedItem}
-                relations={selectedRelations}
-                nodeOptions={nodeOptions}
-                workspaceRoot={workspaceRoot}
-                attachResult={attachResults[selectedItem.path] ?? { state: "idle", message: "Not written." }}
-                draft={
-                  drafts[selectedItem.path] ?? {
-                    targetNodeId: suggestedTargetNodeId(selectedItem, nodeOptions),
-                    role: roleForAsset(selectedItem),
+              <div ref={inspectorRef}>
+                <AssetInspector
+                  item={selectedItem}
+                  relations={selectedRelations}
+                  nodeOptions={nodeOptions}
+                  workspaceRoot={workspaceRoot}
+                  attachResult={attachResults[selectedItem.path] ?? { state: "idle", message: "Not written." }}
+                  draft={
+                    drafts[selectedItem.path] ?? {
+                      targetNodeId: suggestedTargetNodeId(selectedItem, nodeOptions),
+                      role: roleForAsset(selectedItem),
+                    }
                   }
-                }
-                snapshotId={snapshotId}
-                onSelectNode={onSelectNode}
-                onUpdateDraft={(patch) => updateDraft(selectedItem.path, patch)}
-                onWriteHint={() => writeHint(selectedItem)}
-              />
+                  snapshotId={snapshotId}
+                  actionResults={actionResults}
+                  projectId={projectId}
+                  onSelectNode={onSelectNode}
+                  onUpdateDraft={(patch) => updateDraft(selectedItem.path, patch)}
+                  onWriteHint={() => writeHint(selectedItem)}
+                  onPropose={proposeRelationAction}
+                />
+              </div>
 
               <div className="asset-detail-grid">
                 <DetailBlock title="Evidence">
@@ -575,6 +590,7 @@ function AssetRelationGraph(props: {
   actionResults: Record<string, ActionResult>;
   projectId: string;
   onPropose(item: AssetInboxItem, relation: RelationView, action: "attach_to_node" | "remove_binding"): void;
+  onAddBindingFocus(): void;
 }) {
   const relationSlots = props.relations.slice(0, 10);
   const selectedRelation =
@@ -652,7 +668,12 @@ function AssetRelationGraph(props: {
               );
             })
           )}
-          <button type="button" className="asset-relation-add-slot" title="Focus the Asset Inspector add-binding flow">
+          <button
+            type="button"
+            className="asset-relation-add-slot"
+            title="Focus the Asset Inspector add-binding flow"
+            onClick={props.onAddBindingFocus}
+          >
             <span>+</span>
             <strong>Add binding</strong>
             <small>Target node, role, and proposal/hint flow stay review-gated.</small>
@@ -691,9 +712,12 @@ function AssetInspector(props: {
   attachResult: AttachResult;
   draft: AttachDraft;
   snapshotId: string;
+  actionResults: Record<string, ActionResult>;
+  projectId: string;
   onSelectNode?: (nodeId: string) => void;
   onUpdateDraft(patch: Partial<AttachDraft>): void;
   onWriteHint(): void;
+  onPropose(item: AssetInboxItem, relation: RelationView, action: "attach_to_node" | "remove_binding"): void;
 }) {
   const connected = props.relations.filter((relation) => relation.target_node_id);
   const candidates = props.relations.filter((relation) => relation.status === "candidate");
@@ -732,10 +756,25 @@ function AssetInspector(props: {
           ) : (
             <div className="asset-inspector-list">
               {candidates.slice(0, 6).map((relation) => (
-                <span key={relation.relation_id} className="asset-meta-pill">
-                  <strong>{relation.target_node_id}</strong>
-                  {relation.evidence_kind || "candidate"} / {relation.binding_strength || "weak"}
-                </span>
+                <div key={relation.relation_id} className="asset-candidate-row">
+                  <span className="asset-meta-pill">
+                    <strong>{relation.target_node_id}</strong>
+                    {relation.evidence_kind || "candidate"} / {relation.binding_strength || "weak"}
+                  </span>
+                  <button
+                    type="button"
+                    className="action-btn"
+                    disabled={relationActionResult(props.actionResults, relation, "attach_to_node")?.state === "writing"}
+                    onClick={() => props.onPropose(props.item, relation, "attach_to_node")}
+                  >
+                    Queue candidate
+                  </button>
+                  <ActionResultLine
+                    result={relationActionResult(props.actionResults, relation, "attach_to_node")}
+                    projectId={props.projectId}
+                    compact
+                  />
+                </div>
               ))}
             </div>
           )}
