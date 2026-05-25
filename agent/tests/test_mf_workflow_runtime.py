@@ -58,6 +58,30 @@ def test_scn_mf_wf_001_contract_declares_runtime_stage_graph_and_lanes() -> None
     assert "precheck_run_id" in contract["precheck_result_contract"]["required_fields"]
 
 
+def test_contract_declares_stage_inputs_and_outputs() -> None:
+    contract = load_workflow_contract()
+    stage_io = contract["stage_io"]
+    stage_names = set(stage_map(contract))
+
+    assert set(stage_io) == stage_names
+    for stage_name, spec in stage_io.items():
+        assert spec["inputs"], stage_name
+        assert spec["outputs"], stage_name
+
+    assert set(stage_io["dispatch"]["inputs"]).issuperset(
+        {"worker_worktree", "target_worktree", "base_commit", "fence_token"}
+    )
+    assert set(stage_io["merge_gate"]["inputs"]).issuperset(
+        {"main_worktree", "source_worktree", "source_commit", "precheck_token"}
+    )
+    assert set(stage_io["merge_gate"]["outputs"]).issuperset(
+        {"observed_source_head", "source_commit", "precheck_run_id", "decision"}
+    )
+    assert set(stage_io["close_gate"]["inputs"]).issuperset(
+        {"merge_commit", "precheck_token", "contract_evidence", "timeline_evidence"}
+    )
+
+
 def test_runtime_dispatch_calls_precheck_and_advances_green_lane(tmp_path: Path) -> None:
     contract = {**load_workflow_contract(), "contract_instance_id": CONTRACT_ID}
     fixture = create_runtime_fixture(tmp_path)

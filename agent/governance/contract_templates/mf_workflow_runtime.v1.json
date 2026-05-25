@@ -63,6 +63,114 @@
       "on_block": "blocked"
     }
   ],
+  "stage_io": {
+    "dispatch": {
+      "inputs": [
+        "contract",
+        "worker_worktree",
+        "target_worktree",
+        "base_commit",
+        "target_head_commit",
+        "fence_token",
+        "owned_files",
+        "forbidden_paths"
+      ],
+      "outputs": [
+        "precheck_run_id",
+        "decision",
+        "worker_git",
+        "target_git",
+        "next_stage"
+      ]
+    },
+    "implementation_wait": {
+      "inputs": [
+        "worker_status",
+        "review_ready_signal"
+      ],
+      "outputs": [
+        "decision",
+        "next_stage"
+      ]
+    },
+    "handoff_gate": {
+      "inputs": [
+        "contract",
+        "worker_worktree",
+        "fence_token",
+        "owned_files",
+        "forbidden_paths",
+        "tests_evidence",
+        "timeline_evidence"
+      ],
+      "outputs": [
+        "precheck_run_id",
+        "decision",
+        "dirty_scope_exact_match",
+        "worker_git",
+        "next_stage"
+      ]
+    },
+    "merge_gate": {
+      "inputs": [
+        "contract",
+        "main_worktree",
+        "source_worktree",
+        "source_commit",
+        "fence_token",
+        "precheck_token",
+        "contract_evidence",
+        "timeline_evidence"
+      ],
+      "outputs": [
+        "precheck_run_id",
+        "decision",
+        "observed_source_head",
+        "source_commit",
+        "main_git",
+        "source_git",
+        "next_stage"
+      ]
+    },
+    "reconcile": {
+      "inputs": [
+        "contract",
+        "source_commit",
+        "merge_commit",
+        "fence_token",
+        "precheck_token",
+        "changed_files",
+        "scope_kind",
+        "e2e_decision",
+        "graph_rule_changed"
+      ],
+      "outputs": [
+        "precheck_run_id",
+        "decision",
+        "changed_files",
+        "scope_kind",
+        "next_stage"
+      ]
+    },
+    "close_gate": {
+      "inputs": [
+        "contract",
+        "merge_commit",
+        "fence_token",
+        "precheck_token",
+        "contract_evidence",
+        "timeline_evidence",
+        "required_evidence_ids"
+      ],
+      "outputs": [
+        "precheck_run_id",
+        "decision",
+        "close_ready_present",
+        "mf_timeline_precheck_compatible",
+        "next_stage"
+      ]
+    }
+  },
   "gate_registry": {
     "mf_subagent.dispatch": [
       "target_main_worktree_clean",

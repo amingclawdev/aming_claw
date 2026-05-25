@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 import sys
 
 
@@ -253,6 +254,41 @@ def test_merge_reconcile_and_close_block_weak_empty_subject_token(
     assert "missing_precheck_token_subject_fence" in close["evidence"]["errors"]
 
 
+def test_workflow_merge_blocks_stale_source_commit_after_source_head_advances(
+    tmp_path: Path,
+) -> None:
+    contract = load_workflow_contract()
+    fixture = create_runtime_fixture(tmp_path)
+    candidate_one = commit_worker_candidate(fixture, message="candidate one")
+    stale_token = make_precheck_token(candidate_one)
+    (fixture.worker_worktree / "agent/governance/mf_workflow_runtime.py").write_text(
+        "BASE = 4\n",
+        encoding="utf-8",
+    )
+    _git(fixture.worker_worktree, "add", "agent/governance/mf_workflow_runtime.py")
+    _git(fixture.worker_worktree, "commit", "-m", "candidate two")
+    candidate_two = _git(fixture.worker_worktree, "rev-parse", "HEAD")
+
+    result = run_precheck(
+        "workflow.merge",
+        CONTRACT_ID,
+        "merge_gate",
+        fixture.merge_subject(
+            contract,
+            source_commit=candidate_one,
+            precheck_token=stale_token,
+        ),
+        "pytest",
+    )
+
+    assert result["decision"] == "block"
+    assert result["evidence"]["subject_source_commit"] == candidate_one
+    assert result["evidence"]["observed_source_head"] == candidate_two
+    assert result["evidence"]["source_commit"] == candidate_two
+    assert "source_commit_head_mismatch" in result["evidence"]["errors"]
+    assert "precheck_token_subject_commit_mismatch" in result["evidence"]["errors"]
+
+
 def test_reconcile_policy_verifies_token_and_blocks_runtime_without_e2e() -> None:
     contract = load_workflow_contract()
     source_commit = "1" * 40
@@ -341,3 +377,14 @@ def _result_contract_fields_present(result: dict[str, object]) -> bool:
         "created_at",
     }
     return required.issubset(result)
+
+
+def _git(path: Path, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(path), *args],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    return completed.stdout.strip()

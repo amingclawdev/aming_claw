@@ -198,7 +198,9 @@ def _merge_gate(
 
     main_git = _git_evidence(_path(subject, "main_worktree", "target_worktree"))
     source_git = _git_evidence(_path(subject, "source_worktree", "worker_worktree", "worktree"))
-    source_commit = _text(subject.get("source_commit") or source_git.get("head"))
+    subject_source_commit = _text(subject.get("source_commit"))
+    observed_source_head = _text(source_git.get("head"))
+    source_commit = observed_source_head or subject_source_commit
     errors.extend(_token_errors(subject, current_commit=source_commit))
     missing_evidence = _missing_required_evidence(subject, include_close_ready=False)
 
@@ -212,6 +214,12 @@ def _merge_gate(
         errors.append("source_candidate_uncommitted")
     if not source_commit:
         errors.append("missing_source_commit")
+    if (
+        subject_source_commit
+        and observed_source_head
+        and subject_source_commit != observed_source_head
+    ):
+        errors.append("source_commit_head_mismatch")
     if missing_evidence:
         errors.append("contract_evidence_incomplete")
     if not _has_timeline_kind(subject.get("timeline_evidence"), {"implementation", "verification"}):
@@ -227,6 +235,8 @@ def _merge_gate(
         "main_git": main_git,
         "source_git": source_git,
         "source_commit": source_commit,
+        "subject_source_commit": subject_source_commit,
+        "observed_source_head": observed_source_head,
         "missing_required_evidence": missing_evidence,
         "timeline_evidence_present": _has_timeline_kind(
             subject.get("timeline_evidence"),
