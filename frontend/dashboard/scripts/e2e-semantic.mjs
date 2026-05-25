@@ -15,6 +15,7 @@
 //   node scripts/e2e-semantic.mjs --auto-decision keep  # noninteractive dry-run
 //   node scripts/e2e-semantic.mjs --ignore-cancel  # bypass cancel-first gate
 //   node scripts/e2e-semantic.mjs --project aming-claw --unsafe-aming-claw
+//   node scripts/e2e-semantic.mjs --fixture-review-queue-categories  # offline fixture contract
 //
 // CANCEL-FIRST CONTRACT: before any POST that queues operator-visible work,
 // the runner verifies each planned step has a working cancel path. If any
@@ -43,6 +44,7 @@ const IGNORE_CANCEL = FLAGS["ignore-cancel"] === true;
 const UNSAFE_AMING_CLAW = FLAGS["unsafe-aming-claw"] === true;
 const SCOPE_RECONCILE_ONLY = FLAGS["scope-reconcile-only"] === true;
 const ACTIONS_ONLY = FLAGS["actions-only"] === true;
+const FIXTURE_REVIEW_QUEUE_CATEGORIES = FLAGS["fixture-review-queue-categories"] === true;
 const FORCED_NODE = FLAGS.node || null;
 const FORCED_EDGE = FLAGS.edge || null;
 const AUTO_DECISION = normalizeDecisionFlag(FLAGS["auto-decision"] || "");
@@ -58,6 +60,7 @@ function parseFlags(args) {
     "unsafe-aming-claw",
     "scope-reconcile-only",
     "actions-only",
+    "fixture-review-queue-categories",
     "auto-continue",
   ]);
   const out = {};
@@ -103,7 +106,13 @@ function normalizeDecisionFlag(value) {
   return normalized;
 }
 
-if (PROJECT === "aming-claw" && !UNSAFE_AMING_CLAW && !PROBE_ONLY && !PROBE_CANCEL) {
+if (
+  PROJECT === "aming-claw" &&
+  !UNSAFE_AMING_CLAW &&
+  !PROBE_ONLY &&
+  !PROBE_CANCEL &&
+  !FIXTURE_REVIEW_QUEUE_CATEGORIES
+) {
   console.error(
     [
       "Refusing to mutate project_id=aming-claw from dashboard e2e.",
@@ -995,6 +1004,226 @@ cancel). Forward the gap report to the backend agent and re-run when filled.
   throw new Error(`cancel gate: ${blocking.length} step(s) without cancel`);
 }
 
+function runReviewQueueCategoryFixtureContract() {
+  phase("review queue category fixture contract");
+  const fixture = buildReviewQueueCategoryFixture();
+  const expectedCategories = [
+    "semantic",
+    "graph_structure",
+    "doc_binding",
+    "test_binding",
+    "config_binding",
+    "status_observation",
+    "backlog",
+    "other",
+  ];
+
+  assertFixture(
+    expectedCategories.every((category) => fixture.summary.by_category_visible_groups[category] === 7),
+    "fixture_contract: backend visible category counts are intentionally non-heuristic",
+  );
+
+  const tabs = buildReviewQueueCategoryTabsFromMetadata(fixture);
+  const tabById = new Map(tabs.map((tab) => [tab.id, tab]));
+  assertFixture(tabById.get("ALL")?.visibleGroups === 8, "category_ui_test_or_e2e: all tab uses summary visible_group_count");
+  for (const category of expectedCategories) {
+    const tab = tabById.get(category);
+    assertFixture(Boolean(tab), `category_ui_test_or_e2e: ${category} tab exists`);
+    assertFixture(tab.visibleGroups === 7, `category_ui_test_or_e2e: ${category} visible count comes from backend metadata`);
+    assertFixture(tab.allItems === 11, `category_ui_test_or_e2e: ${category} item count comes from backend metadata`);
+    assertFixture(
+      tab.label === fixture.action_catalog.category_labels[category],
+      `category_ui_test_or_e2e: ${category} label comes from backend catalog metadata`,
+    );
+  }
+  assertFixture(
+    tabs.map((tab) => tab.id).join(",") === `ALL,${expectedCategories.join(",")}`,
+    "category_ui_test_or_e2e: tab order follows backend category_order",
+  );
+
+  const heuristicCounts = Object.fromEntries(
+    expectedCategories.map((category) => [
+      category,
+      fixture.groups.filter((group) => group.category === category).length,
+    ]),
+  );
+  assertFixture(
+    expectedCategories.every((category) => heuristicCounts[category] === 1),
+    "category_ui_test_or_e2e: fixture would fail if category tabs used frontend group-count heuristics",
+  );
+
+  const actionResults = [];
+  for (const category of expectedCategories) {
+    const filtered = filterReviewQueueGroupsByCategory(fixture.groups, category);
+    assertFixture(filtered.length === 1, `category_ui_test_or_e2e: ${category} filter shows only matching group`);
+    const group = filtered[0];
+    const originalFeedbackIds = [...group.feedback_ids];
+    const originalQueueId = group.queue_id;
+    for (const action of ["accept", "retry", "reject", "file_backlog"]) {
+      const payload = buildReviewQueueActionPayload(group, action);
+      assertFixture(
+        payload.group_id === originalQueueId,
+        `actions_preserve_original_ids: ${action} preserves ${category} group id`,
+      );
+      assertFixture(
+        JSON.stringify(payload.feedback_ids) === JSON.stringify(originalFeedbackIds),
+        `actions_preserve_original_ids: ${action} preserves ${category} feedback ids`,
+      );
+      actionResults.push(`${category}:${action}:${payload.group_id}:${payload.feedback_ids.join("+")}`);
+    }
+  }
+
+  ok("fixture_contract: offline backend metadata fixture covers semantic/graph/binding/status/backlog/other categories");
+  ok("category_ui_test_or_e2e: tabs/counts/labels/order are driven by backend metadata");
+  ok("actions_preserve_original_ids: filtered accept/retry/reject/file-backlog payloads keep original group and feedback ids");
+  info(`action payload samples = ${actionResults.slice(0, 4).join(" | ")} ...`);
+  console.log("");
+  console.log(c("green", "REVIEW-QUEUE-CATEGORY-FIXTURE OK"));
+}
+
+function buildReviewQueueCategoryTabsFromMetadata(feedback) {
+  const groups = feedback.groups ?? [];
+  const summary = feedback.summary;
+  const visibleByCategory = summary.by_category_visible_groups;
+  const allItemsByCategory = summary.by_category_all_items ?? {};
+  const ids =
+    visibleByCategory && Object.keys(visibleByCategory).length > 0
+      ? Object.keys(visibleByCategory)
+      : stableUnique(groups.map((group) => group.category || "review"));
+  return [
+    {
+      id: "ALL",
+      label: "All",
+      visibleGroups: summary.visible_group_count ?? groups.length,
+      allItems: summary.visible_item_count ?? groups.reduce((total, group) => total + (group.item_count || 0), 0),
+    },
+    ...ids
+      .filter(Boolean)
+      .sort((a, b) => reviewQueueCategoryOrder(a, feedback.action_catalog) - reviewQueueCategoryOrder(b, feedback.action_catalog))
+      .map((id) => ({
+        id,
+        label: feedback.action_catalog?.category_labels?.[id] || titleizeFixture(id),
+        visibleGroups: visibleByCategory?.[id] ?? groups.filter((group) => group.category === id).length,
+        allItems: allItemsByCategory[id] ?? groups
+          .filter((group) => group.category === id)
+          .reduce((total, group) => total + (group.item_count || group.feedback_ids.length || 0), 0),
+      })),
+  ];
+}
+
+function filterReviewQueueGroupsByCategory(groups, category) {
+  return groups.filter((group) => group.category === category);
+}
+
+function buildReviewQueueActionPayload(group, action) {
+  const base = {
+    group_id: group.queue_id,
+    feedback_ids: [...group.feedback_ids],
+    representative_feedback_id: group.representative_feedback_id,
+    target_id: group.target_id,
+  };
+  if (action === "accept") {
+    return { ...base, action: "accept_semantic_enrichment" };
+  }
+  if (action === "retry") {
+    return { ...base, action: "retry_semantic_enrichment", rationale: "[fixture] retry keeps ids" };
+  }
+  if (action === "reject") {
+    return { ...base, action: "reject_false_positive" };
+  }
+  if (action === "file_backlog") {
+    return {
+      ...base,
+      action: "file_backlog",
+      backlog: {
+        title: `[Fixture] Backlog from ${group.representative_feedback_id}`,
+        affected_graph_nodes: [group.target_id],
+      },
+    };
+  }
+  throw new Error(`unknown fixture action: ${action}`);
+}
+
+function reviewQueueCategoryOrder(category, actionCatalog) {
+  const order = actionCatalog?.category_order ?? [];
+  const index = order.indexOf(category);
+  return index === -1 ? order.length : index;
+}
+
+function buildReviewQueueCategoryFixture() {
+  const categories = [
+    "semantic",
+    "graph_structure",
+    "doc_binding",
+    "test_binding",
+    "config_binding",
+    "status_observation",
+    "backlog",
+    "other",
+  ];
+  return {
+    ok: true,
+    project_id: "fixture-review-queue",
+    snapshot_id: "fixture-snapshot",
+    group_count: categories.length,
+    count: categories.length,
+    action_catalog: {
+      category_order: categories,
+      category_labels: Object.fromEntries(categories.map((category) => [category, `Backend ${titleizeFixture(category)}`])),
+    },
+    summary: {
+      raw_count: 88,
+      visible_group_count: categories.length,
+      visible_item_count: 88,
+      hidden_status_observation_count: 0,
+      hidden_resolved_count: 0,
+      hidden_claimed_count: 0,
+      hidden_semantic_pending_count: 0,
+      require_current_semantic: false,
+      by_kind: {},
+      by_status: {},
+      by_lane_all_items: {},
+      by_lane_visible_groups: {},
+      by_category_visible_groups: Object.fromEntries(categories.map((category) => [category, 7])),
+      by_category_all_items: Object.fromEntries(categories.map((category) => [category, 11])),
+    },
+    groups: categories.map((category, index) => ({
+      queue_id: `group-${category}`,
+      group_by: "target",
+      lane: `lane-${category}`,
+      category,
+      category_label: `Backend ${titleizeFixture(category)}`,
+      priority: "P2",
+      target_type: "node",
+      target_id: `L7.${index + 1}`,
+      representative_feedback_id: `fb-${category}-representative`,
+      representative_issue: `Fixture issue for ${category}`,
+      feedback_ids: [`fb-${category}-a`, `fb-${category}-b`],
+      item_count: 1,
+      semantic_review_gate: { ready: true, reason: "fixture-current" },
+    })),
+  };
+}
+
+function assertFixture(condition, message) {
+  if (!condition) {
+    throw new Error(message);
+  }
+  ok(message);
+}
+
+function stableUnique(values) {
+  return Array.from(new Set(values));
+}
+
+function titleizeFixture(value) {
+  return String(value)
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
 async function phaseSubmit(snapshotId, node, edge, projection) {
   phase(`submit (${APPLY ? c("red", "APPLY mode — real AI calls") : "dry-run"})`);
   const transcript = [];
@@ -1343,6 +1572,11 @@ async function phaseVerify(snapshotId, transcript, decisions) {
 async function main() {
   console.log(c("bold", "dashboard-semantic-e2e"));
   console.log(c("dim", `  backend = ${BACKEND}  project = ${PROJECT}  apply=${APPLY}`));
+
+  if (FIXTURE_REVIEW_QUEUE_CATEGORIES) {
+    runReviewQueueCategoryFixtureContract();
+    return;
+  }
 
   const pre = await phasePreflight();
   if (PROBE_ONLY) {
