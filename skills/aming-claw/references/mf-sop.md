@@ -139,7 +139,21 @@ Canonical source: `docs/governance/manual-fix-sop.md`. This file is only the sho
      `target_title`; title-only hints are repair candidates when the title is
      ambiguous. Reset/repair hints by editing the source hint, committing it,
      and running Update Graph/reconcile.
-10. For observer/MF work, append timeline evidence as work proceeds:
+10. Keep asset binding and drift on separate audit lines:
+   - binding relationships are source-controlled append-only commands,
+     normally governance-hint bind/unbind events, then reconcile materializes
+     graph secondary/test/config fields, file inventory effective state,
+     asset projection, and binding events;
+   - file/hash/drift/impact state is observed DB evidence written by reconcile,
+     gate, or workflow worker from git diff plus accepted bindings;
+   - changed bound assets covered by contract/gate may be recorded as
+     `not_drifted` with gate evidence;
+   - unchanged bound assets impacted by related source/config changes become
+     `suspected`/`impact_pending` until observer, user, or AI-assisted review
+     resolves them;
+   - do not directly hand-write trusted accepted binding rows into DB as a
+     substitute for source-controlled binding evidence.
+11. For observer/MF work, append timeline evidence as work proceeds:
    - `task_timeline_append` with `event_kind=implementation` after scoped code,
      docs, config, or fixture changes are made;
    - `task_timeline_append` with `event_kind=verification` after focused tests,

@@ -114,7 +114,10 @@ export default function TreePanel(props: Props) {
 
   const idx = useMemo<Index>(() => buildIndex(nodes), [nodes]);
   const assetItems = useMemo(() => (assetInbox?.items ?? []).slice().sort(compareAssetRows), [assetInbox?.items]);
-  const assetTree = useMemo(() => buildAssetTree(assetItems), [assetItems]);
+  const assetTree = useMemo(
+    () => buildAssetTree(assetItems, assetTreeSelection, assetStatusFilter, assetSearch),
+    [assetItems, assetSearch, assetStatusFilter, assetTreeSelection],
+  );
   const visibleAssets = useMemo(
     () => filterAssetRows(assetItems, assetTreeSelection, assetStatusFilter, assetSearch),
     [assetItems, assetSearch, assetStatusFilter, assetTreeSelection],
@@ -370,6 +373,15 @@ interface AssetTreeBucket {
   label: string;
   count: number;
   tone: "green" | "amber" | "red" | "gray";
+  leaves: AssetTreeLeaf[];
+}
+
+interface AssetTreeLeaf {
+  id: string;
+  path: string;
+  label: string;
+  subtitle: string;
+  tone: "green" | "amber" | "red" | "gray";
 }
 
 interface AssetTreeGroup {
@@ -394,6 +406,44 @@ function AssetTree(props: {
   onSearchChange(query: string): void;
   onSelectAsset(assetId: string): void;
 }) {
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(["group:ALL"]));
+
+  useEffect(() => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      const selectedGroup = props.selection.groupId || "ALL";
+      next.add(assetGroupKey(selectedGroup));
+      if (props.selection.bucketId) {
+        next.add(assetBucketKey(selectedGroup, props.selection.bucketId));
+      }
+      if (props.search.trim() || props.statusFilter !== "all") {
+        props.tree.forEach((group) => {
+          next.add(assetGroupKey(group.id));
+          group.buckets.forEach((bucket) => {
+            if (bucket.leaves.length > 0 || props.selection.groupId === group.id) {
+              next.add(assetBucketKey(group.id, bucket.id));
+            }
+          });
+        });
+      }
+      return next;
+    });
+  }, [props.search, props.selection.bucketId, props.selection.groupId, props.statusFilter, props.tree]);
+
+  const toggle = (id: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const emptyMessage =
+    props.statusFilter !== "all" || props.search.trim()
+      ? "No assets match this tree context"
+      : "No assets";
+
   return (
     <>
       <div className="sidebar-section-title" style={{ marginTop: 4 }}>
@@ -435,50 +485,74 @@ function AssetTree(props: {
           <div className="asset-sidebar-empty">Loading…</div>
         ) : props.total === 0 ? (
           <div className="asset-sidebar-empty">No assets</div>
+        ) : props.tree.length === 0 ? (
+          <div className="asset-sidebar-empty">{emptyMessage}</div>
         ) : (
           props.tree.map((group) => (
-            <div key={group.id}>
+            <div key={group.id} className="asset-tree-branch">
               <button
                 type="button"
                 className={`tree-row asset-tree-row ${props.selection.groupId === group.id && !props.selection.bucketId ? "active" : ""}`}
-                onClick={() => props.onSelectionChange({ groupId: group.id, bucketId: "" })}
+                onClick={() => {
+                  toggle(assetGroupKey(group.id));
+                  props.onSelectionChange({ groupId: group.id, bucketId: "" });
+                }}
               >
+                <span className={`tree-caret ${expanded.has(assetGroupKey(group.id)) ? "open" : ""}`}>▶</span>
                 <span className={`asset-state-dot tone-${group.tone}`} />
                 <span className="tree-name">{group.label}</span>
                 <span className="tree-meta">{group.count}</span>
               </button>
-              {group.buckets.map((bucket) => (
-                <button
-                  key={`${group.id}:${bucket.id}`}
-                  type="button"
-                  className={`tree-row asset-tree-row asset-tree-bucket ${
-                    props.selection.groupId === group.id && props.selection.bucketId === bucket.id ? "active" : ""
-                  }`}
-                  onClick={() => props.onSelectionChange({ groupId: group.id, bucketId: bucket.id })}
-                >
-                  <span className={`asset-state-dot tone-${bucket.tone}`} />
-                  <span className="tree-name">{bucket.label}</span>
-                  <span className="tree-meta">{bucket.count}</span>
-                </button>
-              ))}
+              {expanded.has(assetGroupKey(group.id))
+                ? group.buckets.map((bucket) => {
+                    const bucketKey = assetBucketKey(group.id, bucket.id);
+                    const bucketOpen = expanded.has(bucketKey);
+                    return (
+                      <div key={bucketKey}>
+                        <button
+                          type="button"
+                          className={`tree-row asset-tree-row asset-tree-bucket ${
+                            props.selection.groupId === group.id && props.selection.bucketId === bucket.id ? "active" : ""
+                          }`}
+                          onClick={() => {
+                            toggle(bucketKey);
+                            props.onSelectionChange({ groupId: group.id, bucketId: bucket.id });
+                          }}
+                        >
+                          <span className={`tree-caret ${bucketOpen ? "open" : ""}${bucket.leaves.length === 0 ? " leaf" : ""}`}>
+                            ▶
+                          </span>
+                          <span className={`asset-state-dot tone-${bucket.tone}`} />
+                          <span className="tree-name">{bucket.label}</span>
+                          <span className="tree-meta">{bucket.count}</span>
+                        </button>
+                        {bucketOpen
+                          ? bucket.leaves.map((leaf) => (
+                              <button
+                                key={`${bucketKey}:${leaf.id}`}
+                                type="button"
+                                className={`tree-row asset-tree-row asset-tree-leaf ${
+                                  props.selectedAssetId === leaf.id ? "active" : ""
+                                }`}
+                                onClick={() => props.onSelectAsset(leaf.id)}
+                                title={leaf.path}
+                              >
+                                <span className="tree-caret leaf">▶</span>
+                                <span className={`asset-state-dot tone-${leaf.tone}`} />
+                                <span className="tree-name mono">{leaf.label}</span>
+                                <span className="tree-meta" title={leaf.subtitle}>
+                                  {leaf.subtitle}
+                                </span>
+                              </button>
+                            ))
+                          : null}
+                      </div>
+                    );
+                  })
+                : null}
             </div>
           ))
         )}
-        <div className="asset-sidebar-results">
-          {props.visibleAssets.slice(0, 24).map((item) => (
-            <button
-              key={item.asset_id}
-              type="button"
-              className={`asset-sidebar-asset${props.selectedAssetId === item.asset_id ? " active" : ""}`}
-              onClick={() => props.onSelectAsset(item.asset_id)}
-              title={item.path}
-            >
-              <span className={`asset-state-dot tone-${assetTone(item)}`} />
-              <span className="mono">{item.path}</span>
-              <span>{assetStatusLabel(item.asset_status)}</span>
-            </button>
-          ))}
-        </div>
       </div>
     </>
   );
@@ -779,23 +853,48 @@ function sortChildren(children: NodeRecord[]): NodeRecord[] {
   return children.slice().sort(layerThenId);
 }
 
-function buildAssetTree(items: AssetInboxItem[]): AssetTreeGroup[] {
+function buildAssetTree(
+  items: AssetInboxItem[],
+  selection: AssetTreeSelection,
+  statusFilter: AssetStatusFilter,
+  search: string,
+): AssetTreeGroup[] {
+  const q = search.trim().toLowerCase();
   return ASSET_GROUP_ORDER.map((groupId) => {
-    const groupItems = groupId === "ALL" ? items : items.filter((item) => assetGroupId(item) === groupId);
+    const rawGroupItems = groupId === "ALL" ? items : items.filter((item) => assetGroupId(item) === groupId);
+    const scopedGroupItems = rawGroupItems.filter((item) => {
+      if (statusFilter !== "all" && !assetStatusFilterMatches(item, statusFilter)) return false;
+      if (q && !assetSearchScopeAllows(selection, groupId, "")) return false;
+      if (q && selection.bucketId && !assetBucketMatches(item, selection.bucketId)) return false;
+      if (q && !assetSearchMatches(item, q)) return false;
+      return true;
+    });
+    const groupSelected = selection.groupId === groupId;
     const buckets = assetBucketsForGroup(groupId)
       .map((bucket) => {
-        const bucketItems = groupItems.filter((item) => assetBucketMatches(item, bucket));
-        return { id: bucket, label: ASSET_BUCKET_LABELS[bucket] ?? bucket, count: bucketItems.length, tone: bucketTone(bucket, bucketItems) };
+        const bucketSelected = groupSelected && selection.bucketId === bucket;
+        const scopedBucket = !q || assetSearchScopeAllows(selection, groupId, bucket);
+        const bucketItems = scopedBucket ? scopedGroupItems.filter((item) => assetBucketMatches(item, bucket)) : [];
+        const leaves = bucketItems.map(assetLeafForItem);
+        return {
+          id: bucket,
+          label: ASSET_BUCKET_LABELS[bucket] ?? bucket,
+          count: leaves.length,
+          tone: bucketTone(bucket, bucketItems),
+          leaves,
+          selected: bucketSelected,
+        };
       })
-      .filter((bucket) => bucket.count > 0 || bucket.id === "all");
+      .filter((bucket) => bucket.count > 0 || bucket.selected);
     return {
       id: groupId,
       label: ASSET_GROUP_LABELS[groupId],
-      count: groupItems.length,
-      tone: highestAssetTone(groupItems),
+      count: scopedGroupItems.length,
+      tone: highestAssetTone(scopedGroupItems),
       buckets,
+      selected: groupSelected,
     };
-  });
+  }).filter((group) => group.count > 0 || group.selected);
 }
 
 function assetBucketsForGroup(groupId: AssetGroupId): string[] {
@@ -817,52 +916,89 @@ function filterAssetRows(
     if (selection.bucketId && !assetBucketMatches(item, selection.bucketId)) return false;
     if (statusFilter !== "all" && !assetStatusFilterMatches(item, statusFilter)) return false;
     if (!q) return true;
-    const relations = [
-      ...(item.mount_relations ?? []),
-      ...(item.accepted_bindings ?? []).map((binding) => ({
-        target_node_id: binding.node_id,
-        target_title: binding.title,
-        status: "accepted",
-        role: binding.role,
-        source: binding.source,
-        evidence_kind: "accepted_binding",
-        proposal_hash: "",
-      })),
-      ...(item.binding_candidates ?? []).map((candidate) => ({
-        target_node_id: candidate.target_node_id,
-        target_title: candidate.target_title,
-        status: "candidate",
-        role: candidate.operation,
-        source: candidate.source,
-        evidence_kind: candidate.evidence_kind,
-        proposal_hash: candidate.proposal_hash,
-      })),
-    ];
-    const hay = [
-      item.path,
-      item.asset_kind,
-      item.asset_status,
-      item.graph_status,
-      item.scan_status,
-      item.binding_status,
-      item.risk,
-      ...(item.evidence ?? []).map((evidence) => `${evidence.kind} ${evidence.message}`),
-      ...relations.map((relation) =>
-        [
-          relation.status,
-          relation.role,
-          relation.target_node_id,
-          relation.target_title,
-          relation.source,
-          relation.evidence_kind,
-          relation.proposal_hash,
-        ].join(" "),
-      ),
-    ]
-      .join(" ")
-      .toLowerCase();
-    return hay.includes(q);
+    return assetSearchMatches(item, q);
   });
+}
+
+function assetGroupKey(groupId: AssetGroupId): string {
+  return `group:${groupId}`;
+}
+
+function assetBucketKey(groupId: AssetGroupId, bucketId: string): string {
+  return `bucket:${groupId}:${bucketId}`;
+}
+
+function assetSearchScopeAllows(selection: AssetTreeSelection, groupId: AssetGroupId, bucketId: string): boolean {
+  if (selection.groupId !== "ALL" && groupId !== selection.groupId) return false;
+  if (selection.bucketId && bucketId && bucketId !== selection.bucketId) return false;
+  if (selection.bucketId && !bucketId) return groupId === selection.groupId || selection.groupId === "ALL";
+  return true;
+}
+
+function assetLeafForItem(item: AssetInboxItem): AssetTreeLeaf {
+  return {
+    id: item.asset_id,
+    path: item.path,
+    label: item.path,
+    subtitle: assetLeafSubtitle(item),
+    tone: assetTone(item),
+  };
+}
+
+function assetLeafSubtitle(item: AssetInboxItem): string {
+  const accepted = item.relation_summary?.accepted_count ?? (item.accepted_bindings ?? []).length;
+  const candidate = item.relation_summary?.candidate_count ?? (item.binding_candidates ?? []).length;
+  const drift = normalizeDriftState(item.drift?.state);
+  const driftSuffix = drift === "not_drifted" ? "" : ` / ${drift}`;
+  return `${assetStatusLabel(item.asset_status)} / ${accepted}+${candidate}${driftSuffix}`;
+}
+
+function assetSearchMatches(item: AssetInboxItem, q: string): boolean {
+  const relations = [
+    ...(item.mount_relations ?? []),
+    ...(item.accepted_bindings ?? []).map((binding) => ({
+      target_node_id: binding.node_id,
+      target_title: binding.title,
+      status: "accepted",
+      role: binding.role,
+      source: binding.source,
+      evidence_kind: "accepted_binding",
+      proposal_hash: "",
+    })),
+    ...(item.binding_candidates ?? []).map((candidate) => ({
+      target_node_id: candidate.target_node_id,
+      target_title: candidate.target_title,
+      status: "candidate",
+      role: candidate.operation,
+      source: candidate.source,
+      evidence_kind: candidate.evidence_kind,
+      proposal_hash: candidate.proposal_hash,
+    })),
+  ];
+  const hay = [
+    item.path,
+    item.asset_kind,
+    item.asset_status,
+    item.graph_status,
+    item.scan_status,
+    item.binding_status,
+    item.risk,
+    ...(item.evidence ?? []).map((evidence) => `${evidence.kind} ${evidence.message}`),
+    ...relations.map((relation) =>
+      [
+        relation.status,
+        relation.role,
+        relation.target_node_id,
+        relation.target_title,
+        relation.source,
+        relation.evidence_kind,
+        relation.proposal_hash,
+      ].join(" "),
+    ),
+  ]
+    .join(" ")
+    .toLowerCase();
+  return hay.includes(q);
 }
 
 function assetGroupId(item: AssetInboxItem): AssetGroupId {

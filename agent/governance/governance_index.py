@@ -352,10 +352,19 @@ def _enrich_file_inventory_attachments(
         roles_by_node = attachment_index.get(path) or {}
         if roles_by_node:
             node_ids = sorted(roles_by_node)
+            attachment_role = _choose_attachment_role(str(item.get("file_kind") or ""), roles_by_node)
             item["attached_node_ids"] = node_ids
-            item["attachment_role"] = _choose_attachment_role(str(item.get("file_kind") or ""), roles_by_node)
+            item["attachment_role"] = attachment_role
             item["attachment_source"] = "graph_node"
             item["mapped_node_ids"] = node_ids
+            if attachment_role == "primary":
+                item["scan_status"] = "clustered"
+                item["graph_status"] = "mapped"
+                item["decision"] = "govern"
+            elif attachment_role in {"doc", "test", "config", "secondary"}:
+                item["scan_status"] = "secondary_attached"
+                item["graph_status"] = "attached"
+                item["decision"] = "govern"
             if not item.get("candidate_node_id"):
                 item["candidate_node_id"] = node_ids[0]
             if not item.get("attached_to"):

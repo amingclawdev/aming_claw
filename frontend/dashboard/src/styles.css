@@ -190,6 +190,27 @@ a:hover { text-decoration: underline; }
   padding-left: 24px !important;
 }
 
+.asset-tree-leaf {
+  padding-left: 42px !important;
+  min-height: 28px;
+}
+
+.asset-tree-leaf .tree-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+}
+
+.asset-tree-leaf .tree-meta {
+  font-size: 9.5px;
+  max-width: 92px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .asset-state-dot {
   width: 8px;
   height: 8px;
@@ -202,52 +223,6 @@ a:hover { text-decoration: underline; }
 .asset-state-dot.tone-amber { background: #d97706; }
 .asset-state-dot.tone-red { background: #dc2626; }
 .asset-state-dot.tone-gray { background: #94a3b8; }
-
-.asset-sidebar-results {
-  display: grid;
-  gap: 4px;
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--ink-100);
-}
-
-.asset-sidebar-asset {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 3px 7px;
-  align-items: center;
-  border: 1px solid transparent;
-  border-radius: 7px;
-  background: transparent;
-  padding: 7px 8px;
-  color: var(--ink-700);
-  text-align: left;
-  cursor: pointer;
-}
-
-.asset-sidebar-asset:hover,
-.asset-sidebar-asset.active {
-  border-color: #bfdbfe;
-  background: #eff6ff;
-}
-
-.asset-sidebar-asset .mono {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 10.5px;
-  color: var(--ink-900);
-}
-
-.asset-sidebar-asset span:last-child {
-  grid-column: 2;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 10px;
-  color: var(--ink-500);
-}
 
 .asset-sidebar-empty {
   padding: 10px 12px;
@@ -1526,7 +1501,7 @@ a:hover { text-decoration: underline; }
   border-radius: 8px;
   background: #fff;
   margin: 0 0 12px;
-  padding: 10px;
+  overflow: hidden;
 }
 
 .asset-inspector-head {
@@ -1534,7 +1509,34 @@ a:hover { text-decoration: underline; }
   align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
-  margin-bottom: 10px;
+  padding: 10px;
+}
+
+.asset-inspector-tabs {
+  border-top: 1px solid var(--ink-100);
+}
+
+.asset-inspector-body {
+  padding: 10px;
+}
+
+.asset-inspector-tab-stack {
+  display: grid;
+  gap: 10px;
+}
+
+.asset-meta-grid-compact {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+}
+
+.asset-inspector-actions-grid {
+  margin: 0;
+}
+
+.asset-candidate-list {
+  display: grid;
+  grid-template-columns: 1fr;
 }
 
 .asset-inspector-grid {

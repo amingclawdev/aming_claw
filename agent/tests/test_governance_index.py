@@ -332,6 +332,86 @@ def test_build_governance_index_attaches_orphan_doc_from_governance_hint(conn, t
     assert any(ref["path"] == "docs/orphan.md" for ref in feature["doc_refs"])
 
 
+def test_build_governance_index_attaches_doc_test_and_config_from_hints(conn, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    _write_project(project)
+    (project / "docs" / "orphan.md").write_text(
+        "<!-- governance-hint "
+        '{"asset_binding_event":{"operation":"bind","path":"docs/orphan.md",'
+        '"role":"doc","target_module":"src.demo_app.service"}}'
+        " -->\n# Orphan Service Notes\n",
+        encoding="utf-8",
+    )
+    (project / "tests" / "test_orphan_contract.py").write_text(
+        "# governance-hint "
+        '{"binding":{"operation":"bind","path":"tests/test_orphan_contract.py",'
+        '"role":"test","target_module":"src.demo_app.service"}}\n'
+        "def test_orphan_contract():\n"
+        "    assert True\n",
+        encoding="utf-8",
+    )
+    (project / "config" / "service.yml").parent.mkdir(parents=True, exist_ok=True)
+    (project / "config" / "service.yml").write_text(
+        "# governance-hint "
+        '{"asset_binding_event":{"operation":"bind","path":"config/service.yml",'
+        '"role":"config","target_module":"src.demo_app.service"}}\n'
+        "service: demo\n",
+        encoding="utf-8",
+    )
+    candidate_graph = {
+        "deps_graph": {
+            "nodes": [
+                {
+                    "id": "L7.service",
+                    "layer": "L7",
+                    "title": "Demo Service",
+                    "kind": "feature",
+                    "primary": ["src/demo_app/service.py"],
+                    "secondary": [],
+                    "test": [],
+                    "metadata": {"module": "src.demo_app.service"},
+                }
+            ],
+            "edges": [],
+        }
+    }
+
+    index = build_governance_index(
+        conn,
+        PID,
+        project,
+        run_id="index-multi-hint-test",
+        commit_sha="def5678",
+        candidate_graph=candidate_graph,
+        snapshot_id="full-def5678-multi-hint",
+        snapshot_kind="full",
+    )
+
+    node = candidate_graph["deps_graph"]["nodes"][0]
+    assert node["secondary"] == ["docs/orphan.md"]
+    assert node["test"] == ["tests/test_orphan_contract.py"]
+    assert node["config"] == ["config/service.yml"]
+    assert index["governance_hint_bindings"]["applied_count"] == 3
+    rows = {row["path"]: row for row in index["file_inventory"]}
+    assert rows["docs/orphan.md"]["effective_binding_status"] == "accepted"
+    assert rows["tests/test_orphan_contract.py"]["effective_binding_status"] == "accepted"
+    assert rows["config/service.yml"]["effective_binding_status"] == "accepted"
+    assert rows["docs/orphan.md"]["attachment_role"] == "doc"
+    assert rows["tests/test_orphan_contract.py"]["attachment_role"] == "test"
+    assert rows["config/service.yml"]["attachment_role"] == "config"
+    assets = {
+        (row["asset_kind"], row["path"]): row
+        for row in index["doc_asset_state"]["assets"]
+    }
+    assert assets[("doc", "docs/orphan.md")]["binding_status"] == "accepted"
+    assert assets[("test", "tests/test_orphan_contract.py")]["binding_status"] == "accepted"
+    assert assets[("config", "config/service.yml")]["binding_status"] == "accepted"
+    feature = index["feature_index"]["features"][0]
+    assert any(ref["path"] == "docs/orphan.md" for ref in feature["doc_refs"])
+    assert any(ref["path"] == "config/service.yml" for ref in feature["config_refs"])
+
+
 def test_build_governance_index_marks_source_controlled_unbind_effective_status(conn, tmp_path):
     project = tmp_path / "project"
     project.mkdir()

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import FileLink from "../components/FileLink";
 import type { AssetStatusFilter, AssetTreeSelection } from "../components/TreePanel";
 import { api, ApiError } from "../lib/api";
@@ -31,6 +31,7 @@ type AttachRole = "doc" | "test" | "config";
 type AttachState = "idle" | "writing" | "written_uncommitted" | "error";
 type DriftStateName = "not_drifted" | "suspected" | "confirmed" | "resolved" | "waived";
 type ActionState = "idle" | "writing" | "written" | "blocked" | "error";
+type AssetInspectorTab = "overview" | "nodes" | "candidates" | "actions";
 
 interface AttachDraft {
   targetNodeId: string;
@@ -121,6 +122,13 @@ const DRIFT_LABELS: Record<DriftStateName, string> = {
 
 const REMOVE_BINDING_RUNTIME_DRIFT_ID = "HN-ASSET-REMOVE-BINDING-RUNTIME-DRIFT-20260525";
 
+const ASSET_INSPECTOR_TABS: Array<{ id: AssetInspectorTab; label: string }> = [
+  { id: "overview", label: "Overview" },
+  { id: "nodes", label: "Nodes / Relations" },
+  { id: "candidates", label: "Candidates" },
+  { id: "actions", label: "Actions / Evidence" },
+];
+
 export default function AssetInboxView({
   assetInbox,
   projectId,
@@ -130,7 +138,6 @@ export default function AssetInboxView({
   statusFilter,
   search,
   selectedAssetId,
-  onSelectedAssetIdChange,
   onSelectNode,
   workspaceRoot,
 }: Props) {
@@ -139,7 +146,6 @@ export default function AssetInboxView({
   const [attachResults, setAttachResults] = useState<Record<string, AttachResult>>({});
   const [actionResults, setActionResults] = useState<Record<string, ActionResult>>({});
   const [removeConfirm, setRemoveConfirm] = useState<RemoveConfirmState | null>(null);
-  const inspectorRef = useRef<HTMLDivElement | null>(null);
 
   const items = useMemo(() => (assetInbox.items ?? []).slice().sort(compareAssets), [assetInbox.items]);
   const groups = useMemo(() => buildGroups(assetInbox, items), [assetInbox, items]);
@@ -429,14 +435,6 @@ export default function AssetInboxView({
     await recordRelationAction(pending.item, pending.relation, "remove_binding", reason);
   };
 
-  const focusAddBindingFlow = () => {
-    inspectorRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
-    const target = inspectorRef.current?.querySelector<HTMLSelectElement | HTMLButtonElement>(
-      ".asset-hint-controls select, .asset-hint-controls button",
-    );
-    target?.focus();
-  };
-
   return (
     <div className="view asset-browser-view">
       <div className="view-head">
@@ -480,114 +478,33 @@ export default function AssetInboxView({
                 </span>
               </div>
 
-              <div className="asset-meta-grid">
-                <Meta label="Hash" value={selectedItem.file_hash || selectedItem.sha256 || "n/a"} mono />
-                <Meta label="Scan" value={selectedItem.scan_status || "n/a"} />
-                <Meta label="Graph" value={selectedItem.graph_status || "n/a"} />
-                <Meta label="Risk" value={selectedItem.risk || "unknown"} />
-                <Meta label="Size" value={formatBytes(selectedItem.size_bytes)} />
-                <Meta label="Binding" value={selectedItem.binding_status || relationSummaryLabel(selectedSummary)} />
-                <Meta label="Drift" value={driftStateLabel(selectedItem)} />
-              </div>
-
-              <AssetRelationGraph
+              <AssetInspector
                 item={selectedItem}
                 relations={selectedRelations}
+                selectedRelation={selectedRelation}
                 selectedRelationId={selectedRelation?.relation_id || ""}
-                onSelect={setSelectedRelationId}
-                onSelectNode={onSelectNode}
+                selectedSummary={selectedSummary}
+                nodeOptions={nodeOptions}
+                workspaceRoot={workspaceRoot}
+                attachResult={attachResults[selectedItem.path] ?? { state: "idle", message: "Not written." }}
+                draft={
+                  drafts[selectedItem.path] ?? {
+                    targetNodeId: suggestedTargetNodeId(selectedItem, nodeOptions),
+                    role: roleForAsset(selectedItem),
+                  }
+                }
+                snapshotId={snapshotId}
                 actionResults={actionResults}
                 projectId={projectId}
+                backlogPolicyReason={assetInbox.backlog_policy?.reason || "Create backlog rows only from selected assets."}
+                onSelectNode={onSelectNode}
+                onSelectRelation={setSelectedRelationId}
+                onUpdateDraft={(patch) => updateDraft(selectedItem.path, patch)}
+                onWriteHint={() => writeHint(selectedItem)}
                 onPropose={proposeRelationAction}
-                onAddBindingFocus={focusAddBindingFlow}
+                onDriftStateChange={(driftState) => recordDriftState(selectedItem, driftState)}
+                onResolveDrift={() => queueResolveDrift(selectedItem, selectedRelation)}
               />
-
-              <div ref={inspectorRef}>
-                <AssetInspector
-                  item={selectedItem}
-                  relations={selectedRelations}
-                  nodeOptions={nodeOptions}
-                  workspaceRoot={workspaceRoot}
-                  attachResult={attachResults[selectedItem.path] ?? { state: "idle", message: "Not written." }}
-                  draft={
-                    drafts[selectedItem.path] ?? {
-                      targetNodeId: suggestedTargetNodeId(selectedItem, nodeOptions),
-                      role: roleForAsset(selectedItem),
-                    }
-                  }
-                  snapshotId={snapshotId}
-                  actionResults={actionResults}
-                  projectId={projectId}
-                  onSelectNode={onSelectNode}
-                  onUpdateDraft={(patch) => updateDraft(selectedItem.path, patch)}
-                  onWriteHint={() => writeHint(selectedItem)}
-                  onPropose={proposeRelationAction}
-                />
-              </div>
-
-              <div className="asset-detail-grid">
-                <DetailBlock title="Evidence">
-                  {(selectedItem.evidence ?? []).length === 0 ? (
-                    <div className="asset-browser-muted">No evidence recorded.</div>
-                  ) : (
-                    <div className="asset-evidence-list">
-                      {(selectedItem.evidence ?? []).slice(0, 4).map((evidence, index) => (
-                        <span key={`${selectedItem.asset_id}-e-${index}`}>
-                          <strong>{evidence.kind}</strong>: {evidence.message}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </DetailBlock>
-
-                <DetailBlock title="Asset actions">
-                  <div className="asset-action-list">
-                    {(selectedItem.recommended_actions ?? []).slice(0, 5).map((action) => (
-                      <span key={action} className="mono">
-                        {action}
-                      </span>
-                    ))}
-                    {(selectedItem.recommended_actions ?? []).length === 0 ? (
-                      <span className="asset-browser-muted">No recommended action.</span>
-                    ) : null}
-                  </div>
-                </DetailBlock>
-
-                <DriftControls
-                  item={selectedItem}
-                  selectedRelation={selectedRelation}
-                  result={actionResults[`${selectedItem.asset_id}:drift`] ?? { state: "idle", message: "No manual state change recorded." }}
-                  proposalResult={
-                    actionResults[`${selectedItem.asset_id}:resolve-drift`] ?? { state: "idle", message: proposalStateLabel(selectedItem) }
-                  }
-                  onStateChange={(driftState) => recordDriftState(selectedItem, driftState)}
-                  onResolve={() => queueResolveDrift(selectedItem, selectedRelation)}
-                />
-
-                <DetailBlock title="Backlog policy">
-                  <div className="asset-policy-lines">
-                    <span>{assetInbox.backlog_policy?.reason || "Create backlog rows only from selected assets."}</span>
-                    <span className={selectedItem.backlog?.eligible ? "asset-policy-eligible" : "asset-browser-muted"}>
-                      {selectedItem.backlog?.eligible ? "Eligible for backlog creation" : selectedItem.backlog?.reason || "Not eligible"}
-                    </span>
-                  </div>
-                </DetailBlock>
-
-                <HintBindingPanel
-                  item={selectedItem}
-                  nodeOptions={nodeOptions}
-                  draft={
-                    drafts[selectedItem.path] ?? {
-                      targetNodeId: suggestedTargetNodeId(selectedItem, nodeOptions),
-                      role: roleForAsset(selectedItem),
-                    }
-                  }
-                  result={attachResults[selectedItem.path] ?? { state: "idle", message: "Not written." }}
-                  snapshotId={snapshotId}
-                  onUpdate={(patch) => updateDraft(selectedItem.path, patch)}
-                  onWrite={() => writeHint(selectedItem)}
-                />
-              </div>
             </>
           ) : (
             <div className="asset-browser-empty asset-browser-empty-large">
@@ -637,30 +554,6 @@ export default function AssetInboxView({
         )}
       </section>
 
-      <section className="section">
-        <div className="section-head">
-          Matching assets <span className="head-hint">secondary list, sorted by state and path</span>
-        </div>
-        {visibleItems.length === 0 ? (
-          <div className="empty">No assets match the current filters.</div>
-        ) : (
-          <div className="asset-compact-list">
-            {visibleItems.slice(0, 40).map((item) => (
-              <button
-                key={`compact-${item.asset_id}`}
-                type="button"
-                className="asset-compact-row"
-                onClick={() => onSelectedAssetIdChange(item.asset_id)}
-              >
-                <span className="mono">{item.path}</span>
-                <span>{labelForKind(item.asset_kind)}</span>
-                <span>{STATUS_LABELS[item.asset_status] ?? item.asset_status}</span>
-                <span>{relationSummaryLabel(summarizeRelations(item, deriveRelations(item)))}</span>
-              </button>
-            ))}
-          </div>
-        )}
-      </section>
       {removeConfirm ? (
         <RemoveBindingDialog
           state={removeConfirm}
@@ -803,6 +696,9 @@ function RelationLegend() {
 function AssetInspector(props: {
   item: AssetInboxItem;
   relations: RelationView[];
+  selectedRelation: RelationView | null;
+  selectedRelationId: string;
+  selectedSummary: ReturnType<typeof summarizeRelations> | null;
   nodeOptions: NodeRecord[];
   workspaceRoot?: string;
   attachResult: AttachResult;
@@ -810,11 +706,16 @@ function AssetInspector(props: {
   snapshotId: string;
   actionResults: Record<string, ActionResult>;
   projectId: string;
+  backlogPolicyReason: string;
   onSelectNode?: (nodeId: string) => void;
+  onSelectRelation(relationId: string): void;
   onUpdateDraft(patch: Partial<AttachDraft>): void;
   onWriteHint(): void;
   onPropose(item: AssetInboxItem, relation: RelationView, action: "attach_to_node" | "remove_binding"): void;
+  onDriftStateChange(state: DriftStateName): void;
+  onResolveDrift(): void;
 }) {
+  const [tab, setTab] = useState<AssetInspectorTab>("overview");
   const connected = props.relations.filter((relation) => relation.target_node_id);
   const candidates = props.relations.filter((relation) => relation.status === "candidate");
   return (
@@ -822,95 +723,168 @@ function AssetInspector(props: {
       <div className="asset-inspector-head">
         <div>
           <div className="asset-detail-block-title">Asset Inspector</div>
-          <div className="asset-panel-meta">Overview, nodes, candidates, and AI mount surfaces</div>
+          <div className="asset-panel-meta">Overview, graph relations, candidates, and review-gated actions</div>
         </div>
         <FileLink path={props.item.path} workspaceRoot={props.workspaceRoot} />
       </div>
-      <div className="asset-inspector-grid">
-        <DetailBlock title="Overview">
-          <div className="asset-policy-lines">
-            <span>Kind: {labelForKind(props.item.asset_kind)}</span>
-            <span>Status: {STATUS_LABELS[props.item.asset_status] ?? props.item.asset_status}</span>
-            <span>Scan: {props.item.scan_status || "n/a"}</span>
-            <span>Hash: <span className="mono">{props.item.file_hash || props.item.sha256 || "n/a"}</span></span>
-          </div>
-        </DetailBlock>
-        <DetailBlock title="Nodes">
-          {connected.length === 0 ? (
-            <div className="asset-browser-muted">No connected graph nodes yet.</div>
-          ) : (
-            <div className="asset-inspector-list">
-              {connected.map((relation) => (
-                <TargetNodeButton key={relation.relation_id} nodeId={relation.target_node_id} onSelectNode={props.onSelectNode} />
-              ))}
+      <nav className="inspector-tabs asset-inspector-tabs" role="tablist">
+        {ASSET_INSPECTOR_TABS.map((candidate) => (
+          <button
+            key={candidate.id}
+            type="button"
+            role="tab"
+            aria-selected={tab === candidate.id}
+            className={`inspector-tab${tab === candidate.id ? " active" : ""}`}
+            onClick={() => setTab(candidate.id)}
+          >
+            {candidate.label}
+          </button>
+        ))}
+      </nav>
+      <div className="asset-inspector-body">
+        {tab === "overview" ? (
+          <div className="asset-inspector-grid">
+            <DetailBlock title="File">
+              <div className="asset-policy-lines">
+                <span>
+                  Path: <FileLink path={props.item.path} workspaceRoot={props.workspaceRoot} />
+                </span>
+                <span>Kind: {labelForKind(props.item.asset_kind)}</span>
+                <span>Status: {STATUS_LABELS[props.item.asset_status] ?? props.item.asset_status}</span>
+                <span>Relations: {relationSummaryLabel(props.selectedSummary)}</span>
+              </div>
+            </DetailBlock>
+            <div className="asset-meta-grid asset-meta-grid-compact">
+              <Meta label="Hash" value={props.item.file_hash || props.item.sha256 || "n/a"} mono />
+              <Meta label="Scan" value={props.item.scan_status || "n/a"} />
+              <Meta label="Graph" value={props.item.graph_status || "n/a"} />
+              <Meta label="Risk" value={props.item.risk || "unknown"} />
+              <Meta label="Size" value={formatBytes(props.item.size_bytes)} />
+              <Meta label="Binding" value={props.item.binding_status || relationSummaryLabel(props.selectedSummary)} />
+              <Meta label="Drift" value={driftStateLabel(props.item)} />
             </div>
-          )}
-        </DetailBlock>
-        <DetailBlock title="Candidates">
-          {candidates.length === 0 ? (
-            <div className="asset-browser-muted">No weak-evidence candidates in this payload.</div>
-          ) : (
-            <div className="asset-inspector-list">
-              {candidates.slice(0, 6).map((relation) => (
-                <div key={relation.relation_id} className="asset-candidate-row">
-                  <span className="asset-meta-pill">
-                    <strong>{relation.target_node_id}</strong>
-                    {relation.evidence_kind || "candidate"} / {relation.binding_strength || "weak"}
-                  </span>
-                  <button
-                    type="button"
-                    className="action-btn"
-                    disabled={relationActionResult(props.actionResults, relation, "attach_to_node")?.state === "writing"}
-                    onClick={() => props.onPropose(props.item, relation, "attach_to_node")}
-                  >
-                    Queue candidate
-                  </button>
-                  <ActionResultLine
-                    result={relationActionResult(props.actionResults, relation, "attach_to_node")}
-                    projectId={props.projectId}
-                    compact
-                  />
+          </div>
+        ) : null}
+
+        {tab === "nodes" ? (
+          <div className="asset-inspector-tab-stack">
+            <DetailBlock title="Connected graph nodes">
+              {connected.length === 0 ? (
+                <div className="asset-browser-muted">No connected graph nodes yet.</div>
+              ) : (
+                <div className="asset-inspector-list">
+                  {connected.map((relation) => (
+                    <TargetNodeButton key={relation.relation_id} nodeId={relation.target_node_id} onSelectNode={props.onSelectNode} />
+                  ))}
                 </div>
-              ))}
+              )}
+            </DetailBlock>
+            <AssetRelationGraph
+              item={props.item}
+              relations={props.relations}
+              selectedRelationId={props.selectedRelationId}
+              onSelect={props.onSelectRelation}
+              onSelectNode={props.onSelectNode}
+              actionResults={props.actionResults}
+              projectId={props.projectId}
+              onPropose={props.onPropose}
+              onAddBindingFocus={() => setTab("actions")}
+            />
+          </div>
+        ) : null}
+
+        {tab === "candidates" ? (
+          <DetailBlock title="Weak evidence candidates">
+            {candidates.length === 0 ? (
+              <div className="asset-browser-muted">No weak-evidence candidates in this payload.</div>
+            ) : (
+              <div className="asset-inspector-list asset-candidate-list">
+                {candidates.slice(0, 12).map((relation) => (
+                  <div key={relation.relation_id} className="asset-candidate-row">
+                    <span className="asset-meta-pill">
+                      <strong>{relation.target_node_id || "unbound"}</strong>
+                      {relation.evidence_kind || "candidate"} / {relation.binding_strength || "weak"}
+                    </span>
+                    <TargetNodeButton nodeId={relation.target_node_id} onSelectNode={props.onSelectNode} />
+                    <button
+                      type="button"
+                      className="action-btn"
+                      disabled={relationActionResult(props.actionResults, relation, "attach_to_node")?.state === "writing"}
+                      onClick={() => props.onPropose(props.item, relation, "attach_to_node")}
+                    >
+                      Queue candidate
+                    </button>
+                    <ActionResultLine
+                      result={relationActionResult(props.actionResults, relation, "attach_to_node")}
+                      projectId={props.projectId}
+                      compact
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="asset-browser-muted">
+              Queueing candidates remains review-gated; accepted changes become graph truth only after Review Queue and commit/apply.
             </div>
-          )}
-          <div className="asset-browser-muted">
-            Queueing candidates remains review-gated; accepted changes become graph truth only after Review Queue and commit/apply.
+          </DetailBlock>
+        ) : null}
+
+        {tab === "actions" ? (
+          <div className="asset-detail-grid asset-inspector-actions-grid">
+            <DriftControls
+              item={props.item}
+              selectedRelation={props.selectedRelation}
+              result={props.actionResults[`${props.item.asset_id}:drift`] ?? { state: "idle", message: "No manual state change recorded." }}
+              proposalResult={
+                props.actionResults[`${props.item.asset_id}:resolve-drift`] ?? { state: "idle", message: proposalStateLabel(props.item) }
+              }
+              onStateChange={props.onDriftStateChange}
+              onResolve={props.onResolveDrift}
+            />
+            <HintBindingPanel
+              item={props.item}
+              nodeOptions={props.nodeOptions}
+              draft={props.draft}
+              result={props.attachResult}
+              snapshotId={props.snapshotId}
+              onUpdate={props.onUpdateDraft}
+              onWrite={props.onWriteHint}
+            />
+            <DetailBlock title="Evidence">
+              {(props.item.evidence ?? []).length === 0 ? (
+                <div className="asset-browser-muted">No evidence recorded.</div>
+              ) : (
+                <div className="asset-evidence-list">
+                  {(props.item.evidence ?? []).slice(0, 6).map((evidence, index) => (
+                    <span key={`${props.item.asset_id}-e-${index}`}>
+                      <strong>{evidence.kind}</strong>: {evidence.message}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </DetailBlock>
+            <DetailBlock title="Asset actions">
+              <div className="asset-action-list">
+                {(props.item.recommended_actions ?? []).slice(0, 5).map((action) => (
+                  <span key={action} className="mono">
+                    {action}
+                  </span>
+                ))}
+                {(props.item.recommended_actions ?? []).length === 0 ? (
+                  <span className="asset-browser-muted">No recommended action.</span>
+                ) : null}
+              </div>
+            </DetailBlock>
+            <DetailBlock title="Backlog policy">
+              <div className="asset-policy-lines">
+                <span>{props.backlogPolicyReason}</span>
+                <span className={props.item.backlog?.eligible ? "asset-policy-eligible" : "asset-browser-muted"}>
+                  {props.item.backlog?.eligible ? "Eligible for backlog creation" : props.item.backlog?.reason || "Not eligible"}
+                </span>
+              </div>
+            </DetailBlock>
           </div>
-        </DetailBlock>
-        <DetailBlock title="AI mount">
-          <div className="asset-hint-controls">
-            <select
-              value={props.draft.role}
-              onChange={(event) => props.onUpdateDraft({ role: event.target.value as AttachRole })}
-              disabled={props.attachResult.state === "writing" || props.attachResult.state === "written_uncommitted"}
-            >
-              <option value="doc">doc</option>
-              <option value="test">test</option>
-              <option value="config">config</option>
-            </select>
-            <select
-              value={props.draft.targetNodeId}
-              onChange={(event) => props.onUpdateDraft({ targetNodeId: event.target.value })}
-              disabled={props.attachResult.state === "writing" || props.attachResult.state === "written_uncommitted"}
-            >
-              {props.nodeOptions.map((node) => (
-                <option key={node.node_id} value={node.node_id}>
-                  {node.title || node.node_id} - {node.node_id}
-                </option>
-              ))}
-            </select>
-            <button
-              className="action-btn action-btn-primary"
-              disabled={props.attachResult.state === "writing" || props.attachResult.state === "written_uncommitted"}
-              onClick={props.onWriteHint}
-              title="Write a source-controlled governance hint; AI proposals still require Review Queue acceptance"
-            >
-              {props.attachResult.state === "writing" ? "Writing..." : "Mount"}
-            </button>
-          </div>
-          <div className={`attach-state attach-state-${props.attachResult.state}`}>{props.attachResult.message}</div>
-        </DetailBlock>
+        ) : null}
       </div>
     </section>
   );

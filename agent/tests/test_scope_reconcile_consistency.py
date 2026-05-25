@@ -239,6 +239,106 @@ def test_scope_reconcile_output_matches_full_rebuild_for_same_final_state(conn, 
     assert scope_node_ids["agent/service.py"] == base_node_ids["agent/service.py"]
 
 
+def test_scope_reconcile_doc_hint_binding_falls_back_with_named_metrics(conn, tmp_path):
+    project = tmp_path / "project"
+    _write_project(project)
+    _write(project / "docs" / "orphan.md", "# Loose Notes\n\nNo binding yet.\n")
+    _init_git(project)
+    _git(project, "add", ".")
+    _git(project, "commit", "-m", "base")
+    base_commit = _git(project, "rev-parse", "HEAD")
+
+    base = run_state_only_full_reconcile(
+        conn,
+        PID,
+        project,
+        run_id="full-doc-hint-base-consistency",
+        commit_sha=base_commit,
+        snapshot_id="full-doc-hint-base-consistency",
+        created_by="test",
+        activate=True,
+        semantic_enrich=False,
+    )
+    assert base["ok"] is True
+
+    _write(
+        project / "docs" / "orphan.md",
+        "<!-- governance-hint "
+        '{"asset_binding_event":{"operation":"bind","path":"docs/orphan.md",'
+        '"role":"doc","target_module":"agent.service"}}'
+        " -->\n# Loose Notes\n\nNow bound through source-controlled evidence.\n",
+    )
+    _git(project, "add", "docs/orphan.md")
+    _git(project, "commit", "-m", "bind orphan doc through hint")
+    head_commit = _git(project, "rev-parse", "HEAD")
+    store.queue_pending_scope_reconcile(
+        conn,
+        PID,
+        commit_sha=head_commit,
+        parent_commit_sha=base_commit,
+        evidence={"source": "test"},
+    )
+
+    scope = run_pending_scope_reconcile_candidate(
+        conn,
+        PID,
+        project,
+        target_commit_sha=head_commit,
+        run_id="scope-doc-hint-head-consistency",
+        snapshot_id="scope-doc-hint-head-consistency",
+        created_by="test",
+        semantic_enrich=False,
+    )
+
+    assert scope["ok"] is True
+    assert scope["scope_file_delta"]["strategy"] == "full_rebuild_fallback"
+    assert scope["scope_file_delta"]["graph_delta_mode"] == "full_rebuild"
+    assert scope["scope_file_delta"]["fallback_reason"] == "inventory_status_change_requires_full_rebuild"
+    assert scope["scope_graph_delta"]["strategy"] == "full_rebuild_fallback"
+    assert scope["scope_graph_delta"]["mode"] == "full_rebuild"
+    assert scope["scope_graph_delta"]["fallback_reason"] == "inventory_status_change_requires_full_rebuild"
+    assert scope["scope_graph_events"]["by_type"]["doc_binding_added"] == 1
+    metric = conn.execute(
+        """
+        SELECT strategy, graph_delta_mode, fallback_reason,
+               changed_file_count, impacted_file_count
+        FROM reconcile_run_metrics
+        WHERE project_id=? AND run_id=? AND snapshot_id=?
+        """,
+        (PID, "scope-doc-hint-head-consistency", "scope-doc-hint-head-consistency"),
+    ).fetchone()
+    assert metric["strategy"] == "full_rebuild_fallback"
+    assert metric["graph_delta_mode"] == "full_rebuild"
+    assert metric["fallback_reason"] == "inventory_status_change_requires_full_rebuild"
+    assert metric["changed_file_count"] == 1
+    assert metric["impacted_file_count"] >= 1
+
+    full = run_state_only_full_reconcile(
+        conn,
+        PID,
+        project,
+        run_id="full-doc-hint-head-consistency",
+        commit_sha=head_commit,
+        snapshot_id="full-doc-hint-head-consistency",
+        created_by="test",
+        semantic_enrich=False,
+    )
+    assert full["ok"] is True
+    assert _normalized_snapshot(conn, "scope-doc-hint-head-consistency") == _normalized_snapshot(
+        conn,
+        "full-doc-hint-head-consistency",
+    )
+
+    node = _nodes_by_module(_read_snapshot_graph(PID, "scope-doc-hint-head-consistency"))["agent.service"]
+    assert "docs/orphan.md" in node["secondary"]
+    inventory = {
+        row["path"]: row
+        for row in _snapshot_inventory_rows(conn, PID, "scope-doc-hint-head-consistency")
+    }
+    assert inventory["docs/orphan.md"]["scan_status"] == "secondary_attached"
+    assert inventory["docs/orphan.md"]["effective_binding_status"] == "accepted"
+
+
 def test_scope_reconcile_source_hash_only_matches_full_rebuild_for_same_final_state(conn, tmp_path):
     project = tmp_path / "project"
     _write_call_free_project(project)

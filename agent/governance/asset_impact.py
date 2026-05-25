@@ -676,6 +676,14 @@ def record_scope_asset_impacts(
         + list(file_delta.get("removed_files") or [])
         + list(file_delta.get("impacted_files") or [])
     ))
+    covered_changed_assets = set(_path_list(
+        list(scope_graph_delta.get("contract_covered_files") or [])
+        + list(scope_graph_delta.get("gate_covered_files") or [])
+        + list(scope_graph_delta.get("verified_changed_files") or [])
+        + list(file_delta.get("contract_covered_files") or [])
+        + list(file_delta.get("gate_covered_files") or [])
+        + list(file_delta.get("verified_changed_files") or [])
+    ))
     if not pid or not sid or not commit or not kind or not updated_nodes:
         return {
             "schema_version": SCHEMA_VERSION,
@@ -706,6 +714,7 @@ def record_scope_asset_impacts(
         node_ids=updated_nodes,
     )
     emitted: list[dict[str, Any]] = []
+    drift_recorded: list[dict[str, Any]] = []
     skipped_changed_asset = 0
     skipped_non_code_node_change = 0
     for row in rows:
@@ -713,6 +722,30 @@ def record_scope_asset_impacts(
         node_id = _text(row["node_id"])
         if asset_path in changed_paths:
             skipped_changed_asset += 1
+            if asset_path in covered_changed_assets:
+                drift_result = record_asset_drift_state(
+                    conn,
+                    project_id=pid,
+                    asset_kind=kind,
+                    asset_path=asset_path,
+                    drift_state="not_drifted",
+                    snapshot_id=sid,
+                    commit_sha=commit,
+                    actor=actor,
+                    evidence={
+                        "schema_version": SCHEMA_VERSION,
+                        "policy": "changed_asset_gate_covered",
+                        "review_state": "resolved_by_contract_gate",
+                        "source": "scope_asset_drift_policy",
+                        "changed_paths": sorted(changed_paths),
+                        "covered_changed_assets": sorted(covered_changed_assets),
+                        "updated_nodes": sorted(updated_nodes),
+                        "node_id": node_id,
+                        "binding_source": _text(row["source"]),
+                        "binding_evidence": _loads(row["evidence_json"], {}),
+                    },
+                )
+                drift_recorded.append(drift_result.get("drift_state") or {})
             continue
         code_paths = node_code_paths.get(node_id)
         if code_paths is not None and not changed_paths.intersection(code_paths):
@@ -738,8 +771,42 @@ def record_scope_asset_impacts(
             },
         )
         if result.get("event"):
-            emitted.append(result["event"])
+            event = result["event"]
+            emitted.append(event)
+            drift_result = record_asset_drift_state(
+                conn,
+                project_id=pid,
+                asset_kind=kind,
+                asset_path=asset_path,
+                drift_state="suspected",
+                snapshot_id=sid,
+                commit_sha=commit,
+                actor=actor,
+                evidence={
+                    "schema_version": SCHEMA_VERSION,
+                    "policy": "unchanged_bound_asset_impacted",
+                    "review_state": "impact_pending",
+                    "source": "scope_asset_drift_policy",
+                    "impact_event_id": int(event.get("id") or 0),
+                    "changed_paths": sorted(changed_paths),
+                    "updated_nodes": sorted(updated_nodes),
+                    "node_id": node_id,
+                    "binding_source": _text(row["source"]),
+                    "binding_evidence": _loads(row["evidence_json"], {}),
+                },
+            )
+            drift_recorded.append(drift_result.get("drift_state") or {})
     projection = _rebuild_pending_projection(conn, pid)
+    changed_asset_resolved_count = sum(
+        1
+        for row in drift_recorded
+        if str(row.get("drift_state") or "") == "not_drifted"
+    )
+    impact_pending_drift_count = sum(
+        1
+        for row in drift_recorded
+        if str(row.get("drift_state") or "") == "suspected"
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "project_id": pid,
@@ -751,6 +818,14 @@ def record_scope_asset_impacts(
         "pending_reminder_count": projection["pending_reminder_count"],
         "skipped_changed_asset": skipped_changed_asset,
         "skipped_non_code_node_change": skipped_non_code_node_change,
+        "drift_state_count": len(drift_recorded),
+        "changed_asset_resolved_count": changed_asset_resolved_count,
+        "impact_pending_drift_count": impact_pending_drift_count,
+        "drift_state_paths": sorted({
+            _norm_path(row.get("asset_path"))
+            for row in drift_recorded
+            if _norm_path(row.get("asset_path"))
+        }),
     }
 
 

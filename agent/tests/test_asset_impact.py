@@ -278,6 +278,65 @@ def test_scope_doc_impact_skips_when_bound_doc_changed_in_same_commit() -> None:
     assert list_pending_asset_impact_reminders(conn, PID, asset_kind="doc") == []
 
 
+def test_scope_doc_drift_policy_marks_gate_covered_changed_doc_not_drifted() -> None:
+    conn = _conn()
+    _index_runtime_snapshot(conn, "scope-doc-covered", "c-doc-covered")
+    scope_delta = _scope_delta("src/runtime.py", "docs/runtime.md")
+    scope_delta["file_inventory_delta"]["gate_covered_files"] = ["docs/runtime.md"]
+    scope_delta["file_inventory_delta"]["contract_covered_files"] = ["docs/runtime.md"]
+
+    result = record_scope_asset_impacts(
+        conn,
+        PID,
+        snapshot_id="scope-doc-covered",
+        commit_sha="c-doc-covered",
+        scope_graph_delta=scope_delta,
+        actor="merge-gate",
+    )
+
+    assert result["event_count"] == 0
+    assert result["skipped_changed_asset"] == 1
+    assert result["changed_asset_resolved_count"] == 1
+    state = get_asset_drift_state(
+        conn,
+        PID,
+        asset_kind="doc",
+        asset_path="docs/runtime.md",
+    )
+    assert state["drift_state"] == "not_drifted"
+    assert state["actor"] == "merge-gate"
+    assert state["evidence"]["policy"] == "changed_asset_gate_covered"
+    assert state["evidence"]["review_state"] == "resolved_by_contract_gate"
+
+
+def test_scope_doc_impact_marks_unchanged_bound_doc_suspected_pending_review() -> None:
+    conn = _conn()
+    _index_runtime_snapshot(conn, "scope-doc-impact-pending", "c-impact-pending")
+
+    result = record_scope_asset_impacts(
+        conn,
+        PID,
+        snapshot_id="scope-doc-impact-pending",
+        commit_sha="c-impact-pending",
+        scope_graph_delta=_scope_delta("src/runtime.py"),
+        actor="scope-reconcile",
+    )
+
+    assert result["event_count"] == 1
+    assert result["impact_pending_drift_count"] == 1
+    events = list_asset_impact_events(conn, PID, event_type=EVENT_IMPACT_DETECTED)
+    state = get_asset_drift_state(
+        conn,
+        PID,
+        asset_kind="doc",
+        asset_path="docs/runtime.md",
+    )
+    assert state["drift_state"] == "suspected"
+    assert state["evidence"]["policy"] == "unchanged_bound_asset_impacted"
+    assert state["evidence"]["review_state"] == "impact_pending"
+    assert state["evidence"]["impact_event_id"] == events[0]["id"]
+
+
 def test_scope_doc_impact_requires_code_or_config_change() -> None:
     conn = _conn()
     _index_runtime_snapshot(conn, "scope-test-only", "c-test")
