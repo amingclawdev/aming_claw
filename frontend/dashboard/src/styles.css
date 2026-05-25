@@ -2032,6 +2032,11 @@ a:hover { text-decoration: underline; }
   background: #fff;
 }
 
+.backlog-timeline-panel.implementation-focused {
+  border-color: #bfdbfe;
+  background: #f8fbff;
+}
+
 .backlog-timeline-head {
   display: flex;
   align-items: center;
@@ -2142,6 +2147,19 @@ a:hover { text-decoration: underline; }
   background: var(--ink-50);
 }
 
+.backlog-lane-card.deemphasized,
+.backlog-dag-lane.lane-observer .backlog-dag-lane-label {
+  opacity: 0.74;
+}
+
+.backlog-lane-card.lane-worker,
+.backlog-lane-card.lane-frontend,
+.backlog-lane-card.lane-backend,
+.backlog-lane-card.lane-implementation {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
 .backlog-lane-blockers span {
   color: var(--red-fg);
 }
@@ -2151,6 +2169,16 @@ a:hover { text-decoration: underline; }
   border: 1px solid var(--ink-100);
   border-radius: 6px;
   background: var(--ink-50);
+}
+
+.backlog-timeline-event.implementation {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.backlog-timeline-event.deemphasized {
+  background: #fff;
+  opacity: 0.72;
 }
 
 .backlog-timeline-meta,
@@ -2186,6 +2214,135 @@ a:hover { text-decoration: underline; }
 
 .timeline-error {
   color: var(--red-strong);
+}
+
+.backlog-implementation-steps {
+  margin: 10px 0;
+}
+
+.backlog-step-grid,
+.backlog-contract-requirements,
+.backlog-contract-inputs,
+.backlog-raw-payload-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.backlog-step-grid {
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+}
+
+.backlog-step-card,
+.backlog-contract-requirement,
+.backlog-contract-inputs div,
+.backlog-raw-payload {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--ink-100);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.backlog-step-card.status-passed,
+.backlog-contract-requirement.status-passed,
+.backlog-contract-evidence.status-passed {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.backlog-step-card.status-failed,
+.backlog-step-card.status-missing,
+.backlog-contract-requirement.status-failed,
+.backlog-contract-requirement.status-missing,
+.backlog-contract-evidence.status-failed,
+.backlog-contract-evidence.status-missing {
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+
+.backlog-step-card.status-bypassed,
+.backlog-contract-requirement.status-bypassed,
+.backlog-contract-evidence.status-bypassed {
+  border-color: #c4b5fd;
+  background: #f5f3ff;
+}
+
+.backlog-step-card.coarse,
+.backlog-contract-requirement.coarse,
+.backlog-contract-evidence.status-inferred {
+  border-style: dashed;
+}
+
+.backlog-step-head,
+.backlog-contract-requirement-head,
+.backlog-contract-evidence {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.backlog-step-head span:first-child,
+.backlog-contract-requirement-head span:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--ink-800);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.backlog-artifact-pills {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.backlog-artifact-pills.compact {
+  margin-top: 6px;
+}
+
+.backlog-artifact-pills div {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.backlog-artifact-pills span,
+.backlog-contract-inputs span,
+.backlog-raw-payload > span {
+  color: var(--ink-500);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.backlog-artifact-pills em,
+.backlog-artifact-pills strong {
+  max-width: 100%;
+  padding: 1px 5px;
+  border: 1px solid var(--ink-100);
+  border-radius: 4px;
+  background: #fff;
+  color: var(--ink-700);
+  font-style: normal;
+  overflow-wrap: anywhere;
+}
+
+.backlog-no-gate-state {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px dashed var(--ink-200);
+  border-radius: 6px;
+  background: var(--ink-50);
+  color: var(--ink-600);
+  font-size: 11px;
+}
+
+.backlog-no-gate-state strong {
+  color: var(--ink-800);
 }
 
 .backlog-modal-backdrop {
@@ -2280,6 +2437,40 @@ a:hover { text-decoration: underline; }
   grid-template-columns: repeat(6, minmax(120px, 1fr));
   gap: 8px;
   margin-bottom: 12px;
+}
+
+.backlog-modal-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--ink-100);
+  overflow-x: auto;
+}
+
+.backlog-modal-tabs button {
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--ink-200);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ink-700);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.backlog-modal-tabs button.active {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: var(--blue-strong);
+}
+
+.backlog-modal-tab-panel {
+  min-width: 0;
 }
 
 .backlog-summary-item,
@@ -2482,6 +2673,79 @@ a:hover { text-decoration: underline; }
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid var(--ink-100);
+}
+
+.backlog-contract-inputs {
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.backlog-contract-inputs strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--ink-800);
+  overflow-wrap: anywhere;
+}
+
+.backlog-contract-requirements {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.backlog-contract-requirement p {
+  margin: 7px 0 0;
+  color: var(--ink-600);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.backlog-contract-evidence-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.backlog-contract-evidence {
+  padding: 8px;
+  border: 1px solid var(--ink-100);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.backlog-contract-evidence > div:first-child {
+  min-width: 0;
+}
+
+.backlog-contract-evidence strong,
+.backlog-contract-evidence span.mono {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.backlog-contract-evidence strong {
+  color: var(--ink-800);
+  font-size: 11px;
+}
+
+.backlog-contract-evidence span.mono {
+  margin-top: 3px;
+  color: var(--ink-500);
+  font-size: 10px;
+}
+
+.backlog-raw-payload-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.backlog-raw-payload pre {
+  max-height: 260px;
+  overflow: auto;
+  margin: 6px 0 0;
+  padding: 8px;
+  border: 1px solid var(--ink-100);
+  border-radius: 6px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .backlog-inspector-grid {
@@ -5885,7 +6149,8 @@ svg.graph-svg path.ghit:hover {
   }
 
   .backlog-modal-summary,
-  .backlog-inspector-json {
+  .backlog-inspector-json,
+  .backlog-raw-payload-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 

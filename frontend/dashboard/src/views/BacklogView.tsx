@@ -15,6 +15,8 @@ interface Props {
 
 type StatusFilter = "OPEN" | "FIXED" | "ALL";
 type PriorityFilter = "ALL" | "P0" | "P1" | "P2" | "P3";
+type DetailTab = "timeline" | "contract";
+type ContractEvidenceStatus = "passed" | "missing" | "failed" | "bypassed" | "inferred" | "not_applicable";
 
 const PRIORITIES: PriorityFilter[] = ["ALL", "P0", "P1", "P2", "P3"];
 const PRIORITY_WEIGHT: Record<string, number> = { P0: 0, P1: 1, P2: 2, P3: 3 };
@@ -30,7 +32,7 @@ export const BACKLOG_PARALLEL_TIMELINE_FIXTURE_EVENTS: TaskTimelineEvent[] = [
     actor: "observer",
     phase: "dispatch",
     status: "accepted",
-    payload: { lane: "observer", requirement_ids: ["impact_scope_analysis"] },
+    payload: { lane: "observer", requirement_ids: ["impact_scope_analysis"], orchestration: true },
     created_at: "2026-05-25T12:00:00Z",
   },
   {
@@ -40,7 +42,16 @@ export const BACKLOG_PARALLEL_TIMELINE_FIXTURE_EVENTS: TaskTimelineEvent[] = [
     actor: "mf_sub_frontend",
     phase: "implementation",
     status: "passed",
-    payload: { lane: "frontend", requirement_ids: ["parallel_timeline_dag", "evidence_inspector"] },
+    payload: {
+      lane: "frontend",
+      requirement_ids: ["parallel_timeline_dag", "evidence_inspector"],
+      graph_query_trace_ids: ["gqt-fixture-frontend"],
+      inspected_node_ids: ["L7.228"],
+      inspected_node_titles: ["frontend.dashboard.src.views.BacklogView"],
+      changed_files: ["frontend/dashboard/src/views/BacklogView.tsx", "frontend/dashboard/src/styles.css"],
+      tests_written: ["frontend/dashboard/scripts/e2e-projects.mjs"],
+    },
+    verification: { tests_run: ["npm run build"], passed: true },
     created_at: "2026-05-25T12:01:00Z",
   },
   {
@@ -50,7 +61,12 @@ export const BACKLOG_PARALLEL_TIMELINE_FIXTURE_EVENTS: TaskTimelineEvent[] = [
     actor: "mf_sub_backend",
     phase: "implementation",
     status: "passed",
-    payload: { lane: "backend", requirement_ids: ["modal_summary_contract"] },
+    payload: {
+      lane: "backend",
+      requirement_ids: ["modal_summary_contract"],
+      changed_files: ["agent/governance/server.py", "agent/governance/task_timeline.py"],
+      tests_run: ["python -m pytest agent/tests/test_task_timeline.py -q"],
+    },
     created_at: "2026-05-25T12:01:00Z",
   },
   {
@@ -60,7 +76,11 @@ export const BACKLOG_PARALLEL_TIMELINE_FIXTURE_EVENTS: TaskTimelineEvent[] = [
     actor: "observer",
     phase: "merge_gate",
     status: "passed",
-    payload: { lane: "gate", requirement_ids: ["fixture_parallel_timeline", "no_false_evidence_gate"] },
+    payload: {
+      lane: "gate",
+      requirement_ids: ["fixture_parallel_timeline", "no_false_evidence_gate"],
+      precheck_results: { no_false_evidence_gate: true },
+    },
     created_at: "2026-05-25T12:03:00Z",
   },
 ];
@@ -521,8 +541,12 @@ function TimelinePanel({ timeline, backlogId }: { timeline: TimelineState; backl
   const count = timeline.count ?? timeline.events.length;
   const gate = timeline.gate?.timeline_gate;
   const lanes = buildTimelineLanes(timeline.events);
+  const implementationSteps = buildImplementationSteps(timeline.events);
+  const hasImplementationEvidence = implementationSteps.length > 0;
+  const observerEvents = timeline.events.filter(isObserverOrchestrationEvent);
+  const gateState = gateEvidenceState(timeline.gate, timeline.events);
   return (
-    <div className="backlog-timeline-panel">
+    <div className={`backlog-timeline-panel ${hasImplementationEvidence ? "implementation-focused" : ""}`}>
       <div className="backlog-timeline-head">
         <span>Execution evidence</span>
         <span className="mono">
@@ -534,13 +558,19 @@ function TimelinePanel({ timeline, backlogId }: { timeline: TimelineState; backl
       {!timeline.loading && !timeline.error && timeline.events.length === 0 ? (
         <div className="timeline-empty">No execution events linked to this backlog row.</div>
       ) : null}
-      {!timeline.loading && !timeline.error && gate ? (
+      {!timeline.loading && !timeline.error && gateState.noGate ? (
+        <NoGateNotice reason={gateState.reason} />
+      ) : null}
+      {!timeline.loading && !timeline.error && gate && !gateState.noGate ? (
         <GateSummary gate={gate} response={timeline.gate} />
+      ) : null}
+      {!timeline.loading && !timeline.error && implementationSteps.length > 0 ? (
+        <ImplementationStepGrid steps={implementationSteps} observerEventCount={observerEvents.length} />
       ) : null}
       {!timeline.loading && !timeline.error && lanes.length > 0 ? (
         <div className="backlog-lane-grid" aria-label="One-hop agent lanes">
           {lanes.map((lane) => (
-            <div className="backlog-lane-card" key={lane.id}>
+            <div className={`backlog-lane-card lane-${lane.id} ${lane.deemphasized ? "deemphasized" : ""}`} key={lane.id}>
               <div className="backlog-lane-head">
                 <span>{lane.label}</span>
                 <span className="mono">{lane.events.length} event{lane.events.length === 1 ? "" : "s"}</span>
@@ -566,7 +596,10 @@ function TimelinePanel({ timeline, backlogId }: { timeline: TimelineState; backl
       {!timeline.loading && !timeline.error && timeline.events.length > 0 ? (
         <div className="backlog-timeline-list">
           {timeline.events.map((event, index) => (
-            <div className="backlog-timeline-event" key={timelineEventKey(event, index)}>
+            <div
+              className={`backlog-timeline-event ${isImplementationEvidenceEvent(event) ? "implementation" : ""} ${hasImplementationEvidence && isObserverOrchestrationEvent(event) ? "deemphasized" : ""}`}
+              key={timelineEventKey(event, index)}
+            >
               <div className="backlog-timeline-meta">
                 <span className={`status-badge ${statusClass(event.status || event.event_type)}`}>
                   {event.status || event.event_type || "event"}
@@ -585,6 +618,7 @@ function TimelinePanel({ timeline, backlogId }: { timeline: TimelineState; backl
                 {event.attempt_num ? <span className="mono">attempt {event.attempt_num}</span> : null}
                 {event.commit_sha ? <span className="mono">commit {shortCommit(event.commit_sha)}</span> : null}
               </div>
+              <ArtifactPills summary={timelineEventArtifacts(event)} compact />
             </div>
           ))}
         </div>
@@ -617,6 +651,8 @@ function BacklogDetailModal({
   const events = timeline?.events ?? [];
   const gate = timeline?.gate?.timeline_gate;
   const dag = useMemo(() => buildTimelineDag(bug, events, gate), [bug, events, gate]);
+  const contractAudit = useMemo(() => buildContractAudit(bug, events, gate, timeline?.gate), [bug, events, gate, timeline?.gate]);
+  const [activeTab, setActiveTab] = useState<DetailTab>("timeline");
   const [selectedNodeId, setSelectedNodeId] = useState<string>("");
   const selectedNode = dag.nodes.find((node) => node.id === selectedNodeId) ?? dag.nodes[0] ?? null;
   const title = bug?.title || fallbackBugId;
@@ -659,72 +695,99 @@ function BacklogDetailModal({
         {error ? <div className="timeline-empty timeline-error">Backlog detail load failed: {error}</div> : null}
         {bug ? <BacklogDetailSummary bug={bug} gate={gate} /> : null}
 
-        <div className="backlog-modal-section">
-          <div className="backlog-modal-section-head">
-            <span>Related backlog</span>
-            <span className="mono">{dag.relatedIds.length} discovered</span>
-          </div>
-          {dag.relatedIds.length > 0 ? (
-            <div className="backlog-relation-strip">
-              {dag.relatedIds.map((id) => (
-                <button type="button" key={id} onClick={() => onSelectRelated(id)}>
-                  {id}
-                </button>
-              ))}
-            </div>
-          ) : (
-            <div className="timeline-empty">No related backlog ids discovered from provenance, contract, timeline, or task fields.</div>
-          )}
+        <div className="backlog-modal-tabs" role="tablist" aria-label="Backlog detail sections">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "timeline"}
+            className={activeTab === "timeline" ? "active" : ""}
+            onClick={() => setActiveTab("timeline")}
+          >
+            Timeline
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "contract"}
+            className={activeTab === "contract" ? "active" : ""}
+            onClick={() => setActiveTab("contract")}
+          >
+            Contract & Gate
+          </button>
         </div>
 
-        <div className="backlog-modal-section">
-          <div className="backlog-modal-section-head">
-            <span>Parallel timeline DAG</span>
-            <span className="mono">
-              {dag.nodes.length} node{dag.nodes.length === 1 ? "" : "s"} · {dag.phaseLabels.length} phase{dag.phaseLabels.length === 1 ? "" : "s"}
-            </span>
-          </div>
-          {timeline?.loading ? <div className="timeline-empty">Loading timeline...</div> : null}
-          {timeline?.error ? <div className="timeline-empty timeline-error">Timeline load failed: {timeline.error}</div> : null}
-          {!timeline?.loading && !timeline?.error && dag.nodes.length === 0 ? (
-            <div className="timeline-empty">No execution events or contract evidence nodes are available.</div>
-          ) : null}
-          {dag.nodes.length > 0 ? (
-            <div className="backlog-dag-shell">
-              <div className="backlog-dag-phases" style={{ gridTemplateColumns: `120px repeat(${dag.phaseLabels.length}, minmax(130px, 1fr))` }}>
-                <span />
-                {dag.phaseLabels.map((phase) => (
-                  <span key={phase}>{phase}</span>
-                ))}
+        {activeTab === "timeline" ? (
+          <div className="backlog-modal-tab-panel" role="tabpanel">
+            <div className="backlog-modal-section">
+              <div className="backlog-modal-section-head">
+                <span>Related backlog</span>
+                <span className="mono">{dag.relatedIds.length} discovered</span>
               </div>
-              <div className="backlog-dag-grid">
-                {dag.lanes.map((lane) => (
-                  <div className="backlog-dag-lane" key={lane.id}>
-                    <div className="backlog-dag-lane-label">{lane.label}</div>
-                    <div className="backlog-dag-lane-track" style={{ gridTemplateColumns: `repeat(${dag.phaseLabels.length}, minmax(130px, 1fr))` }}>
-                      {lane.nodes.map((node) => (
-                        <button
-                          type="button"
-                          key={node.id}
-                          className={`backlog-dag-node status-${node.status} ${selectedNode?.id === node.id ? "selected" : ""}`}
-                          style={{ gridColumn: `${node.phaseIndex + 1} / span 1` }}
-                          onClick={() => setSelectedNodeId(node.id)}
-                          title={node.inferred ? "Lane/phase inferred from event fields" : node.label}
-                        >
-                          <span>{node.label}</span>
-                          <em>{node.statusLabel}</em>
-                          {node.inferred ? <strong>inferred</strong> : null}
-                        </button>
-                      ))}
-                    </div>
+              {dag.relatedIds.length > 0 ? (
+                <div className="backlog-relation-strip">
+                  {dag.relatedIds.map((id) => (
+                    <button type="button" key={id} onClick={() => onSelectRelated(id)}>
+                      {id}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="timeline-empty">No related backlog ids discovered from provenance, contract, timeline, or task fields.</div>
+              )}
+            </div>
+
+            <div className="backlog-modal-section">
+              <div className="backlog-modal-section-head">
+                <span>Timeline DAG</span>
+                <span className="mono">
+                  {dag.nodes.length} node{dag.nodes.length === 1 ? "" : "s"} · {dag.phaseLabels.length} phase{dag.phaseLabels.length === 1 ? "" : "s"}
+                </span>
+              </div>
+              {timeline?.loading ? <div className="timeline-empty">Loading timeline...</div> : null}
+              {timeline?.error ? <div className="timeline-empty timeline-error">Timeline load failed: {timeline.error}</div> : null}
+              {!timeline?.loading && !timeline?.error && dag.nodes.length === 0 ? (
+                <div className="timeline-empty">No execution timeline events are available.</div>
+              ) : null}
+              {dag.nodes.length > 0 ? (
+                <div className="backlog-dag-shell">
+                  <div className="backlog-dag-phases" style={{ gridTemplateColumns: `120px repeat(${dag.phaseLabels.length}, minmax(130px, 1fr))` }}>
+                    <span />
+                    {dag.phaseLabels.map((phase) => (
+                      <span key={phase}>{phase}</span>
+                    ))}
                   </div>
-                ))}
-              </div>
+                  <div className="backlog-dag-grid">
+                    {dag.lanes.map((lane) => (
+                      <div className={`backlog-dag-lane lane-${lane.id}`} key={lane.id}>
+                        <div className="backlog-dag-lane-label">{lane.label}</div>
+                        <div className="backlog-dag-lane-track" style={{ gridTemplateColumns: `repeat(${dag.phaseLabels.length}, minmax(130px, 1fr))` }}>
+                          {lane.nodes.map((node) => (
+                            <button
+                              type="button"
+                              key={node.id}
+                              className={`backlog-dag-node status-${node.status} ${selectedNode?.id === node.id ? "selected" : ""}`}
+                              style={{ gridColumn: `${node.phaseIndex + 1} / span 1` }}
+                              onClick={() => setSelectedNodeId(node.id)}
+                              title={node.inferred ? "Lane/phase inferred from event fields" : node.label}
+                            >
+                              <span>{node.label}</span>
+                              <em>{node.statusLabel}</em>
+                              {node.inferred ? <strong>inferred</strong> : null}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </div>
-          ) : null}
-        </div>
 
-        <EvidenceInspector node={selectedNode} />
+            <EvidenceInspector node={selectedNode} />
+          </div>
+        ) : (
+          <ContractGatePanel audit={contractAudit} response={timeline?.gate} gate={gate} />
+        )}
       </section>
     </div>
   );
@@ -740,7 +803,7 @@ function BacklogDetailSummary({ bug, gate }: { bug: BacklogBug; gate?: MfCloseTi
       <SummaryItem label="Status" value={normalizeStatus(bug.status)} tone={statusClass(bug.status)} />
       <SummaryItem label="Commit" value={bug.commit ? shortCommit(bug.commit) : "none"} mono />
       <SummaryItem label="Contract" value={contract?.status || (bug.contract_summary?.has_contract ? "declared" : "not declared")} tone={contract?.passed ? "status-complete" : contract ? "status-failed" : "status-unknown"} />
-      <SummaryItem label="Close gate" value={gate?.status || (gate?.passed ? "passed" : "blocked")} tone={gate?.passed ? "status-complete" : "status-failed"} />
+      <SummaryItem label="Close gate" value={gate?.status || (gate ? (gate.passed ? "passed" : "blocked") : "not loaded")} tone={gate?.passed ? "status-complete" : gate ? "status-failed" : "status-unknown"} />
       <SummaryItem label="Missing" value={missing.length ? String(missing.length) : "none"} tone={missing.length ? "status-failed" : "status-complete"} />
       <DetailList label="Target files" values={listFrom(bug.target_files)} />
       <DetailList label="Tests" values={listFrom(bug.test_files)} />
@@ -773,8 +836,64 @@ function DetailList({ label, values }: { label: string; values: string[] }) {
   );
 }
 
+function ImplementationStepGrid({ steps, observerEventCount }: { steps: ImplementationStep[]; observerEventCount: number }) {
+  return (
+    <div className="backlog-implementation-steps" aria-label="Implementation audit steps">
+      <div className="backlog-modal-section-head">
+        <span>Implementation steps</span>
+        <span className="mono">
+          {steps.length} step{steps.length === 1 ? "" : "s"}
+          {observerEventCount ? ` · observer supervision compacted ${observerEventCount}` : ""}
+        </span>
+      </div>
+      <div className="backlog-step-grid">
+        {steps.map((step) => (
+          <div className={`backlog-step-card status-${step.status} ${step.coarse ? "coarse" : ""}`} key={step.id}>
+            <div className="backlog-step-head">
+              <span>{step.label}</span>
+              <span className={`status-badge ${statusClass(step.status)}`}>{step.coarse ? "coarse" : step.status}</span>
+            </div>
+            <div className="backlog-gate-facts">
+              <span>{step.events.length} event{step.events.length === 1 ? "" : "s"}</span>
+              {step.coarse ? <span>coarse/inferred from available fields</span> : null}
+            </div>
+            <ArtifactPills summary={step.artifacts} compact />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ArtifactPills({ summary, compact = false }: { summary: EventArtifactSummary; compact?: boolean }) {
+  const groups = [
+    ["graph traces", summary.graphTraceIds],
+    ["nodes", stableUnique([...summary.nodeIds, ...summary.nodeTitles])],
+    ["files", summary.changedFiles],
+    ["tests", summary.tests],
+    ["docs/config", summary.docs],
+    ["screenshots", summary.screenshots],
+    ["precheck/gate", summary.prechecks],
+  ].filter(([, values]) => Array.isArray(values) && values.length > 0) as [string, string[]][];
+  if (groups.length === 0) return null;
+  return (
+    <div className={`backlog-artifact-pills ${compact ? "compact" : ""}`}>
+      {groups.map(([label, values]) => (
+        <div key={label}>
+          <span>{label}</span>
+          {values.slice(0, compact ? 3 : 8).map((value) => (
+            <em key={value} className="mono" title={value}>{value}</em>
+          ))}
+          {values.length > (compact ? 3 : 8) ? <strong>+{values.length - (compact ? 3 : 8)}</strong> : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function EvidenceInspector({ node }: { node: TimelineDagNode | null }) {
   const event = node?.event;
+  const artifacts = event ? timelineEventArtifacts(event) : emptyArtifactSummary();
   const rows = [
     ["event_type", event?.event_type],
     ["event_kind", event?.event_kind],
@@ -802,6 +921,7 @@ function EvidenceInspector({ node }: { node: TimelineDagNode | null }) {
               </div>
             ))}
           </div>
+          <ArtifactPills summary={artifacts} />
           <div className="backlog-inspector-json">
             <div>
               <span>verification</span>
@@ -822,6 +942,338 @@ function EvidenceInspector({ node }: { node: TimelineDagNode | null }) {
       )}
     </div>
   );
+}
+
+function ContractGatePanel({
+  audit,
+  response,
+  gate,
+}: {
+  audit: ContractAudit;
+  response?: BacklogTimelineGateResponse;
+  gate?: MfCloseTimelineGate;
+}) {
+  const gateState = gateEvidenceState(response, audit.events);
+  return (
+    <div className="backlog-modal-tab-panel" role="tabpanel">
+      <div className="backlog-modal-section">
+        <div className="backlog-modal-section-head">
+          <span>Original contract inputs</span>
+          <span className={`status-badge ${audit.contract.valid ? "status-complete" : audit.contract.empty ? "status-unknown" : "status-failed"}`}>
+            {audit.contract.empty ? "missing" : audit.contract.valid ? "parsed" : "invalid json"}
+          </span>
+        </div>
+        {audit.contract.error ? <div className="timeline-empty timeline-error">{audit.contract.error}</div> : null}
+        <div className="backlog-contract-inputs">
+          {audit.inputs.map((item) => (
+            <div key={item.label}>
+              <span>{item.label}</span>
+              <strong className={item.mono ? "mono" : ""}>{item.value}</strong>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="backlog-modal-section">
+        <div className="backlog-modal-section-head">
+          <span>Requirement evidence map</span>
+          <span className="mono">{audit.requirements.length} requirement{audit.requirements.length === 1 ? "" : "s"}</span>
+        </div>
+        {audit.requirements.length === 0 ? (
+          <div className="timeline-empty">No contract evidence requirements were declared.</div>
+        ) : (
+          <div className="backlog-contract-requirements">
+            {audit.requirements.map((requirement) => (
+              <ContractRequirementCard key={requirement.id} requirement={requirement} />
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="backlog-modal-section">
+        <div className="backlog-modal-section-head">
+          <span>Gate evidence</span>
+          <span className={`status-badge ${gateState.noGate ? "status-unknown" : gate?.passed ? "status-complete" : "status-failed"}`}>
+            {gateState.noGate ? "no gate evidence" : gate?.status || "recorded"}
+          </span>
+        </div>
+        {gateState.noGate ? <NoGateNotice reason={gateState.reason} /> : gate ? <GateSummary gate={gate} response={response} /> : null}
+      </div>
+
+      <div className="backlog-modal-section">
+        <div className="backlog-modal-section-head">
+          <span>Raw contract / gate payloads</span>
+          <span className="mono">inspectable</span>
+        </div>
+        <div className="backlog-raw-payload-grid">
+          <RawPayloadBlock label="chain_trigger_json raw" value={audit.contract.rawForDisplay} />
+          <RawPayloadBlock label="parsed contract root" value={audit.contract.valid ? audit.contract.root : { error: audit.contract.error || "missing" }} />
+          <RawPayloadBlock label="timeline gate raw" value={response ?? { state: "not recorded" }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ContractRequirementCard({ requirement }: { requirement: ContractRequirementAudit }) {
+  return (
+    <div className={`backlog-contract-requirement status-${requirement.status} ${requirement.coarse ? "coarse" : ""}`}>
+      <div className="backlog-contract-requirement-head">
+        <span className="mono">{requirement.id}</span>
+        <span className={`status-badge ${contractStatusClass(requirement.status)}`}>{requirement.status.replace("_", " ")}</span>
+      </div>
+      <div className="backlog-gate-facts">
+        <span>{requirement.required ? "required" : "optional"}</span>
+        <span>{requirement.source}</span>
+        {requirement.coarse ? <span>coarse/inferred</span> : null}
+      </div>
+      {requirement.description ? <p>{requirement.description}</p> : null}
+      {requirement.evidence.length > 0 ? (
+        <div className="backlog-contract-evidence-list">
+          {requirement.evidence.map((match) => (
+            <div key={match.key} className={`backlog-contract-evidence status-${match.status}`}>
+              <div>
+                <strong>{match.label}</strong>
+                <span className="mono">{match.actor || "actor unknown"} · {match.phase || match.eventKind || "event"}</span>
+              </div>
+              <span className={`status-badge ${contractStatusClass(match.status)}`}>{match.status.replace("_", " ")}</span>
+              <ArtifactPills summary={match.artifacts} compact />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="timeline-empty">No matching timeline evidence recorded for this requirement.</div>
+      )}
+    </div>
+  );
+}
+
+function RawPayloadBlock({ label, value }: { label: string; value: unknown }) {
+  return (
+    <div className="backlog-raw-payload">
+      <span>{label}</span>
+      <pre>{typeof value === "string" ? value || "missing" : JSON.stringify(value ?? { state: "missing" }, null, 2)}</pre>
+    </div>
+  );
+}
+
+function NoGateNotice({ reason }: { reason: string }) {
+  return (
+    <div className="backlog-no-gate-state">
+      <strong>No gate evidence</strong>
+      <span>{reason || "No gate run recorded for this backlog/stage. Contract requirements remain visible without fabricated gate nodes."}</span>
+    </div>
+  );
+}
+
+function buildContractAudit(
+  bug: BacklogBug | null,
+  events: TaskTimelineEvent[],
+  gate?: MfCloseTimelineGate,
+  response?: BacklogTimelineGateResponse,
+): ContractAudit {
+  const contract = parseContract(bug?.chain_trigger_json);
+  const root = contract.root;
+  const requirements = contractRequirements(root, gate);
+  const inputs = contractInputs(bug, root, requirements.length);
+  const contractGate = gate?.contract_gate;
+  const present = new Set(contractGate?.present_requirement_ids ?? []);
+  const missing = new Set(contractGate?.missing_requirement_ids ?? []);
+  const noGate = gateEvidenceState(response, events).noGate;
+  return {
+    contract,
+    inputs,
+    events,
+    requirements: requirements.map((requirement) => {
+      const evidence = events
+        .map((event, index) => contractEvidenceMatch(event, index, requirement.id))
+        .filter((item): item is ContractEvidenceMatch => Boolean(item));
+      const evidenceStatuses = evidence.map((item) => item.status);
+      let status: ContractEvidenceStatus = "missing";
+      if (response?.applicable === false) status = "not_applicable";
+      else if (evidenceStatuses.includes("passed")) status = "passed";
+      else if (evidenceStatuses.includes("failed")) status = "failed";
+      else if (evidenceStatuses.includes("bypassed")) status = "bypassed";
+      else if (evidenceStatuses.includes("inferred")) status = "inferred";
+      else if (missing.has(requirement.id)) status = "missing";
+      else if (present.has(requirement.id)) status = "inferred";
+      else if (!requirement.required && noGate) status = "not_applicable";
+      return {
+        ...requirement,
+        status,
+        coarse: status === "inferred" || evidence.some((item) => item.status === "inferred"),
+        evidence,
+      };
+    }),
+  };
+}
+
+function parseContract(value: BacklogBug["chain_trigger_json"] | undefined): ParsedContract {
+  if (value == null || value === "") {
+    return { valid: true, empty: true, error: "", root: {}, rawForDisplay: "missing" };
+  }
+  if (typeof value === "object") {
+    const root = contractRoot(asRecord(value));
+    return { valid: true, empty: Object.keys(root).length === 0, error: "", root, rawForDisplay: value };
+  }
+  const text = String(value).trim();
+  if (!text) return { valid: true, empty: true, error: "", root: {}, rawForDisplay: "missing" };
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { valid: false, empty: false, error: "Contract JSON parsed but is not an object.", root: {}, rawForDisplay: text };
+    }
+    const root = contractRoot(parsed as Record<string, unknown>);
+    return { valid: true, empty: Object.keys(root).length === 0, error: "", root, rawForDisplay: text };
+  } catch (error) {
+    return { valid: false, empty: false, error: `Invalid contract JSON: ${error instanceof Error ? error.message : String(error)}`, root: {}, rawForDisplay: text };
+  }
+}
+
+function contractRoot(value: Record<string, unknown>): Record<string, unknown> {
+  const parallel = asRecord(value.parallel_contract);
+  return Object.keys(parallel).length > 0 ? parallel : value;
+}
+
+function contractInputs(bug: BacklogBug | null, root: Record<string, unknown>, requirementCount: number): ContractInputItem[] {
+  const criteria = listFrom(bug?.acceptance_criteria);
+  const targetFiles = listFrom(bug?.target_files);
+  const testFiles = listFrom(bug?.test_files);
+  const requiredDocs = listFrom(bug?.required_docs);
+  return [
+    { label: "template", value: stringField(root, "template_id") || "none", mono: true },
+    { label: "instance", value: stringField(root, "contract_instance_id") || bug?.bug_id || "none", mono: true },
+    { label: "mode", value: stringField(root, "mode") || "unspecified" },
+    { label: "required evidence", value: String(requirementCount), mono: true },
+    { label: "acceptance criteria", value: String(criteria.length), mono: true },
+    { label: "target files", value: targetFiles.length ? targetFiles.slice(0, 3).join(", ") : "none", mono: true },
+    { label: "test files", value: testFiles.length ? testFiles.slice(0, 3).join(", ") : "none", mono: true },
+    { label: "required docs", value: requiredDocs.length ? requiredDocs.slice(0, 3).join(", ") : "none", mono: true },
+  ];
+}
+
+function contractRequirements(root: Record<string, unknown>, gate?: MfCloseTimelineGate): Omit<ContractRequirementAudit, "status" | "coarse" | "evidence">[] {
+  const requirements: Omit<ContractRequirementAudit, "status" | "coarse" | "evidence">[] = [];
+  const add = (item: unknown, required: boolean, source: string) => {
+    const normalized = normalizeContractRequirement(item, required, source);
+    if (!normalized) return;
+    const existing = requirements.find((requirement) => requirement.id === normalized.id);
+    if (existing) {
+      existing.required = existing.required || normalized.required;
+      if (!existing.description && normalized.description) existing.description = normalized.description;
+      if (!existing.label && normalized.label) existing.label = normalized.label;
+      return;
+    }
+    requirements.push(normalized);
+  };
+  listUnknown(root.evidence_requirements).forEach((item) => add(item, true, "evidence_requirements"));
+  listUnknown(root.required_evidence).forEach((item) => add(item, true, "required_evidence"));
+  const integration = asRecord(root.integration);
+  listUnknown(integration.required_evidence).forEach((item) => add(item, true, "integration.required_evidence"));
+  listUnknown(integration.optional_evidence).forEach((item) => add(item, false, "integration.optional_evidence"));
+  const e2e = asRecord(root.e2e_contract);
+  if (e2e.required) add({ ...e2e, id: e2e.requirement_id || "e2e", label: e2e.label || "E2E" }, true, "e2e_contract");
+  const testPolicy = asRecord(root.test_scenario_policy);
+  listUnknown(testPolicy.required_evidence_ids).forEach((id) => add({ id, kind: "test_scenario_policy" }, true, "test_scenario_policy"));
+  for (const id of gate?.contract_gate?.required_requirement_ids ?? []) add({ id }, true, "contract_gate.required_requirement_ids");
+  for (const id of gate?.contract_gate?.optional_requirement_ids ?? []) add({ id }, false, "contract_gate.optional_requirement_ids");
+  return requirements;
+}
+
+function normalizeContractRequirement(
+  item: unknown,
+  defaultRequired: boolean,
+  source: string,
+): Omit<ContractRequirementAudit, "status" | "coarse" | "evidence"> | null {
+  const record = asRecord(item);
+  const rawId =
+    stringField(record, "id") ||
+    stringField(record, "requirement_id") ||
+    stringField(record, "contract_requirement_id") ||
+    stringField(record, "name") ||
+    (typeof item === "string" ? item : "");
+  const id = rawId.trim();
+  if (!id) return null;
+  return {
+    id,
+    label: stringField(record, "label") || id,
+    description: stringField(record, "description") || stringField(record, "summary") || stringField(record, "command"),
+    required: typeof record.required === "boolean" ? record.required : defaultRequired,
+    source,
+  };
+}
+
+function contractEvidenceMatch(event: TaskTimelineEvent, index: number, requirementId: string): ContractEvidenceMatch | null {
+  const ids = evidenceRequirementIds(event);
+  if (!ids.includes(requirementId)) return null;
+  const explicitStatus = explicitContractEvidenceStatus(event, requirementId);
+  const status = explicitStatus || contractStatusForEvent(event);
+  return {
+    key: `${timelineEventKey(event, index)}:${requirementId}`,
+    label: event.event_type || event.event_kind || `event ${index + 1}`,
+    actor: event.actor || "",
+    eventKind: event.event_kind || "",
+    phase: event.phase || "",
+    status,
+    artifacts: timelineEventArtifacts(event),
+  };
+}
+
+function explicitContractEvidenceStatus(event: TaskTimelineEvent, requirementId: string): ContractEvidenceStatus | "" {
+  const containers = [asRecord(event.payload), asRecord(event.verification), asRecord(event.artifact_refs)];
+  for (const container of containers) {
+    for (const item of listUnknown(container.contract_evidence)) {
+      const evidence = asRecord(item);
+      const ids = [
+        stringField(evidence, "requirement_id"),
+        stringField(evidence, "id"),
+        ...listUnknown(evidence.requirement_ids).map(String),
+      ].filter(Boolean);
+      if (ids.includes(requirementId)) return normalizeContractStatus(stringField(evidence, "status") || event.status || event.decision || "");
+    }
+  }
+  return "";
+}
+
+function contractStatusForEvent(event: TaskTimelineEvent): ContractEvidenceStatus {
+  if (isCoarseOrInferredEvent(event) && dagStatusForEvent(event) === "unknown") return "inferred";
+  const status = normalizeContractStatus(event.status || event.decision || event.event_type || event.event_kind || "");
+  if (status) return status;
+  return eventHasConcreteArtifacts(event) ? "inferred" : "missing";
+}
+
+function normalizeContractStatus(value: string): ContractEvidenceStatus | "" {
+  const text = value.toLowerCase();
+  if (!text) return "";
+  if (text.includes("bypass") || text.includes("waive")) return "bypassed";
+  if (text.includes("fail") || text.includes("block") || text.includes("reject")) return "failed";
+  if (text.includes("infer") || text.includes("coarse")) return "inferred";
+  if (text.includes("not_applicable") || text.includes("not applicable") || text.includes("n/a")) return "not_applicable";
+  if (text.includes("pass") || text.includes("accept") || text.includes("success") || text.includes("ok") || text.includes("succeed")) return "passed";
+  return "";
+}
+
+function contractStatusClass(status: ContractEvidenceStatus): string {
+  if (status === "passed") return "status-complete";
+  if (status === "failed" || status === "missing") return "status-failed";
+  if (status === "bypassed" || status === "inferred") return "status-running";
+  return "status-unknown";
+}
+
+function gateEvidenceState(response: BacklogTimelineGateResponse | undefined, events: TaskTimelineEvent[]): { noGate: boolean; reason: string } {
+  if (!response) return { noGate: true, reason: "No gate precheck response has been loaded." };
+  const gate = response.timeline_gate;
+  if (response.applicable === false) {
+    return { noGate: true, reason: response.reason || "Backlog/stage is not subject to the MF close gate." };
+  }
+  const contractEvents = gate?.contract_gate?.evidence_events ?? [];
+  const presentKinds = gate?.present_event_kinds ?? [];
+  const ignored = gate?.ignored_required_events ?? [];
+  const hasRealEvidence = events.length > 0 || contractEvents.length > 0 || presentKinds.length > 0 || ignored.length > 0;
+  return {
+    noGate: !hasRealEvidence,
+    reason: hasRealEvidence ? "" : "No gate run recorded and no timeline evidence is available yet.",
+  };
 }
 
 function GateSummary({
@@ -952,7 +1404,7 @@ export function buildBacklogParallelTimelineFixtureDagForTest(): TimelineDag {
   );
 }
 
-function buildTimelineDag(bug: BacklogBug | null, events: TaskTimelineEvent[], gate?: MfCloseTimelineGate): TimelineDag {
+function buildTimelineDag(bug: BacklogBug | null, events: TaskTimelineEvent[], _gate?: MfCloseTimelineGate): TimelineDag {
   const phaseLabels: string[] = [];
   const nodes: TimelineDagNode[] = [];
   const orderedEvents = events.slice().sort(compareTimelineEvents);
@@ -973,49 +1425,7 @@ function buildTimelineDag(bug: BacklogBug | null, events: TaskTimelineEvent[], g
     nodes.push(eventNode);
   });
 
-  const contract = gate?.contract_gate;
-  const required = stableUnique(contract?.required_requirement_ids ?? []);
-  const present = new Set(contract?.present_requirement_ids ?? []);
-  const missing = new Set(contract?.missing_requirement_ids ?? []);
-  for (const requirementId of required) {
-    const matching = orderedEvents.find((event) => evidenceRequirementIds(event).includes(requirementId));
-    const status = missing.has(requirementId) ? "missing" : matching ? dagStatusForEvent(matching) : present.has(requirementId) ? "passed" : "missing";
-    nodes.push({
-      id: `requirement:${requirementId}`,
-      label: requirementId,
-      lane: status === "retry" ? "retry" : "gate",
-      phase: "contract",
-      phaseIndex: phaseIndex(phaseLabels, "contract"),
-      status,
-      statusLabel: status,
-      event: matching,
-      inferred: !matching,
-      syntheticPayload: { requirement_id: requirementId, source: "contract_gate" },
-      syntheticVerification: {
-        requirement_id: requirementId,
-        present: present.has(requirementId),
-        missing: missing.has(requirementId),
-        no_false_evidence_gate: status !== "passed" || !missing.has(requirementId),
-      },
-    });
-  }
-
-  for (const eventKind of gate?.missing_event_kinds ?? []) {
-    nodes.push({
-      id: `missing-kind:${eventKind}`,
-      label: eventKind,
-      lane: "gate",
-      phase: "close gate",
-      phaseIndex: phaseIndex(phaseLabels, "close gate"),
-      status: "missing",
-      statusLabel: "missing",
-      inferred: false,
-      syntheticPayload: { required_event_kind: eventKind, source: "mf_close_gate" },
-      syntheticVerification: { missing: true, present: false },
-    });
-  }
-
-  const laneOrder = ["observer", "worker", "frontend", "backend", "verification", "browser_audit", "gate", "merge", "retry"];
+  const laneOrder = timelineLaneOrder(events);
   const laneMap = new Map<string, TimelineDagNode[]>();
   for (const node of nodes) {
     laneMap.set(node.lane, [...(laneMap.get(node.lane) ?? []), node]);
@@ -1071,7 +1481,7 @@ function evidenceRequirementIds(event: TaskTimelineEvent): string[] {
   const verification = asRecord(event.verification);
   const contractEvidence = listUnknown(verification.contract_evidence).flatMap((item) => {
     const record = asRecord(item);
-    return [stringField(record, "requirement_id"), ...listUnknown(record.requirement_ids).map(String)];
+    return [stringField(record, "requirement_id"), stringField(record, "id"), ...listUnknown(record.requirement_ids).map(String)];
   });
   return stableUnique([
     stringField(payload, "requirement_id"),
@@ -1154,15 +1564,79 @@ interface TimelineLane {
   latestActor: string;
   latestCommit: string;
   blockers: string[];
+  deemphasized?: boolean;
+}
+
+interface EventArtifactSummary {
+  graphTraceIds: string[];
+  nodeIds: string[];
+  nodeTitles: string[];
+  changedFiles: string[];
+  tests: string[];
+  docs: string[];
+  screenshots: string[];
+  prechecks: string[];
+}
+
+interface ImplementationStep {
+  id: string;
+  label: string;
+  events: TaskTimelineEvent[];
+  status: TimelineDagNode["status"];
+  artifacts: EventArtifactSummary;
+  coarse: boolean;
+}
+
+interface ParsedContract {
+  valid: boolean;
+  empty: boolean;
+  error: string;
+  root: Record<string, unknown>;
+  rawForDisplay: unknown;
+}
+
+interface ContractInputItem {
+  label: string;
+  value: string;
+  mono?: boolean;
+}
+
+interface ContractAudit {
+  contract: ParsedContract;
+  inputs: ContractInputItem[];
+  requirements: ContractRequirementAudit[];
+  events: TaskTimelineEvent[];
+}
+
+interface ContractRequirementAudit {
+  id: string;
+  label: string;
+  description: string;
+  required: boolean;
+  source: string;
+  status: ContractEvidenceStatus;
+  coarse: boolean;
+  evidence: ContractEvidenceMatch[];
+}
+
+interface ContractEvidenceMatch {
+  key: string;
+  label: string;
+  actor: string;
+  eventKind: string;
+  phase: string;
+  status: ContractEvidenceStatus;
+  artifacts: EventArtifactSummary;
 }
 
 function buildTimelineLanes(events: TaskTimelineEvent[]): TimelineLane[] {
   const grouped = new Map<string, TaskTimelineEvent[]>();
+  const hasImplementation = events.some(isImplementationEvidenceEvent);
   for (const event of events) {
     const lane = laneLabelForEvent(event);
     grouped.set(lane, [...(grouped.get(lane) ?? []), event]);
   }
-  const preferred = ["observer", "backend", "frontend", "gate", "merge", "verification"];
+  const preferred = timelineLaneOrder(events);
   return Array.from(grouped.entries())
     .map(([id, laneEvents]) => {
       const latest = laneEvents[laneEvents.length - 1] ?? {};
@@ -1174,6 +1648,7 @@ function buildTimelineLanes(events: TaskTimelineEvent[]): TimelineLane[] {
         latestActor: latest.actor || "",
         latestCommit: latest.commit_sha || "",
         blockers: laneEvents.flatMap((event) => eventBlockers(event)).filter(Boolean),
+        deemphasized: hasImplementation && id === "observer",
       };
     })
     .sort((a, b) => {
@@ -1182,6 +1657,238 @@ function buildTimelineLanes(events: TaskTimelineEvent[]): TimelineLane[] {
       if (ai !== bi) return (ai < 0 ? preferred.length : ai) - (bi < 0 ? preferred.length : bi);
       return a.id.localeCompare(b.id);
     });
+}
+
+function timelineLaneOrder(events: TaskTimelineEvent[]): string[] {
+  const hasImplementation = events.some(isImplementationEvidenceEvent);
+  if (!hasImplementation) return ["observer", "worker", "frontend", "backend", "verification", "browser_audit", "gate", "merge", "retry"];
+  return ["worker", "implementation", "frontend", "backend", "verification", "browser_audit", "merge", "gate", "retry", "observer"];
+}
+
+function buildImplementationSteps(events: TaskTimelineEvent[]): ImplementationStep[] {
+  const grouped = new Map<string, TaskTimelineEvent[]>();
+  for (const event of events) {
+    const stepIds = implementationStepIdsForEvent(event);
+    for (const stepId of stepIds) {
+      grouped.set(stepId, [...(grouped.get(stepId) ?? []), event]);
+    }
+  }
+  const order = [
+    "test_scenario",
+    "graph_lookup",
+    "inspected_nodes",
+    "code_changes",
+    "docs_config_tests",
+    "verification",
+    "browser_evidence",
+    "merge_reconcile",
+    "implementation",
+  ];
+  return Array.from(grouped.entries())
+    .map(([id, stepEvents]) => {
+      const artifacts = mergeArtifactSummaries(stepEvents.map(timelineEventArtifacts));
+      return {
+        id,
+        label: implementationStepLabel(id),
+        events: stepEvents,
+        status: aggregateTimelineStatus(stepEvents),
+        artifacts,
+        coarse: !stepEvents.some((event) => eventHasConcreteArtifacts(event)) || stepEvents.some(isCoarseOrInferredEvent),
+      };
+    })
+    .sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+}
+
+function implementationStepIdsForEvent(event: TaskTimelineEvent): string[] {
+  if (!isImplementationEvidenceEvent(event) && !eventHasConcreteArtifacts(event)) return [];
+  const text = eventSearchText(event);
+  const artifacts = timelineEventArtifacts(event);
+  const steps: string[] = [];
+  if (text.includes("scenario") || text.includes("test_scenario")) steps.push("test_scenario");
+  if (artifacts.graphTraceIds.length > 0 || text.includes("graph query") || text.includes("graph_lookup")) steps.push("graph_lookup");
+  if (artifacts.nodeIds.length > 0 || artifacts.nodeTitles.length > 0 || text.includes("inspect node")) steps.push("inspected_nodes");
+  if (artifacts.changedFiles.some((file) => !isDocConfigOrTestFile(file))) steps.push("code_changes");
+  if (
+    artifacts.changedFiles.some(isDocConfigOrTestFile) ||
+    artifacts.tests.length > 0 ||
+    artifacts.docs.length > 0 ||
+    text.includes("doc") ||
+    text.includes("config")
+  ) {
+    steps.push("docs_config_tests");
+  }
+  if (event.event_kind === "verification" || artifacts.tests.length > 0 || artifacts.prechecks.length > 0 || text.includes("verify")) {
+    steps.push("verification");
+  }
+  if (artifacts.screenshots.length > 0 || text.includes("browser") || text.includes("playwright") || text.includes("screenshot")) {
+    steps.push("browser_evidence");
+  }
+  if (text.includes("merge") || text.includes("reconcile")) steps.push("merge_reconcile");
+  if (steps.length === 0 && isImplementationEvidenceEvent(event)) steps.push("implementation");
+  return stableUnique(steps);
+}
+
+function implementationStepLabel(stepId: string): string {
+  if (stepId === "test_scenario") return "Test scenario";
+  if (stepId === "graph_lookup") return "Graph lookup/query";
+  if (stepId === "inspected_nodes") return "Inspected nodes";
+  if (stepId === "code_changes") return "Code changes";
+  if (stepId === "docs_config_tests") return "Docs/config/tests";
+  if (stepId === "verification") return "Verification";
+  if (stepId === "browser_evidence") return "Browser evidence";
+  if (stepId === "merge_reconcile") return "Merge/reconcile";
+  return "Implementation";
+}
+
+function aggregateTimelineStatus(events: TaskTimelineEvent[]): TimelineDagNode["status"] {
+  const statuses = events.map(dagStatusForEvent);
+  if (statuses.includes("failed")) return "failed";
+  if (statuses.includes("bypassed")) return "bypassed";
+  if (statuses.includes("retry")) return "retry";
+  if (statuses.includes("running")) return "running";
+  if (statuses.includes("passed")) return "passed";
+  return "unknown";
+}
+
+function isImplementationEvidenceEvent(event: TaskTimelineEvent): boolean {
+  const lane = laneLabelForEvent(event);
+  const text = eventSearchText(event);
+  if (lane === "observer" && !text.includes("implementation")) return false;
+  return (
+    event.event_kind === "implementation" ||
+    lane === "worker" ||
+    lane === "implementation" ||
+    lane === "frontend" ||
+    lane === "backend" ||
+    text.includes("mf_sub") ||
+    text.includes("subagent") ||
+    text.includes("changed_files") ||
+    text.includes("tests_run")
+  );
+}
+
+function isObserverOrchestrationEvent(event: TaskTimelineEvent): boolean {
+  const actor = (event.actor || "").toLowerCase();
+  const payload = asRecord(event.payload);
+  const text = eventSearchText(event);
+  return (
+    actor.includes("observer") &&
+    !eventHasConcreteArtifacts(event) &&
+    (Boolean(payload.orchestration) || text.includes("dispatch") || text.includes("planning") || text.includes("supervision"))
+  );
+}
+
+function isCoarseOrInferredEvent(event: TaskTimelineEvent): boolean {
+  const payload = asRecord(event.payload);
+  const verification = asRecord(event.verification);
+  const text = eventSearchText(event);
+  return Boolean(payload.inferred || payload.coarse || verification.inferred || verification.coarse || text.includes("inferred") || text.includes("coarse"));
+}
+
+function eventHasConcreteArtifacts(event: TaskTimelineEvent): boolean {
+  const artifacts = timelineEventArtifacts(event);
+  return Object.values(artifacts).some((values) => values.length > 0);
+}
+
+function timelineEventArtifacts(event: TaskTimelineEvent): EventArtifactSummary {
+  const payload = asRecord(event.payload);
+  const verification = asRecord(event.verification);
+  const artifactRefs = asRecord(event.artifact_refs);
+  const containers = [payload, verification, artifactRefs];
+  const changedFiles = collectStringFields(containers, ["changed_files", "files", "target_files", "modified_files", "updated_files"]);
+  const tests = collectStringFields(containers, ["tests_run", "tests_written", "test_files", "test_commands", "commands", "command"]);
+  const docs = stableUnique([
+    ...collectStringFields(containers, ["docs_updated", "docs", "required_docs", "config_files"]),
+    ...changedFiles.filter(isDocConfigOrTestFile),
+  ]);
+  return {
+    graphTraceIds: collectStringFields(containers, ["graph_trace_ids", "graph_query_trace_ids", "query_trace_ids", "trace_ids"]),
+    nodeIds: collectStringFields(containers, ["node_id", "node_ids", "target_node_id", "target_node_ids", "inspected_node_ids"]),
+    nodeTitles: collectStringFields(containers, ["node_title", "node_titles", "target_node_title", "target_node_titles", "inspected_node_titles"]),
+    changedFiles,
+    tests,
+    docs,
+    screenshots: collectStringFields(containers, ["screenshot", "screenshots", "browser_screenshot", "browser_screenshots"]),
+    prechecks: collectStringFields(containers, ["precheck", "prechecks", "precheck_results", "gate", "gate_result", "gate_results", "checks"]),
+  };
+}
+
+function emptyArtifactSummary(): EventArtifactSummary {
+  return {
+    graphTraceIds: [],
+    nodeIds: [],
+    nodeTitles: [],
+    changedFiles: [],
+    tests: [],
+    docs: [],
+    screenshots: [],
+    prechecks: [],
+  };
+}
+
+function mergeArtifactSummaries(summaries: EventArtifactSummary[]): EventArtifactSummary {
+  const merged = emptyArtifactSummary();
+  for (const summary of summaries) {
+    merged.graphTraceIds.push(...summary.graphTraceIds);
+    merged.nodeIds.push(...summary.nodeIds);
+    merged.nodeTitles.push(...summary.nodeTitles);
+    merged.changedFiles.push(...summary.changedFiles);
+    merged.tests.push(...summary.tests);
+    merged.docs.push(...summary.docs);
+    merged.screenshots.push(...summary.screenshots);
+    merged.prechecks.push(...summary.prechecks);
+  }
+  return {
+    graphTraceIds: stableUnique(merged.graphTraceIds),
+    nodeIds: stableUnique(merged.nodeIds),
+    nodeTitles: stableUnique(merged.nodeTitles),
+    changedFiles: stableUnique(merged.changedFiles),
+    tests: stableUnique(merged.tests),
+    docs: stableUnique(merged.docs),
+    screenshots: stableUnique(merged.screenshots),
+    prechecks: stableUnique(merged.prechecks),
+  };
+}
+
+function collectStringFields(containers: Record<string, unknown>[], keys: string[]): string[] {
+  const values: string[] = [];
+  for (const container of containers) {
+    for (const key of keys) {
+      values.push(...stringsFromUnknown(container[key]));
+    }
+  }
+  return stableUnique(values.map((value) => value.trim()).filter(Boolean));
+}
+
+function stringsFromUnknown(value: unknown): string[] {
+  if (value == null || value === "") return [];
+  if (Array.isArray(value)) return value.flatMap(stringsFromUnknown);
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const preferred = ["id", "node_id", "title", "path", "file", "command", "status", "result", "trace_id", "url"];
+    const direct = preferred.flatMap((key) => stringsFromUnknown(record[key]));
+    if (direct.length > 0) return direct;
+    return Object.entries(record).slice(0, 4).map(([key, item]) => `${key}: ${compactUnknown(item)}`);
+  }
+  return [String(value)];
+}
+
+function isDocConfigOrTestFile(file: string): boolean {
+  return /(^|\/)(docs?|agent\/tests|frontend\/dashboard\/scripts)\//.test(file) || /\.(md|mdx|json|ya?ml|toml|ini|cfg|config|mjs)$/.test(file);
+}
+
+function eventSearchText(event: TaskTimelineEvent): string {
+  return [
+    event.event_type,
+    event.event_kind,
+    event.phase,
+    event.actor,
+    event.status,
+    event.decision,
+    JSON.stringify(event.payload ?? {}),
+    JSON.stringify(event.verification ?? {}),
+    JSON.stringify(event.artifact_refs ?? {}),
+  ].join(" ").toLowerCase();
 }
 
 function laneLabelForEvent(event: TaskTimelineEvent): string {
