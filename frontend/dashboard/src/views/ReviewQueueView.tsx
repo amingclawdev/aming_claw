@@ -9,8 +9,10 @@ import type {
   FeedbackQueueResponse,
 } from "../types";
 import RetryFeedbackModal from "../components/RetryFeedbackModal";
+import { api } from "../lib/api";
 
 interface Props {
+  projectId: string;
   feedback: FeedbackQueueResponse;
   assetImpactReminders?: AssetImpactRemindersResponse;
   assetImpactReminderEvents?: Record<string, AssetImpactReminderEventsResponse>;
@@ -30,6 +32,18 @@ interface Props {
 
 type CategoryFilter = "ALL" | string;
 type AssetKindFilter = "ALL" | string;
+
+interface GraphStructureLifecycle {
+  subtype?: string;
+  subtype_label?: string;
+  changed_files?: string[];
+  file_count?: number;
+  requires_commit?: boolean;
+  update_graph_after_commit?: boolean;
+  reasons?: string[];
+  evidence?: Array<{ feedback_id?: string; reason?: string; intent?: string; subtype?: string; paths?: string[] }>;
+  message?: string;
+}
 
 interface CategoryTab {
   id: CategoryFilter;
@@ -73,6 +87,7 @@ const ASSET_IMPACT_LANE = "asset_impact";
 // re-enqueue /semantic/jobs. The next AI run sees the rationale in
 // review_feedback alongside the rejected proposal in existing_semantic.
 export default function ReviewQueueView({
+  projectId,
   feedback,
   assetImpactReminders,
   assetImpactReminderEvents,
@@ -90,6 +105,7 @@ export default function ReviewQueueView({
   const empty = groups.length === 0 && s.raw_count === 0;
   const assetImpactCount = assetImpactReminderList(assetImpactReminders).length;
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [graphLifecycleResult, setGraphLifecycleResult] = useState<string>("");
   const [retryGroup, setRetryGroup] = useState<FeedbackQueueGroup | null>(null);
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("ALL");
   const categoryTabs = useMemo(
@@ -113,6 +129,55 @@ export default function ReviewQueueView({
         action,
         `${group.target_type} ${group.target_id}`,
       );
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const dispatchGraphLifecycle = async (group: FeedbackQueueGroup, action: "cancel" | "commit") => {
+    const lifecycle = graphStructureLifecycle(group);
+    const files = lifecycle?.changed_files ?? [];
+    if (!files.length) return;
+    const reason = window.prompt(
+      action === "cancel"
+        ? "Cancel reason. This will enter the Review Queue audit trail and discard only the listed operation files."
+        : "Apply reason. This will commit only the listed operation files; graph changes become effective after Update Graph.",
+      "",
+    );
+    if (reason === null) return;
+    const confirmed = window.confirm(
+      action === "cancel"
+        ? `Cancel this graph-structure operation and discard ${files.length} operation file${files.length === 1 ? "" : "s"}?`
+        : `Commit/apply ${files.length} graph-structure operation file${files.length === 1 ? "" : "s"}? Run Update Graph after commit before trusting the binding.`,
+    );
+    if (!confirmed) return;
+    setBusyId(group.queue_id);
+    setGraphLifecycleResult("");
+    try {
+      let resultMessage = "";
+      let commit = "";
+      if (action === "cancel") {
+        const result = await api.cancelGraphStructureFeedbackFor(projectId, feedback.snapshot_id, {
+          feedback_ids: group.feedback_ids,
+          files,
+          reason: reason.trim() || "dashboard graph-structure cancel",
+        });
+        resultMessage = result.message ?? "";
+      } else {
+        const result = await api.commitGraphStructureFeedbackFor(projectId, feedback.snapshot_id, {
+          feedback_ids: group.feedback_ids,
+          files,
+          reason: reason.trim() || "dashboard graph-structure commit/apply",
+          message: "manual fix: apply graph-structure review operation",
+        });
+        commit = result.commit?.commit_sha?.slice(0, 12) ?? "";
+        resultMessage = result.message ?? "";
+      }
+      setGraphLifecycleResult(
+        `${action === "commit" ? "Committed" : "Cancelled"} ${files.length} file${files.length === 1 ? "" : "s"}${commit ? ` at ${commit}` : ""}. ${resultMessage}`,
+      );
+    } catch (err) {
+      setGraphLifecycleResult(err instanceof Error ? err.message : String(err));
     } finally {
       setBusyId(null);
     }
@@ -171,6 +236,11 @@ export default function ReviewQueueView({
           {filteredGroups.length} shown
         </span>
       </div>
+      {graphLifecycleResult ? (
+        <div className="inline-error" style={{ marginTop: -4 }}>
+          {graphLifecycleResult}
+        </div>
+      ) : null}
 
       <div className="section">
         <div className="section-head">
@@ -210,6 +280,7 @@ export default function ReviewQueueView({
                   const gateReady = gate?.ready;
                   const isNode = g.target_type === "node";
                   const category = groupCategory(g);
+                  const lifecycle = graphStructureLifecycle(g);
                   return (
                     <tr key={g.queue_id}>
                       <td>
@@ -250,6 +321,7 @@ export default function ReviewQueueView({
                       </td>
                       <td>
                         <div>{g.representative_issue}</div>
+                        {lifecycle ? <GraphStructureLifecycleSummary lifecycle={lifecycle} /> : null}
                         <div style={{ fontSize: 10.5, color: "var(--ink-400)", marginTop: 2 }}>
                           <span className="mono">{g.representative_feedback_id}</span>
                           {g.feedback_ids.length > 1 ? ` +${g.feedback_ids.length - 1} more` : ""}
@@ -274,32 +346,53 @@ export default function ReviewQueueView({
                         <span className="mono">{g.priority ?? "—"}</span>
                       </td>
                       <td>
-                        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                          <button
-                            className="action-btn"
-                            disabled={busy || !onDecide}
-                            title="POST /feedback/decision action=accept_semantic_enrichment"
-                            onClick={() => dispatch(g, "accept_semantic_enrichment")}
-                          >
-                            {busy ? "…" : "Accept"}
-                          </button>
-                          <button
-                            className="action-btn"
-                            disabled={busy || !onRetry || !isNode}
-                            title="Reject + re-enqueue with rationale (next AI run sees the prior proposal + your reason)"
-                            onClick={() => setRetryGroup(g)}
-                          >
-                            Retry
-                          </button>
-                          <button
-                            className="action-btn action-btn-danger"
-                            disabled={busy || !onDecide}
-                            title="POST /feedback/decision action=reject_false_positive"
-                            onClick={() => dispatch(g, "reject_false_positive")}
-                          >
-                            {busy ? "…" : "Reject"}
-                          </button>
-                        </div>
+                        {lifecycle ? (
+                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                            <button
+                              className="action-btn"
+                              disabled={busy || !lifecycle.changed_files?.length}
+                              title="Commit/apply only the graph-structure operation files; run Update Graph after commit."
+                              onClick={() => dispatchGraphLifecycle(g, "commit")}
+                            >
+                              {busy ? "…" : "Apply"}
+                            </button>
+                            <button
+                              className="action-btn action-btn-danger"
+                              disabled={busy || !lifecycle.changed_files?.length}
+                              title="Cancel by discarding only the graph-structure operation files."
+                              onClick={() => dispatchGraphLifecycle(g, "cancel")}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                            <button
+                              className="action-btn"
+                              disabled={busy || !onDecide}
+                              title={`POST /feedback/decision action=${acceptActionForCategory(category)}`}
+                              onClick={() => dispatch(g, acceptActionForCategory(category))}
+                            >
+                              {busy ? "…" : "Accept"}
+                            </button>
+                            <button
+                              className="action-btn"
+                              disabled={busy || !onRetry || !isNode}
+                              title="Reject + re-enqueue with rationale (next AI run sees the prior proposal + your reason)"
+                              onClick={() => setRetryGroup(g)}
+                            >
+                              Retry
+                            </button>
+                            <button
+                              className="action-btn action-btn-danger"
+                              disabled={busy || !onDecide}
+                              title="POST /feedback/decision action=reject_false_positive"
+                              onClick={() => dispatch(g, "reject_false_positive")}
+                            >
+                              {busy ? "…" : "Reject"}
+                            </button>
+                          </div>
+                        )}
                       </td>
                     </tr>
                   );
@@ -751,6 +844,49 @@ function formatEvidenceValue(value: unknown): string {
   return text.length > 48 ? `${text.slice(0, 45)}...` : text;
 }
 
+function GraphStructureLifecycleSummary({ lifecycle }: { lifecycle: GraphStructureLifecycle }) {
+  const files = lifecycle.changed_files ?? [];
+  const reason = lifecycle.reasons?.[0] ?? lifecycle.evidence?.find((item) => item.reason)?.reason ?? "";
+  const intent = lifecycle.evidence?.find((item) => item.intent)?.intent ?? "";
+  return (
+    <div style={{ marginTop: 6, display: "grid", gap: 4 }}>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+        <span className="status-badge status-pending">{lifecycle.subtype_label ?? titleize(lifecycle.subtype ?? "graph_structure")}</span>
+        <span className="mono" style={{ color: "var(--ink-500)" }}>
+          {files.length} file{files.length === 1 ? "" : "s"}
+        </span>
+        {lifecycle.update_graph_after_commit ? (
+          <span className="mono" style={{ color: "var(--ink-500)" }}>
+            Update Graph required
+          </span>
+        ) : null}
+      </div>
+      {files.length ? (
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+          {files.slice(0, 4).map((file) => (
+            <span key={file} className="mono" style={{ fontSize: 10.5, color: "var(--ink-600)" }}>
+              {file}
+            </span>
+          ))}
+          {files.length > 4 ? <span className="mono">+{files.length - 4}</span> : null}
+        </div>
+      ) : null}
+      {reason || intent || lifecycle.message ? (
+        <div style={{ fontSize: 10.5, color: "var(--ink-400)" }}>
+          {[intent, reason, lifecycle.message].filter(Boolean).join(" · ")}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function graphStructureLifecycle(group: FeedbackQueueGroup): GraphStructureLifecycle | null {
+  const value = (group as FeedbackQueueGroup & { graph_structure_lifecycle?: GraphStructureLifecycle })
+    .graph_structure_lifecycle;
+  if (!value || !Array.isArray(value.changed_files)) return null;
+  return value;
+}
+
 function buildCategoryTabs(feedback: FeedbackQueueResponse): CategoryTab[] {
   const groups = feedback.groups ?? [];
   const summary = feedback.summary;
@@ -858,6 +994,22 @@ function categoryBadgeClass(category: string): string {
   if (category === "graph_structure" || category === "graph_enrich_config") return "status-pending";
   if (category === "status_observation") return "status-not-queued";
   return "status-unknown";
+}
+
+function acceptActionForCategory(category: string): string {
+  if (category === "backlog") return "accept_project_improvement";
+  if (category === "status_observation") return "keep_status_observation";
+  if (
+    category === "graph_structure" ||
+    category === "graph_enrich_config" ||
+    category === "asset_binding" ||
+    category === "doc_binding" ||
+    category === "test_binding" ||
+    category === "config_binding"
+  ) {
+    return "accept_graph_correction";
+  }
+  return "accept_semantic_enrichment";
 }
 
 function stableUnique(values: string[]): string[] {

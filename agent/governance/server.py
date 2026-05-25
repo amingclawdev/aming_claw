@@ -6208,6 +6208,7 @@ def handle_graph_governance_snapshot_graph_structure_ops_dry_run(ctx: RequestCon
     from . import graph_snapshot_store as store
     from .errors import ValidationError
     from .graph_structure_ops import dry_run_graph_structure_ops
+    from . import reconcile_feedback
 
     conn = get_connection(project_id)
     try:
@@ -6286,6 +6287,32 @@ def handle_graph_governance_snapshot_graph_structure_ops_accept(ctx: RequestCont
             root,
             dry_run["gate"]["normalized_hint_index"]["hints"],
         )
+        review_feedback = {}
+        if write_result["written_count"] > 0:
+            paths = [
+                str(item.get("path") or "")
+                for item in write_result.get("written") or []
+                if isinstance(item, dict) and item.get("path")
+            ]
+            review_feedback = reconcile_feedback.submit_feedback_item(
+                project_id,
+                snapshot_id,
+                feedback_kind=reconcile_feedback.KIND_GRAPH_CORRECTION,
+                issue={
+                    "type": "ai_graph_structure_governance_hint",
+                    "reason": str(body.get("reason") or "AI graph-structure proposal wrote source hints."),
+                    "summary": "AI graph-structure proposal is waiting for commit/apply and Update Graph.",
+                    "target": snapshot_id,
+                    "target_type": "snapshot",
+                    "paths": paths,
+                    "changed_files": paths,
+                    "intent": str(body.get("intent") or body.get("operator_intent") or "apply_ai_graph_structure_proposal"),
+                    "priority": "P1",
+                },
+                actor=str(body.get("actor") or "dashboard_user"),
+                source_round="graph_structure_lifecycle",
+            )
+            conn.commit()
         status_code = 200 if write_result["ok"] else 422
         return status_code, {
             "ok": write_result["ok"],
@@ -6301,6 +6328,12 @@ def handle_graph_governance_snapshot_graph_structure_ops_accept(ctx: RequestCont
             "gate": dry_run["gate"],
             "projection": dry_run["projection"],
             "write": write_result,
+            "review_queue": {
+                "queued": bool(review_feedback),
+                "feedback": (review_feedback.get("items") or [{}])[0] if review_feedback else {},
+                "operation_type": "graph_structure",
+                "subtype": "ai_graph_structure",
+            },
         }
     finally:
         conn.close()
@@ -6317,6 +6350,7 @@ def handle_graph_governance_snapshot_graph_structure_ops_ai_output(ctx: RequestC
     from . import graph_snapshot_store as store
     from .errors import ValidationError
     from .graph_structure_ops import run_graph_structure_ai_output_pipeline
+    from . import reconcile_feedback
 
     conn = get_connection(project_id)
     try:
@@ -6339,6 +6373,33 @@ def handle_graph_governance_snapshot_graph_structure_ops_ai_output(ctx: RequestC
             project_root=root,
             operation_contract=_graph_structure_ops_contract_for_project(project_id, body),
         )
+        review_feedback = {}
+        write_result = result.get("write") if isinstance(result.get("write"), dict) else {}
+        if mode in {"accept", "apply", "write"} and int(write_result.get("written_count") or 0) > 0:
+            paths = [
+                str(item.get("path") or "")
+                for item in write_result.get("written") or []
+                if isinstance(item, dict) and item.get("path")
+            ]
+            review_feedback = reconcile_feedback.submit_feedback_item(
+                project_id,
+                snapshot_id,
+                feedback_kind=reconcile_feedback.KIND_GRAPH_CORRECTION,
+                issue={
+                    "type": "ai_graph_structure_governance_hint",
+                    "reason": str(body.get("reason") or "AI graph-structure output wrote source hints."),
+                    "summary": "AI graph-structure output is waiting for commit/apply and Update Graph.",
+                    "target": snapshot_id,
+                    "target_type": "snapshot",
+                    "paths": paths,
+                    "changed_files": paths,
+                    "intent": str(body.get("intent") or body.get("operator_intent") or "apply_ai_graph_structure_output"),
+                    "priority": "P1",
+                },
+                actor=str(body.get("actor") or "dashboard_user"),
+                source_round="graph_structure_lifecycle",
+            )
+            conn.commit()
         status_code = 200 if result["ok"] else 422
         return status_code, {
             "ok": result["ok"],
@@ -6346,6 +6407,12 @@ def handle_graph_governance_snapshot_graph_structure_ops_ai_output(ctx: RequestC
             "snapshot_id": snapshot_id,
             "commit_sha": snapshot.get("commit_sha", ""),
             "dry_run": mode in {"dry_run", "dryrun", "preview"},
+            "review_queue": {
+                "queued": bool(review_feedback),
+                "feedback": (review_feedback.get("items") or [{}])[0] if review_feedback else {},
+                "operation_type": "graph_structure",
+                "subtype": "ai_graph_structure",
+            },
             **result,
         }
     finally:
@@ -6360,6 +6427,7 @@ def handle_graph_governance_graph_enrich_config_ops_ai_output(ctx: RequestContex
     mode = str(body.get("mode") or "dry_run").strip().lower().replace("-", "_")
     raw_output = body.get("ai_output") if "ai_output" in body else body.get("output")
     from .graph_enrich_config_ops import run_graph_enrich_config_ai_output_pipeline
+    from . import reconcile_feedback
 
     conn = get_connection(project_id)
     try:
@@ -6370,12 +6438,45 @@ def handle_graph_governance_graph_enrich_config_ops_ai_output(ctx: RequestContex
             mode=mode,
             project_root=root,
         )
+        review_feedback = {}
+        write_result = result.get("write") if isinstance(result.get("write"), dict) else {}
+        if mode in {"accept", "apply", "write"} and int(write_result.get("written_count") or 0) > 0:
+            config_path = str(write_result.get("config_path") or "")
+            rel_path = config_path
+            try:
+                rel_path = str(Path(config_path).resolve().relative_to(root.resolve()))
+            except Exception:
+                pass
+            review_feedback = reconcile_feedback.submit_feedback_item(
+                project_id,
+                "project",
+                feedback_kind=reconcile_feedback.KIND_GRAPH_CORRECTION,
+                issue={
+                    "type": "graph_enrich_config_patch",
+                    "reason": str(body.get("reason") or "AI graph enrich config proposal wrote project config."),
+                    "summary": "Graph enrich config proposal is waiting for commit/apply and Update Graph.",
+                    "target": "graph_enrich_config",
+                    "target_type": "config",
+                    "paths": [rel_path],
+                    "intent": str(body.get("intent") or body.get("operator_intent") or "apply_ai_graph_enrich_config"),
+                    "priority": "P1",
+                },
+                actor=str(body.get("actor") or "dashboard_user"),
+                source_round="graph_structure_lifecycle",
+            )
+            conn.commit()
         status_code = 200 if result["ok"] else 422
         return status_code, {
             "ok": result["ok"],
             "project_id": project_id,
             "project_root": str(root),
             "dry_run": mode in {"dry_run", "dryrun", "preview"},
+            "review_queue": {
+                "queued": bool(review_feedback),
+                "feedback": (review_feedback.get("items") or [{}])[0] if review_feedback else {},
+                "operation_type": "graph_structure",
+                "subtype": "ai_graph_structure",
+            },
             **result,
         }
     finally:
@@ -7074,6 +7175,68 @@ def _create_file_hygiene_event(
         _raise_graph_api_validation(exc)
 
 
+def _file_hygiene_graph_structure_issue(prepared: dict, *, source: str) -> dict[str, Any]:
+    action = str(prepared.get("action") or "").strip().lower()
+    path = str(prepared.get("path") or "").strip()
+    row = prepared.get("file") if isinstance(prepared.get("file"), dict) else {}
+    file_kind = str(row.get("file_kind") or "asset").strip().lower()
+    kind_prefix = file_kind if file_kind in {"doc", "test", "config"} else "asset"
+    issue_type = {
+        "attach_to_node": f"{kind_prefix}_binding_addition",
+        "remove_binding": f"{kind_prefix}_binding_removal",
+        "delete_candidate": "asset_delete_candidate",
+        "create_node": "graph_structure_create_node",
+    }.get(action, "asset_binding_review")
+    user_text = str((prepared.get("payload") or {}).get("user_text") or "").strip()
+    default_reason = {
+        "attach_to_node": "Operator requested asset binding review.",
+        "remove_binding": "Operator requested asset binding removal review.",
+        "delete_candidate": "Operator requested asset delete-candidate review.",
+        "create_node": "Operator requested graph node creation review.",
+    }.get(action, "Operator requested graph-structure review.")
+    return {
+        "type": issue_type,
+        "category": "asset_binding",
+        "reason": user_text or default_reason,
+        "summary": "Asset graph-structure action is waiting for Review Queue apply/cancel.",
+        "target": str(prepared.get("target_id") or prepared.get("target_node_id") or path),
+        "target_type": kind_prefix,
+        "paths": [path],
+        "intent": action,
+        "source": source,
+        "operation_type": "graph_structure",
+        "subtype": "asset_binding",
+        "file_backed": False,
+        "priority": "P1" if action in {"remove_binding", "delete_candidate"} else "P2",
+        "requires_human_signoff": action in {"remove_binding", "delete_candidate"},
+    }
+
+
+def _queue_file_hygiene_review_feedback(
+    reconcile_feedback,
+    project_id: str,
+    snapshot_id: str,
+    prepared: dict,
+    *,
+    source: str,
+) -> dict[str, Any]:
+    action = str(prepared.get("action") or "").strip().lower()
+    if action not in {"attach_to_node", "remove_binding", "delete_candidate", "create_node"}:
+        return {}
+    return reconcile_feedback.submit_feedback_item(
+        project_id,
+        snapshot_id,
+        feedback_kind=(
+            reconcile_feedback.KIND_NEEDS_OBSERVER_DECISION
+            if action in {"remove_binding", "delete_candidate"}
+            else reconcile_feedback.KIND_GRAPH_CORRECTION
+        ),
+        issue=_file_hygiene_graph_structure_issue(prepared, source=source),
+        actor=str(prepared.get("actor") or "dashboard_user"),
+        source_round="graph_structure_lifecycle",
+    )
+
+
 def _resolve_project_child(root: Path, rel_path: str) -> Path:
     from .errors import ValidationError
 
@@ -7150,6 +7313,7 @@ def handle_graph_governance_snapshot_file_hygiene_hint_attach(ctx: RequestContex
     from . import graph_snapshot_store as store
     from .errors import ValidationError
     from .governance_hints import parse_governance_hint_bindings, render_governance_hint_comment
+    from . import reconcile_feedback
 
     conn = get_connection(project_id)
     try:
@@ -7209,6 +7373,24 @@ def handle_graph_governance_snapshot_file_hygiene_hint_attach(ctx: RequestContex
                 and hint.field in {"secondary", "test", "config"}
                 and hint.target_node_id == node_id
             ):
+                feedback = reconcile_feedback.submit_feedback_item(
+                    project_id,
+                    snapshot_id,
+                    feedback_kind=reconcile_feedback.KIND_GRAPH_CORRECTION,
+                    issue={
+                        "type": "governance_hint_attach",
+                        "reason": str(body.get("reason") or "Governance hint already present for asset binding."),
+                        "summary": "Governance hint asset binding is waiting for commit/apply and Update Graph.",
+                        "target": node_id,
+                        "target_type": role,
+                        "paths": [path],
+                        "intent": str(body.get("intent") or body.get("operator_intent") or "attach_asset_to_node"),
+                        "priority": "P2",
+                    },
+                    actor=str(body.get("actor") or "dashboard_user"),
+                    source_round="graph_structure_lifecycle",
+                )
+                conn.commit()
                 return {
                     "ok": True,
                     "project_id": project_id,
@@ -7222,12 +7404,37 @@ def handle_graph_governance_snapshot_file_hygiene_hint_attach(ctx: RequestContex
                     "requires_commit": True,
                     "update_graph_after_commit": True,
                     "message": "Governance hint already exists. Commit the file, then run Update graph.",
+                    "review_queue": {
+                        "queued": True,
+                        "feedback": (feedback.get("items") or [{}])[0],
+                        "operation_type": "graph_structure",
+                        "subtype": "governance_hint",
+                    },
                     "file": row,
                     "target_node": target_node,
                 }
 
         prefix = comment.rstrip() + "\n\n"
         abs_path.write_text(prefix + text, encoding="utf-8")
+        feedback = reconcile_feedback.submit_feedback_item(
+            project_id,
+            snapshot_id,
+            feedback_kind=reconcile_feedback.KIND_GRAPH_CORRECTION,
+            issue={
+                "type": "governance_hint_attach",
+                "reason": str(body.get("reason") or "Operator requested source-controlled asset binding hint."),
+                "summary": "Governance hint asset binding is waiting for commit/apply and Update Graph.",
+                "target": node_id,
+                "target_type": role,
+                "paths": [path],
+                "changed_files": [path],
+                "intent": str(body.get("intent") or body.get("operator_intent") or "attach_asset_to_node"),
+                "priority": "P2",
+            },
+            actor=str(body.get("actor") or "dashboard_user"),
+            source_round="graph_structure_lifecycle",
+        )
+        conn.commit()
         return {
             "ok": True,
             "project_id": project_id,
@@ -7242,6 +7449,12 @@ def handle_graph_governance_snapshot_file_hygiene_hint_attach(ctx: RequestContex
             "update_graph_after_commit": True,
             "message": "Governance hint written. Commit the file, then run Update graph.",
             "hint": comment,
+            "review_queue": {
+                "queued": True,
+                "feedback": (feedback.get("items") or [{}])[0],
+                "operation_type": "graph_structure",
+                "subtype": "governance_hint",
+            },
             "file": row,
             "target_node": target_node,
         }
@@ -7360,6 +7573,7 @@ def handle_graph_governance_snapshot_file_hygiene_action(ctx: RequestContext):
     body = ctx.body
     from . import graph_events
     from . import graph_snapshot_store as store
+    from . import reconcile_feedback
     from .db import sqlite_write_lock
 
     conn = get_connection(project_id)
@@ -7376,6 +7590,13 @@ def handle_graph_governance_snapshot_file_hygiene_action(ctx: RequestContext):
                 prepared,
                 source="file_hygiene_action_api",
             )
+            feedback = _queue_file_hygiene_review_feedback(
+                reconcile_feedback,
+                project_id,
+                snapshot_id,
+                prepared,
+                source="file_hygiene_action_api",
+            )
             conn.commit()
         return 201, {
             "ok": True,
@@ -7383,6 +7604,12 @@ def handle_graph_governance_snapshot_file_hygiene_action(ctx: RequestContext):
             "snapshot_id": snapshot_id,
             "action": prepared["action"],
             "event": event,
+            "review_queue": {
+                "queued": bool(feedback),
+                "feedback": (feedback.get("items") or [{}])[0] if feedback else {},
+                "operation_type": "graph_structure",
+                "subtype": "asset_binding",
+            },
             "file": prepared["file"],
         }
     finally:
@@ -7397,6 +7624,7 @@ def handle_graph_governance_snapshot_file_hygiene_actions_batch(ctx: RequestCont
     body = ctx.body
     from . import graph_events
     from . import graph_snapshot_store as store
+    from . import reconcile_feedback
     from .db import sqlite_write_lock
     from .errors import ValidationError
 
@@ -7426,6 +7654,7 @@ def handle_graph_governance_snapshot_file_hygiene_actions_batch(ctx: RequestCont
             prepared_actions.append(prepared)
 
         events = []
+        feedback_items = []
         with sqlite_write_lock():
             for prepared in prepared_actions:
                 event = _create_file_hygiene_event(
@@ -7437,6 +7666,14 @@ def handle_graph_governance_snapshot_file_hygiene_actions_batch(ctx: RequestCont
                     source="file_hygiene_batch_action_api",
                 )
                 events.append(event)
+                feedback = _queue_file_hygiene_review_feedback(
+                    reconcile_feedback,
+                    project_id,
+                    snapshot_id,
+                    prepared,
+                    source="file_hygiene_batch_action_api",
+                )
+                feedback_items.extend(feedback.get("items") or [])
             conn.commit()
         return 201, {
             "ok": True,
@@ -7444,6 +7681,12 @@ def handle_graph_governance_snapshot_file_hygiene_actions_batch(ctx: RequestCont
             "snapshot_id": snapshot_id,
             "count": len(events),
             "events": events,
+            "review_queue": {
+                "queued": bool(feedback_items),
+                "feedback": feedback_items,
+                "operation_type": "graph_structure",
+                "subtype": "asset_binding",
+            },
             "files": [prepared["file"] for prepared in prepared_actions],
         }
     finally:
@@ -8702,29 +8945,227 @@ def handle_graph_governance_snapshot_feedback_queue(ctx: RequestContext):
     try:
         _require_graph_governance_operator(ctx, conn, "graph-governance.snapshot.feedback.queue")
         snapshot_id = _resolve_graph_snapshot_id(conn, project_id, snapshot_id)
+        queue = reconcile_feedback.build_feedback_review_queue(
+            project_id,
+            snapshot_id,
+            feedback_kind=str(ctx.query.get("feedback_kind") or ctx.query.get("kind") or ""),
+            status=str(ctx.query.get("status") or ""),
+            node_id=str(ctx.query.get("node_id") or ""),
+            source_round=str(ctx.query.get("source_round") or ctx.query.get("feedback_round") or ""),
+            lane=str(ctx.query.get("lane") or ""),
+            group_by=str(ctx.query.get("group_by") or "target"),
+            include_status_observations=_query_bool(ctx.query, "include_status_observations", False),
+            include_resolved=_query_bool(ctx.query, "include_resolved", False),
+            include_claimed=_query_bool(ctx.query, "include_claimed", True),
+            claimable_only=_query_bool(ctx.query, "claimable_only", False),
+            require_current_semantic=_query_bool(ctx.query, "require_current_semantic", False),
+            worker_id=str(ctx.query.get("worker_id") or ""),
+            limit=_query_int(ctx.query, "limit", 100),
+            conn=conn,
+        )
+        _attach_graph_structure_lifecycle_to_feedback_queue(project_id, snapshot_id, queue)
         return {
             "ok": True,
-            **reconcile_feedback.build_feedback_review_queue(
-                project_id,
-                snapshot_id,
-                feedback_kind=str(ctx.query.get("feedback_kind") or ctx.query.get("kind") or ""),
-                status=str(ctx.query.get("status") or ""),
-                node_id=str(ctx.query.get("node_id") or ""),
-                source_round=str(ctx.query.get("source_round") or ctx.query.get("feedback_round") or ""),
-                lane=str(ctx.query.get("lane") or ""),
-                group_by=str(ctx.query.get("group_by") or "target"),
-                include_status_observations=_query_bool(ctx.query, "include_status_observations", False),
-                include_resolved=_query_bool(ctx.query, "include_resolved", False),
-                include_claimed=_query_bool(ctx.query, "include_claimed", True),
-                claimable_only=_query_bool(ctx.query, "claimable_only", False),
-                require_current_semantic=_query_bool(ctx.query, "require_current_semantic", False),
-                worker_id=str(ctx.query.get("worker_id") or ""),
-                limit=_query_int(ctx.query, "limit", 100),
-                conn=conn,
-            ),
+            **queue,
         }
     finally:
         conn.close()
+
+
+def _attach_graph_structure_lifecycle_to_feedback_queue(
+    project_id: str,
+    snapshot_id: str,
+    queue: dict[str, Any],
+) -> None:
+    """Add file-backed graph-structure lifecycle metadata to grouped feedback."""
+    from . import reconcile_feedback
+
+    groups = queue.get("groups")
+    if not isinstance(groups, list):
+        return
+    state = reconcile_feedback.load_feedback_state(project_id, snapshot_id)
+    items = state.get("items") if isinstance(state.get("items"), dict) else {}
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        feedback_ids = [str(item or "") for item in group.get("feedback_ids") or [] if str(item or "")]
+        feedback_items = [dict(items.get(feedback_id) or {}) for feedback_id in feedback_ids]
+        lifecycle = _graph_structure_lifecycle_from_feedback_items(feedback_items)
+        if lifecycle:
+            group["graph_structure_lifecycle"] = lifecycle
+
+
+def _graph_structure_lifecycle_from_feedback_items(items: list[dict[str, Any]]) -> dict[str, Any]:
+    relevant = [item for item in items if _feedback_item_is_graph_structure_lifecycle(item)]
+    if not relevant:
+        return {}
+    files: list[str] = []
+    reasons: list[str] = []
+    evidence: list[dict[str, Any]] = []
+    subtypes: set[str] = set()
+    requires_reconcile = False
+    for item in relevant:
+        files.extend(_feedback_item_changed_files(item))
+        reason = _feedback_item_reason(item)
+        if reason:
+            reasons.append(reason)
+        subtype = _graph_structure_subtype(item)
+        subtypes.add(subtype)
+        if subtype in {"governance_hint", "ai_graph_structure", "asset_binding"}:
+            requires_reconcile = True
+        evidence.append({
+            "feedback_id": item.get("feedback_id", ""),
+            "issue_type": item.get("issue_type", ""),
+            "reason": reason,
+            "intent": _feedback_item_intent(item),
+            "subtype": subtype,
+            "paths": _feedback_item_paths(item),
+        })
+    changed_files = _stable_strings(files)
+    if not changed_files:
+        return {}
+    subtype = "mixed" if len(subtypes) > 1 else next(iter(subtypes), "graph_structure")
+    return {
+        "operation_type": "graph_structure",
+        "subtype": subtype,
+        "subtype_label": {
+            "governance_hint": "Governance Hint",
+            "ai_graph_structure": "AI graph structure",
+            "asset_binding": "Asset binding",
+            "mixed": "Mixed graph structure",
+        }.get(subtype, "Graph structure"),
+        "changed_files": changed_files,
+        "file_count": len(changed_files),
+        "requires_commit": bool(changed_files),
+        "update_graph_after_commit": requires_reconcile,
+        "semantic_lifecycle": "separate",
+        "reasons": _stable_strings(reasons),
+        "evidence": evidence,
+        "supported_actions": ["cancel_graph_structure_operation", "commit_graph_structure_operation"],
+        "message": (
+            "Graph structure file changes become graph truth only after commit/apply and Update Graph/reconcile."
+        ),
+    }
+
+
+def _feedback_item_is_graph_structure_lifecycle(item: dict[str, Any]) -> bool:
+    category_text = " ".join(str(part or "").lower() for part in [
+        item.get("feedback_kind"),
+        item.get("final_feedback_kind"),
+        item.get("target_type"),
+        item.get("issue_type"),
+        item.get("issue"),
+        item.get("suggested_action"),
+        _feedback_item_reason(item),
+        _feedback_item_intent(item),
+        " ".join(_feedback_item_paths(item)),
+    ])
+    return any(token in category_text for token in (
+        "graph_structure",
+        "graph structure",
+        "governance_hint",
+        "governance hint",
+        "graph_enrich_config",
+        "semantic_enrichment_config",
+        "asset binding",
+        "asset_binding",
+        "doc_binding",
+        "test_binding",
+        "config_binding",
+        "typed_relation",
+        "add_relation",
+        "remove_relation",
+        "mount",
+        "attach",
+        "delete",
+        "remove",
+    ))
+
+
+def _graph_structure_subtype(item: dict[str, Any]) -> str:
+    text = " ".join(str(part or "").lower() for part in [
+        item.get("issue_type"),
+        item.get("target_type"),
+        item.get("issue"),
+        item.get("suggested_action"),
+        _feedback_item_reason(item),
+        _feedback_item_intent(item),
+        " ".join(_feedback_item_paths(item)),
+    ])
+    if "governance_hint" in text or "governance hint" in text:
+        return "governance_hint"
+    if (
+        "graph_enrich_config" in text
+        or "semantic_enrichment_config" in text
+        or "registered_action" in text
+        or "registered_function" in text
+        or "predicate" in text
+        or "enricher" in text
+        or "ai mount" in text
+        or "ai attach" in text
+    ):
+        return "ai_graph_structure"
+    if "binding" in text or "mount" in text or "attach" in text or "asset" in text:
+        return "asset_binding"
+    return "graph_structure"
+
+
+def _feedback_item_reason(item: dict[str, Any]) -> str:
+    evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+    raw = evidence.get("raw_issue") if isinstance(evidence.get("raw_issue"), dict) else {}
+    return str(item.get("reason") or evidence.get("reason") or raw.get("reason") or "").strip()
+
+
+def _feedback_item_intent(item: dict[str, Any]) -> str:
+    evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+    raw = evidence.get("raw_issue") if isinstance(evidence.get("raw_issue"), dict) else {}
+    return str(
+        item.get("intent")
+        or item.get("operator_intent")
+        or raw.get("intent")
+        or raw.get("operator_intent")
+        or item.get("suggested_action")
+        or ""
+    ).strip()
+
+
+def _feedback_item_paths(item: dict[str, Any]) -> list[str]:
+    evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+    raw = evidence.get("raw_issue") if isinstance(evidence.get("raw_issue"), dict) else {}
+    values: list[Any] = []
+    for source in (item, raw, evidence):
+        if not isinstance(source, dict):
+            continue
+        for key in ("paths", "path", "target_files", "changed_files", "modified_files", "files", "file_path"):
+            value = source.get(key)
+            if value:
+                values.extend(value if isinstance(value, list) else [value])
+    return _stable_strings(str(value or "").replace("\\", "/").strip("/") for value in values)
+
+
+def _feedback_item_changed_files(item: dict[str, Any]) -> list[str]:
+    evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+    raw = evidence.get("raw_issue") if isinstance(evidence.get("raw_issue"), dict) else {}
+    values: list[Any] = []
+    for source in (item, raw, evidence):
+        if not isinstance(source, dict):
+            continue
+        for key in ("changed_files", "modified_files"):
+            value = source.get(key)
+            if value:
+                values.extend(value if isinstance(value, list) else [value])
+    return _stable_strings(str(value or "").replace("\\", "/").strip("/") for value in values)
+
+
+def _stable_strings(values: Any) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        text = str(value or "").strip()
+        if text and text not in seen:
+            out.append(text)
+            seen.add(text)
+    return out
 
 
 @route("POST", "/api/graph-governance/{project_id}/snapshots/{snapshot_id}/feedback/classify")
@@ -10072,6 +10513,266 @@ def handle_graph_governance_snapshot_feedback_graph_patches(ctx: RequestContext)
         return {"ok": True, **result}
     finally:
         conn.close()
+
+
+@route("POST", "/api/graph-governance/{project_id}/snapshots/{snapshot_id}/feedback/graph-structure/cancel")
+def handle_graph_governance_snapshot_feedback_graph_structure_cancel(ctx: RequestContext):
+    """Cancel a Review Queue graph-structure operation by discarding only its files."""
+    project_id = ctx.get_project_id()
+    snapshot_id = ctx.path_params["snapshot_id"]
+    body = ctx.body
+    from . import reconcile_feedback
+    from .errors import ValidationError
+
+    conn = get_connection(project_id)
+    try:
+        _require_graph_governance_operator(ctx, conn, "graph-governance.snapshot.feedback.graph-structure.cancel")
+        snapshot_id = _resolve_graph_snapshot_id(conn, project_id, snapshot_id)
+        root = _graph_governance_project_root(project_id, body)
+        feedback_ids = _feedback_ids_from_body(body)
+        lifecycle = _graph_structure_lifecycle_for_feedback_ids(project_id, snapshot_id, feedback_ids)
+        files = _operation_files_from_body_or_lifecycle(body, lifecycle)
+        if not files:
+            raise ValidationError("graph-structure operation has no file changes to cancel")
+        guard = _graph_structure_dirty_guard(root, files)
+        if guard["blocked"]:
+            return 409, {
+                "ok": False,
+                "project_id": project_id,
+                "snapshot_id": snapshot_id,
+                "status": "blocked_dirty_overlap",
+                "operation_type": "graph_structure",
+                "feedback_ids": feedback_ids,
+                "changed_files": files,
+                "dirty_guard": guard,
+                "message": "Cancel refused because the operation files include dirty state that cannot be safely discarded file-by-file.",
+            }
+        discarded = _git_discard_files(root, files)
+        decision = reconcile_feedback.decide_feedback_items(
+            project_id,
+            snapshot_id,
+            feedback_ids,
+            action="reject_false_positive",
+            actor=str(body.get("actor") or "dashboard_user"),
+            rationale=str(body.get("reason") or body.get("rationale") or "Cancelled graph-structure file operation."),
+        )
+        conn.commit()
+        return {
+            "ok": True,
+            "project_id": project_id,
+            "snapshot_id": snapshot_id,
+            "status": "cancelled",
+            "operation_type": "graph_structure",
+            "feedback_ids": feedback_ids,
+            "changed_files": files,
+            "discarded_files": discarded,
+            "dirty_guard": guard,
+            "decision": decision,
+            "message": "Graph-structure operation cancelled; only the operation files were discarded.",
+        }
+    finally:
+        conn.close()
+
+
+@route("POST", "/api/graph-governance/{project_id}/snapshots/{snapshot_id}/feedback/graph-structure/commit")
+def handle_graph_governance_snapshot_feedback_graph_structure_commit(ctx: RequestContext):
+    """Commit/apply Review Queue graph-structure file changes without staging unrelated files."""
+    project_id = ctx.get_project_id()
+    snapshot_id = ctx.path_params["snapshot_id"]
+    body = ctx.body
+    from . import reconcile_feedback
+    from .errors import ValidationError
+
+    conn = get_connection(project_id)
+    try:
+        _require_graph_governance_operator(ctx, conn, "graph-governance.snapshot.feedback.graph-structure.commit")
+        snapshot_id = _resolve_graph_snapshot_id(conn, project_id, snapshot_id)
+        root = _graph_governance_project_root(project_id, body)
+        feedback_ids = _feedback_ids_from_body(body)
+        lifecycle = _graph_structure_lifecycle_for_feedback_ids(project_id, snapshot_id, feedback_ids)
+        files = _operation_files_from_body_or_lifecycle(body, lifecycle)
+        if not files:
+            raise ValidationError("graph-structure operation has no file changes to commit")
+        guard = _graph_structure_dirty_guard(root, files, commit=True)
+        if guard["blocked"]:
+            return 409, {
+                "ok": False,
+                "project_id": project_id,
+                "snapshot_id": snapshot_id,
+                "status": "blocked_dirty_overlap",
+                "operation_type": "graph_structure",
+                "feedback_ids": feedback_ids,
+                "changed_files": files,
+                "dirty_guard": guard,
+                "message": "Commit/apply refused because dirty scope includes unsafe overlap with the operation files.",
+            }
+        commit = _git_commit_files(
+            root,
+            files,
+            message=str(body.get("message") or ""),
+            bug_id=str(body.get("bug_id") or body.get("backlog_id") or ""),
+            actor=str(body.get("actor") or "dashboard_user"),
+        )
+        decision = reconcile_feedback.decide_feedback_items(
+            project_id,
+            snapshot_id,
+            feedback_ids,
+            action="accept_graph_correction",
+            actor=str(body.get("actor") or "dashboard_user"),
+            rationale=str(body.get("reason") or body.get("rationale") or "Committed graph-structure Review Queue operation."),
+        )
+        conn.commit()
+        return {
+            "ok": True,
+            "project_id": project_id,
+            "snapshot_id": snapshot_id,
+            "status": "committed",
+            "operation_type": "graph_structure",
+            "feedback_ids": feedback_ids,
+            "changed_files": files,
+            "dirty_guard": guard,
+            "commit": commit,
+            "decision": decision,
+            "requires_update_graph": bool(lifecycle.get("update_graph_after_commit", True)),
+            "message": "Committed graph-structure files. Run Update Graph/reconcile before treating bindings or structure as graph truth.",
+        }
+    finally:
+        conn.close()
+
+
+def _feedback_ids_from_body(body: dict[str, Any]) -> list[str]:
+    raw = body.get("feedback_ids")
+    if raw is None:
+        raw = [body.get("feedback_id")]
+    if isinstance(raw, str):
+        ids = [raw]
+    elif isinstance(raw, list):
+        ids = [str(item or "") for item in raw]
+    else:
+        raise ValidationError("feedback_ids must be a string or list")
+    ids = [item.strip() for item in ids if item.strip()]
+    if not ids:
+        raise ValidationError("at least one feedback_id is required")
+    return ids
+
+
+def _graph_structure_lifecycle_for_feedback_ids(
+    project_id: str,
+    snapshot_id: str,
+    feedback_ids: list[str],
+) -> dict[str, Any]:
+    from . import reconcile_feedback
+
+    state = reconcile_feedback.load_feedback_state(project_id, snapshot_id)
+    items = state.get("items") if isinstance(state.get("items"), dict) else {}
+    selected = [dict(items.get(feedback_id) or {}) for feedback_id in feedback_ids]
+    missing = [feedback_id for feedback_id, item in zip(feedback_ids, selected) if not item]
+    if missing:
+        raise ValidationError(f"feedback item not found: {', '.join(missing)}")
+    lifecycle = _graph_structure_lifecycle_from_feedback_items(selected)
+    if not lifecycle:
+        raise ValidationError("feedback item is not a graph-structure file operation")
+    return lifecycle
+
+
+def _operation_files_from_body_or_lifecycle(body: dict[str, Any], lifecycle: dict[str, Any]) -> list[str]:
+    requested = _stable_strings(body.get("changed_files") or body.get("files") or body.get("paths") or [])
+    lifecycle_files = _stable_strings(lifecycle.get("changed_files") or [])
+    if requested:
+        unknown = [path for path in requested if path not in lifecycle_files]
+        if unknown:
+            raise ValidationError(f"requested files are not part of the operation: {', '.join(unknown)}")
+        return requested
+    return lifecycle_files
+
+
+def _git_status_entries(root: Path) -> dict[str, str]:
+    proc = subprocess.run(
+        ["git", "status", "--porcelain", "-z", "--untracked-files=all"],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=False,
+    )
+    if proc.returncode != 0:
+        raise GovernanceError("git_status_failed", proc.stderr.decode("utf-8", "replace"), 500)
+    parts = [part for part in proc.stdout.decode("utf-8", "replace").split("\0") if part]
+    out: dict[str, str] = {}
+    i = 0
+    while i < len(parts):
+        entry = parts[i]
+        status = entry[:2]
+        path = entry[3:].strip()
+        if status.startswith("R") or status.startswith("C"):
+            i += 1
+            if i < len(parts):
+                path = parts[i].strip()
+        if path:
+            out[path] = status
+        i += 1
+    return out
+
+
+def _graph_structure_dirty_guard(root: Path, files: list[str], *, commit: bool = False) -> dict[str, Any]:
+    statuses = _git_status_entries(root)
+    operation_status = {path: statuses[path] for path in files if path in statuses}
+    unrelated_dirty = sorted(path for path in statuses if path not in files)
+    unsafe = {
+        path: status
+        for path, status in operation_status.items()
+        if status in {"MM", "AM", "RM", "UU", "AA", "DD"} or status.startswith("U") or status.endswith("D")
+    }
+    if commit:
+        missing_dirty = [path for path in files if path not in statuses]
+        if missing_dirty:
+            unsafe.update({path: "clean" for path in missing_dirty})
+    return {
+        "ok": not unsafe,
+        "blocked": bool(unsafe),
+        "operation_status": operation_status,
+        "unsafe_overlap": unsafe,
+        "unrelated_dirty_files": unrelated_dirty,
+        "unrelated_dirty_count": len(unrelated_dirty),
+        "policy": "commit_only_operation_files" if commit else "discard_only_operation_files",
+    }
+
+
+def _git_discard_files(root: Path, files: list[str]) -> list[str]:
+    statuses = _git_status_entries(root)
+    discarded: list[str] = []
+    tracked = [path for path in files if statuses.get(path) != "??"]
+    untracked = [path for path in files if statuses.get(path) == "??"]
+    if tracked:
+        subprocess.run(["git", "restore", "--staged", "--worktree", "--", *tracked], cwd=root, check=True)
+        discarded.extend(tracked)
+    for path in untracked:
+        target = _resolve_project_child(root, path)
+        if target.exists() and target.is_file():
+            target.unlink()
+            discarded.append(path)
+    return discarded
+
+
+def _git_commit_files(root: Path, files: list[str], *, message: str, bug_id: str, actor: str) -> dict[str, Any]:
+    subprocess.run(["git", "add", "--", *files], cwd=root, check=True)
+    diff = subprocess.run(["git", "diff", "--cached", "--quiet", "--", *files], cwd=root, check=False)
+    if diff.returncode == 0:
+        raise ValidationError("operation files have no staged changes to commit")
+    subject = message.strip().splitlines()[0] if message.strip() else "manual fix: apply graph-structure review operation"
+    commit_message = "\n".join([
+        subject,
+        "",
+        f"Actor: {actor}",
+        "Review-Queue-Operation: graph_structure",
+        "Requires-Update-Graph: true",
+        "",
+        "Chain-Source-Stage: observer-hotfix",
+        "Chain-Project: aming-claw",
+        f"Chain-Bug-Id: {bug_id or 'UI-REVIEW-QUEUE-GRAPH-STRUCTURE-LIFECYCLE-20260525'}",
+    ])
+    subprocess.run(["git", "commit", "-m", commit_message, "--", *files], cwd=root, check=True)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True)
+    return {"commit_sha": head.stdout.strip(), "files": files}
 
 
 @route("POST", "/api/graph-governance/{project_id}/snapshots/{snapshot_id}/feedback/review-queue")

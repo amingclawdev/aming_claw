@@ -1936,6 +1936,231 @@ def test_feedback_decision_accept_graph_correction_creates_patch(conn, monkeypat
     assert listed["patches"][0]["patch_json"]["edge"]["dst"] == "L7.2"
 
 
+def test_feedback_queue_surfaces_graph_structure_lifecycle_files(conn, monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        server,
+        "_require_graph_governance_operator",
+        lambda _ctx, _conn, _action: {"role": "observer"},
+    )
+    snapshot = store.create_graph_snapshot(
+        conn,
+        PID,
+        snapshot_id="graph-structure-review",
+        commit_sha="head",
+        snapshot_kind="full",
+        graph_json=_graph(),
+    )
+    conn.commit()
+
+    reconcile_feedback.submit_feedback_item(
+        PID,
+        snapshot["snapshot_id"],
+        feedback_kind=reconcile_feedback.KIND_GRAPH_CORRECTION,
+        issue={
+            "type": "governance_hint_attach",
+            "reason": "operator candidate binding",
+            "summary": "Attach doc with governance hint.",
+            "target": "L7.1",
+            "target_type": "doc",
+            "paths": ["docs/runtime.md"],
+            "changed_files": ["docs/runtime.md"],
+            "intent": "bind_candidate_doc",
+        },
+        actor="observer",
+        source_round="graph_structure_lifecycle",
+    )
+
+    queue = server.handle_graph_governance_snapshot_feedback_queue(
+        _ctx({"project_id": PID, "snapshot_id": snapshot["snapshot_id"]})
+    )
+
+    group = queue["groups"][0]
+    lifecycle = group["graph_structure_lifecycle"]
+    assert group["category"] in {"asset_binding", "doc_binding", "graph_structure"}
+    assert lifecycle["subtype"] == "governance_hint"
+    assert lifecycle["changed_files"] == ["docs/runtime.md"]
+    assert lifecycle["requires_commit"] is True
+    assert lifecycle["update_graph_after_commit"] is True
+    assert lifecycle["semantic_lifecycle"] == "separate"
+
+
+def test_graph_structure_cancel_discards_only_operation_files(conn, monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        server,
+        "_require_graph_governance_operator",
+        lambda _ctx, _conn, _action: {"role": "observer"},
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+    (repo / "docs").mkdir()
+    (repo / "docs/runtime.md").write_text("before\n", encoding="utf-8")
+    (repo / "other.txt").write_text("keep\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=repo, check=True, capture_output=True, text=True)
+    (repo / "docs/runtime.md").write_text("after\n", encoding="utf-8")
+    (repo / "other.txt").write_text("keep dirty\n", encoding="utf-8")
+    snapshot = store.create_graph_snapshot(
+        conn,
+        PID,
+        snapshot_id="graph-structure-cancel",
+        commit_sha="head",
+        snapshot_kind="full",
+        graph_json=_graph(),
+    )
+    conn.commit()
+    submitted = reconcile_feedback.submit_feedback_item(
+        PID,
+        snapshot["snapshot_id"],
+        feedback_kind=reconcile_feedback.KIND_GRAPH_CORRECTION,
+        issue={
+            "type": "governance_hint_attach",
+            "reason": "operator candidate binding",
+            "summary": "Attach doc with governance hint.",
+            "target": "L7.1",
+            "target_type": "doc",
+            "paths": ["docs/runtime.md"],
+            "changed_files": ["docs/runtime.md"],
+        },
+        actor="observer",
+        source_round="graph_structure_lifecycle",
+    )
+    feedback_id = submitted["items"][0]["feedback_id"]
+
+    result = server.handle_graph_governance_snapshot_feedback_graph_structure_cancel(
+        _ctx(
+            {"project_id": PID, "snapshot_id": snapshot["snapshot_id"]},
+            method="POST",
+            body={"project_root": str(repo), "feedback_ids": [feedback_id]},
+        )
+    )
+
+    assert result["status"] == "cancelled"
+    assert result["discarded_files"] == ["docs/runtime.md"]
+    assert (repo / "docs/runtime.md").read_text(encoding="utf-8") == "before\n"
+    assert (repo / "other.txt").read_text(encoding="utf-8") == "keep dirty\n"
+
+
+def test_graph_structure_cancel_refuses_unsafe_overlap(conn, monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        server,
+        "_require_graph_governance_operator",
+        lambda _ctx, _conn, _action: {"role": "observer"},
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+    (repo / "docs").mkdir()
+    (repo / "docs/runtime.md").write_text("before\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=repo, check=True, capture_output=True, text=True)
+    (repo / "docs/runtime.md").write_text("staged\n", encoding="utf-8")
+    subprocess.run(["git", "add", "docs/runtime.md"], cwd=repo, check=True)
+    (repo / "docs/runtime.md").write_text("unstaged\n", encoding="utf-8")
+    snapshot = store.create_graph_snapshot(
+        conn,
+        PID,
+        snapshot_id="graph-structure-overlap",
+        commit_sha="head",
+        snapshot_kind="full",
+        graph_json=_graph(),
+    )
+    conn.commit()
+    submitted = reconcile_feedback.submit_feedback_item(
+        PID,
+        snapshot["snapshot_id"],
+        feedback_kind=reconcile_feedback.KIND_GRAPH_CORRECTION,
+        issue={
+            "type": "governance_hint_attach",
+            "summary": "Attach doc with governance hint.",
+            "target": "L7.1",
+            "target_type": "doc",
+            "paths": ["docs/runtime.md"],
+            "changed_files": ["docs/runtime.md"],
+        },
+        actor="observer",
+        source_round="graph_structure_lifecycle",
+    )
+    feedback_id = submitted["items"][0]["feedback_id"]
+
+    status, result = server.handle_graph_governance_snapshot_feedback_graph_structure_cancel(
+        _ctx(
+            {"project_id": PID, "snapshot_id": snapshot["snapshot_id"]},
+            method="POST",
+            body={"project_root": str(repo), "feedback_ids": [feedback_id]},
+        )
+    )
+
+    assert status == 409
+    assert result["status"] == "blocked_dirty_overlap"
+    assert result["dirty_guard"]["unsafe_overlap"] == {"docs/runtime.md": "MM"}
+
+
+def test_graph_structure_commit_stages_only_operation_files(conn, monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        server,
+        "_require_graph_governance_operator",
+        lambda _ctx, _conn, _action: {"role": "observer"},
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+    (repo / "docs").mkdir()
+    (repo / "docs/runtime.md").write_text("before\n", encoding="utf-8")
+    (repo / "other.txt").write_text("keep\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=repo, check=True, capture_output=True, text=True)
+    (repo / "docs/runtime.md").write_text("after\n", encoding="utf-8")
+    (repo / "other.txt").write_text("keep dirty\n", encoding="utf-8")
+    snapshot = store.create_graph_snapshot(
+        conn,
+        PID,
+        snapshot_id="graph-structure-commit",
+        commit_sha="head",
+        snapshot_kind="full",
+        graph_json=_graph(),
+    )
+    conn.commit()
+    submitted = reconcile_feedback.submit_feedback_item(
+        PID,
+        snapshot["snapshot_id"],
+        feedback_kind=reconcile_feedback.KIND_GRAPH_CORRECTION,
+        issue={
+            "type": "governance_hint_attach",
+            "summary": "Attach doc with governance hint.",
+            "target": "L7.1",
+            "target_type": "doc",
+            "paths": ["docs/runtime.md"],
+            "changed_files": ["docs/runtime.md"],
+        },
+        actor="observer",
+        source_round="graph_structure_lifecycle",
+    )
+    feedback_id = submitted["items"][0]["feedback_id"]
+
+    result = server.handle_graph_governance_snapshot_feedback_graph_structure_commit(
+        _ctx(
+            {"project_id": PID, "snapshot_id": snapshot["snapshot_id"]},
+            method="POST",
+            body={"project_root": str(repo), "feedback_ids": [feedback_id], "actor": "observer"},
+        )
+    )
+
+    assert result["status"] == "committed"
+    assert result["commit"]["commit_sha"]
+    show = subprocess.run(["git", "show", "--name-only", "--format=", "HEAD"], cwd=repo, check=True, capture_output=True, text=True)
+    assert show.stdout.strip().splitlines() == ["docs/runtime.md"]
+    status = subprocess.run(["git", "status", "--short"], cwd=repo, check=True, capture_output=True, text=True)
+    assert status.stdout.strip() == "M other.txt"
+    assert result["requires_update_graph"] is True
+
+
 def test_graph_governance_active_alias_resolves_for_nodes_and_edges(conn):
     snapshot = store.create_graph_snapshot(
         conn,
@@ -4645,6 +4870,10 @@ def test_graph_governance_file_hygiene_actions_create_auditable_events(conn, mon
     assert attached["event"]["target_id"] == "L7.1"
     assert attached["event"]["payload"]["files"] == ["docs/orphan.md"]
     assert attached["event"]["payload"]["destructive_mutation_performed"] is False
+    assert attached["review_queue"]["queued"] is True
+    assert attached["review_queue"]["operation_type"] == "graph_structure"
+    assert attached["review_queue"]["subtype"] == "asset_binding"
+    assert attached["review_queue"]["feedback"]["issue_type"] == "doc_binding_addition"
 
     status, remove_binding = server.handle_graph_governance_snapshot_file_hygiene_action(
         _ctx(
@@ -4666,6 +4895,27 @@ def test_graph_governance_file_hygiene_actions_create_auditable_events(conn, mon
     assert remove_binding["event"]["risk_level"] == "high"
     assert remove_binding["event"]["payload"]["target_node_id"] == "L7.1"
     assert remove_binding["event"]["payload"]["destructive_mutation_performed"] is False
+    assert remove_binding["review_queue"]["queued"] is True
+    assert remove_binding["review_queue"]["feedback"]["requires_human_signoff"] is True
+    assert remove_binding["review_queue"]["feedback"]["evidence"]["raw_issue"]["paths"] == ["docs/orphan.md"]
+    assert "changed_files" not in remove_binding["review_queue"]["feedback"]["evidence"]["raw_issue"]
+
+    queue = server.handle_graph_governance_snapshot_feedback_queue(
+        _ctx(
+            {"project_id": PID, "snapshot_id": snapshot["snapshot_id"]},
+            query={"include_status_observations": "true"},
+        )
+    )
+    binding_groups = [
+        group for group in queue["groups"] if group["category"] in {"doc_binding", "asset_binding"}
+    ]
+    assert binding_groups
+    assert any(
+        "docs/orphan.md" in str(group.get("target_id") or group.get("representative_issue") or "")
+        or "docs/orphan.md" in str(group.get("feedback_ids") or "")
+        for group in binding_groups
+    )
+    assert all("graph_structure_lifecycle" not in group for group in binding_groups)
 
     with pytest.raises(ValidationError, match="confirm_delete_candidate"):
         server.handle_graph_governance_snapshot_file_hygiene_action(
@@ -4943,6 +5193,8 @@ def test_graph_governance_file_hygiene_batch_actions_create_auditable_events(con
     assert result["events"][0]["target_id"] == "L7.1"
     assert result["events"][1]["risk_level"] == "high"
     assert result["events"][1]["payload"]["destructive_mutation_performed"] is False
+    assert result["review_queue"]["queued"] is True
+    assert len(result["review_queue"]["feedback"]) == 2
     persisted = graph_events.list_events(conn, PID, snapshot["snapshot_id"])
     assert [event["evidence"]["source"] for event in persisted] == [
         "file_hygiene_batch_action_api",

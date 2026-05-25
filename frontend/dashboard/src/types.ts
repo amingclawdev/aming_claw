@@ -368,6 +368,27 @@ export interface FeedbackQueueGroup {
   confidence?: number;
   created_at?: string;
   updated_at?: string;
+  graph_structure_lifecycle?: {
+    operation_type?: string;
+    subtype?: string;
+    subtype_label?: string;
+    changed_files?: string[];
+    file_count?: number;
+    requires_commit?: boolean;
+    update_graph_after_commit?: boolean;
+    semantic_lifecycle?: string;
+    reasons?: string[];
+    evidence?: Array<{
+      feedback_id?: string;
+      issue_type?: string;
+      reason?: string;
+      intent?: string;
+      subtype?: string;
+      paths?: string[];
+    }>;
+    supported_actions?: string[];
+    message?: string;
+  };
 }
 
 export interface FeedbackQueueSummary {
@@ -951,5 +972,11 @@ export interface FileHygieneActionResponse {
   snapshot_id: string;
   action: string;
   event: Record<string, unknown>;
+  review_queue?: {
+    queued?: boolean;
+    feedback?: Record<string, unknown> | Record<string, unknown>[];
+    operation_type?: string;
+    subtype?: string;
+  };
   file?: FileInventoryRow;
 }

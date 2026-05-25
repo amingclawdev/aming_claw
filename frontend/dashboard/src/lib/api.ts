@@ -508,6 +508,92 @@ export const api = {
       signal,
     );
   },
+  cancelGraphStructureFeedback(
+    snapshotId: string,
+    payload: {
+      feedback_ids: string[];
+      files?: string[];
+      reason?: string;
+      actor?: string;
+    },
+    signal?: AbortSignal,
+  ) {
+    return api.cancelGraphStructureFeedbackFor(pid(), snapshotId, payload, signal);
+  },
+  cancelGraphStructureFeedbackFor(
+    projectId: string,
+    snapshotId: string,
+    payload: {
+      feedback_ids: string[];
+      files?: string[];
+      reason?: string;
+      actor?: string;
+    },
+    signal?: AbortSignal,
+  ) {
+    return postJSON<{
+      ok: boolean;
+      status: string;
+      changed_files?: string[];
+      discarded_files?: string[];
+      dirty_guard?: Record<string, unknown>;
+      message?: string;
+    }>(
+      `/api/graph-governance/${pidFor(projectId)}/snapshots/${encodeURIComponent(snapshotId)}/feedback/graph-structure/cancel`,
+      {
+        feedback_ids: payload.feedback_ids,
+        files: payload.files ?? [],
+        reason: payload.reason ?? "dashboard_cancel_graph_structure_operation",
+        actor: payload.actor ?? "dashboard_user",
+      },
+      signal,
+    );
+  },
+  commitGraphStructureFeedback(
+    snapshotId: string,
+    payload: {
+      feedback_ids: string[];
+      files?: string[];
+      reason?: string;
+      message?: string;
+      actor?: string;
+    },
+    signal?: AbortSignal,
+  ) {
+    return api.commitGraphStructureFeedbackFor(pid(), snapshotId, payload, signal);
+  },
+  commitGraphStructureFeedbackFor(
+    projectId: string,
+    snapshotId: string,
+    payload: {
+      feedback_ids: string[];
+      files?: string[];
+      reason?: string;
+      message?: string;
+      actor?: string;
+    },
+    signal?: AbortSignal,
+  ) {
+    return postJSON<{
+      ok: boolean;
+      status: string;
+      changed_files?: string[];
+      dirty_guard?: Record<string, unknown>;
+      commit?: { commit_sha?: string; files?: string[] };
+      requires_update_graph?: boolean;
+      message?: string;
+    }>(
+      `/api/graph-governance/${pidFor(projectId)}/snapshots/${encodeURIComponent(snapshotId)}/feedback/graph-structure/commit`,
+      {
+        feedback_ids: payload.feedback_ids,
+        files: payload.files ?? [],
+        reason: payload.reason ?? "dashboard_commit_graph_structure_operation",
+        message: payload.message ?? "manual fix: apply graph-structure review operation",
+        actor: payload.actor ?? "dashboard_user",
+      },
+      signal,
+    );
+  },
   // Legacy explicit queue API. Normal dashboard Update graph uses the direct
   // materialize endpoint below so users do not see a stale queued task.
   queueScopeReconcile(opts: { commit_sha: string; parent_commit_sha?: string; actor?: string }, signal?: AbortSignal) {

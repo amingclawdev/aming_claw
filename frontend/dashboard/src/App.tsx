@@ -1216,6 +1216,7 @@ export default function App() {
           ) : null}
           {view === "review" && data ? (
             <ReviewQueueView
+              projectId={currentProjectId}
               feedback={data.feedback}
               assetImpactReminders={data.assetImpactReminders}
               assetImpactReminderEvents={assetImpactEventsByReminder}
