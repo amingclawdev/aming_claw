@@ -25,7 +25,7 @@ import type {
 } from "./types";
 import Header from "./components/Header";
 import StaleGraphBanner from "./components/StaleGraphBanner";
-import TreePanel from "./components/TreePanel";
+import TreePanel, { type AssetStatusFilter, type AssetTreeSelection } from "./components/TreePanel";
 import InspectorDrawer, { type Tab as InspectorTabName } from "./components/InspectorDrawer";
 import type { PinnedEdge } from "./components/FocusCard";
 import ActionControlPanel, { type ActionKind, type ActionTarget, type EnrichPreset } from "./components/ActionControlPanel";
@@ -255,6 +255,10 @@ export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
     readStoredFlag(DASHBOARD_SIDEBAR_COLLAPSED_STORAGE_KEY),
   );
+  const [assetTreeSelection, setAssetTreeSelection] = useState<AssetTreeSelection>({ groupId: "ALL", bucketId: "" });
+  const [assetStatusFilter, setAssetStatusFilter] = useState<AssetStatusFilter>("all");
+  const [assetSearch, setAssetSearch] = useState("");
+  const [selectedAssetId, setSelectedAssetId] = useState("");
   const [assetImpactEventsByReminder, setAssetImpactEventsByReminder] = useState<
     Record<string, AssetImpactReminderEventsResponse>
   >({});
@@ -1109,6 +1113,11 @@ export default function App() {
           nodes={data?.nodes ?? []}
           selectedNodeId={selectedNodeId}
           activeView={view}
+          assetInbox={data?.assetInbox ?? null}
+          assetTreeSelection={assetTreeSelection}
+          assetStatusFilter={assetStatusFilter}
+          assetSearch={assetSearch}
+          selectedAssetId={selectedAssetId}
           opsCount={data?.ops?.count ?? 0}
           reviewCount={
             (data?.feedback?.summary?.visible_group_count ?? 0) +
@@ -1118,6 +1127,10 @@ export default function App() {
           backlogCount={countOpenBacklog(data?.backlog)}
           projectCount={projects.length}
           onSelectNode={handleSelectNode}
+          onAssetTreeSelectionChange={setAssetTreeSelection}
+          onAssetStatusFilterChange={setAssetStatusFilter}
+          onAssetSearchChange={setAssetSearch}
+          onSelectAsset={setSelectedAssetId}
           onSelectView={(v) => setView(v)}
           loading={loading}
           collapsed={sidebarCollapsed}
@@ -1222,6 +1235,11 @@ export default function App() {
               projectId={currentProjectId}
               snapshotId={data.status?.active_snapshot_id ?? data.summary?.snapshot_id ?? ""}
               nodes={data.nodes}
+              treeSelection={assetTreeSelection}
+              statusFilter={assetStatusFilter}
+              search={assetSearch}
+              selectedAssetId={selectedAssetId}
+              onSelectedAssetIdChange={setSelectedAssetId}
               onSelectNode={handleSelectNode}
               workspaceRoot={activeWorkspaceRoot}
             />

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Layer, NodeRecord } from "../types";
+import type { AssetInboxItem, AssetInboxResponse } from "../types";
 import {
   aggregateNode,
   classifyNode,
@@ -16,6 +17,11 @@ interface Props {
   nodes: NodeRecord[];
   selectedNodeId: string | null;
   activeView: ViewName;
+  assetInbox?: AssetInboxResponse | null;
+  assetTreeSelection: AssetTreeSelection;
+  assetStatusFilter: AssetStatusFilter;
+  assetSearch: string;
+  selectedAssetId: string;
   opsCount: number;
   reviewCount: number;
   assetCount: number;
@@ -24,12 +30,30 @@ interface Props {
   loading: boolean;
   collapsed: boolean;
   onSelectNode(id: string): void;
+  onAssetTreeSelectionChange(selection: AssetTreeSelection): void;
+  onAssetStatusFilterChange(filter: AssetStatusFilter): void;
+  onAssetSearchChange(query: string): void;
+  onSelectAsset(assetId: string): void;
   onSelectView(v: ViewName): void;
   onToggleCollapsed(): void;
 }
 
 const FILTER_LAYERS: Layer[] = ["L1", "L2", "L3", "L4", "L7"];
 type LayerFilter = Layer | "ALL";
+export type AssetGroupId = "ALL" | "doc" | "test" | "config" | "source" | "generated" | "other";
+export type AssetStatusFilter = "all" | "health" | "candidate" | "drift" | "orphan";
+export interface AssetTreeSelection {
+  groupId: AssetGroupId;
+  bucketId: string;
+}
+
+const ASSET_STATUS_FILTERS: Array<{ id: AssetStatusFilter; label: string; title: string }> = [
+  { id: "all", label: "All", title: "Show all asset states" },
+  { id: "health", label: "Health", title: "Accepted, bound, healthy, or graph-current assets" },
+  { id: "candidate", label: "Candidate", title: "Proposed, pending, or review-candidate assets" },
+  { id: "drift", label: "Drift", title: "Suspected, confirmed, stale, or drifted assets" },
+  { id: "orphan", label: "Orphan", title: "Unbound or actionable orphan assets" },
+];
 
 const LAYER_LABELS: Record<Layer, { label: string; title: string }> = {
   L1: { label: "Runtime", title: "L1 Runtime — project root / runtime boundary" },
@@ -37,6 +61,29 @@ const LAYER_LABELS: Record<Layer, { label: string; title: string }> = {
   L3: { label: "Subsystem", title: "L3 Subsystem — implementation subsystem" },
   L4: { label: "Asset", title: "L4 Asset — config / state / contract / artifact" },
   L7: { label: "Feature", title: "L7 Feature — inspectable implementation feature" },
+};
+
+const ASSET_GROUP_ORDER: AssetGroupId[] = ["ALL", "doc", "test", "config", "source", "generated", "other"];
+const ASSET_GROUP_LABELS: Record<AssetGroupId, string> = {
+  ALL: "All assets",
+  doc: "Docs",
+  test: "Tests",
+  config: "Config",
+  source: "Source",
+  generated: "Generated / Ignored",
+  other: "Other",
+};
+
+const ASSET_BUCKET_LABELS: Record<string, string> = {
+  all: "All in group",
+  health: "Health",
+  candidate: "Candidate",
+  drift: "Drift / stale",
+  orphan: "Orphan / actionable",
+  ignored: "Ignored / generated",
+  unbound: "Doc unbound",
+  accepted: "Accepted",
+  pending: "Pending decision",
 };
 
 interface Index {
@@ -51,6 +98,11 @@ export default function TreePanel(props: Props) {
     nodes,
     selectedNodeId,
     activeView,
+    assetInbox,
+    assetTreeSelection,
+    assetStatusFilter,
+    assetSearch,
+    selectedAssetId,
     opsCount,
     reviewCount,
     assetCount,
@@ -61,6 +113,12 @@ export default function TreePanel(props: Props) {
   } = props;
 
   const idx = useMemo<Index>(() => buildIndex(nodes), [nodes]);
+  const assetItems = useMemo(() => (assetInbox?.items ?? []).slice().sort(compareAssetRows), [assetInbox?.items]);
+  const assetTree = useMemo(() => buildAssetTree(assetItems), [assetItems]);
+  const visibleAssets = useMemo(
+    () => filterAssetRows(assetItems, assetTreeSelection, assetStatusFilter, assetSearch),
+    [assetItems, assetSearch, assetStatusFilter, assetTreeSelection],
+  );
 
   const [search, setSearch] = useState("");
   const [layerFilter, setLayerFilter] = useState<LayerFilter>("ALL");
@@ -215,76 +273,214 @@ export default function TreePanel(props: Props) {
 
       {collapsed ? null : (
         <>
-          <div className="sidebar-section-title" style={{ marginTop: 4 }}>
-            Graph tree
-          </div>
-          <div className="tree-controls">
-            <div className="tree-search-row">
-              <input
-                type="text"
-                className="tree-search"
-                placeholder="Search nodes / files…"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-              {search ? (
-                <button className="tree-search-clear" onClick={() => setSearch("")} title="Clear search">
-                  ×
-                </button>
-              ) : null}
-            </div>
-            <div className="tree-chip-row">
-              <button
-                className={`chip layer-chip${layerFilter === "ALL" ? " on" : " off"}`}
-                onClick={() => setLayerFilter("ALL")}
-                title="Show all layers"
-              >
-                All
-              </button>
-              {FILTER_LAYERS.map((l) => {
-                const meta = LAYER_LABELS[l];
-                return (
-                  <button
-                    key={l}
-                    className={`chip layer-chip layer-${l}${layerFilter === l ? " on" : " off"}`}
-                    onClick={() => setLayerFilter(l)}
-                    title={`${meta.title}. Click to show only ${l} nodes.`}
-                  >
-                    <span className="layer-chip-code">{l}</span>
-                    <span className="layer-chip-label">{meta.label}</span>
-                  </button>
-                );
-              })}
-            </div>
-            <div className="tree-counter">
-              {visible == null ? `${nodes.length} nodes` : `${visible.size} of ${nodes.length} nodes`}
-            </div>
-          </div>
-          <div className="sidebar-tree">
-            {idx.roots.length === 0 || treeRoots.length === 0 ? (
-              <div style={{ fontSize: 11, color: "var(--ink-500)", padding: "10px 12px" }}>
-                {loading ? "Loading…" : layerFilter === "ALL" ? "No nodes" : `No ${layerFilter} nodes`}
+          {activeView === "assets" ? (
+            <AssetTree
+              loading={loading}
+              total={assetItems.length}
+              tree={assetTree}
+              visibleAssets={visibleAssets}
+              selection={assetTreeSelection}
+              statusFilter={assetStatusFilter}
+              search={assetSearch}
+              selectedAssetId={selectedAssetId}
+              onSelectionChange={props.onAssetTreeSelectionChange}
+              onStatusFilterChange={props.onAssetStatusFilterChange}
+              onSearchChange={props.onAssetSearchChange}
+              onSelectAsset={props.onSelectAsset}
+            />
+          ) : (
+            <>
+              <div className="sidebar-section-title" style={{ marginTop: 4 }}>
+                Graph tree
               </div>
-            ) : (
-              treeRoots
-                .map((root) => (
-                  <TreeNode
-                    key={root.node_id}
-                    node={root}
-                    depth={0}
-                    idx={idx}
-                    visible={visible}
-                    expanded={expanded}
-                    selectedNodeId={selectedNodeId}
-                    onToggle={toggle}
-                    onSelectNode={props.onSelectNode}
+              <div className="tree-controls">
+                <div className="tree-search-row">
+                  <input
+                    type="text"
+                    className="tree-search"
+                    placeholder="Search nodes / files…"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
                   />
-                ))
-            )}
-          </div>
+                  {search ? (
+                    <button className="tree-search-clear" onClick={() => setSearch("")} title="Clear search">
+                      ×
+                    </button>
+                  ) : null}
+                </div>
+                <div className="tree-chip-row">
+                  <button
+                    className={`chip layer-chip${layerFilter === "ALL" ? " on" : " off"}`}
+                    onClick={() => setLayerFilter("ALL")}
+                    title="Show all layers"
+                  >
+                    All
+                  </button>
+                  {FILTER_LAYERS.map((l) => {
+                    const meta = LAYER_LABELS[l];
+                    return (
+                      <button
+                        key={l}
+                        className={`chip layer-chip layer-${l}${layerFilter === l ? " on" : " off"}`}
+                        onClick={() => setLayerFilter(l)}
+                        title={`${meta.title}. Click to show only ${l} nodes.`}
+                      >
+                        <span className="layer-chip-code">{l}</span>
+                        <span className="layer-chip-label">{meta.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="tree-counter">
+                  {visible == null ? `${nodes.length} nodes` : `${visible.size} of ${nodes.length} nodes`}
+                </div>
+              </div>
+              <div className="sidebar-tree">
+                {idx.roots.length === 0 || treeRoots.length === 0 ? (
+                  <div style={{ fontSize: 11, color: "var(--ink-500)", padding: "10px 12px" }}>
+                    {loading ? "Loading…" : layerFilter === "ALL" ? "No nodes" : `No ${layerFilter} nodes`}
+                  </div>
+                ) : (
+                  treeRoots
+                    .map((root) => (
+                      <TreeNode
+                        key={root.node_id}
+                        node={root}
+                        depth={0}
+                        idx={idx}
+                        visible={visible}
+                        expanded={expanded}
+                        selectedNodeId={selectedNodeId}
+                        onToggle={toggle}
+                        onSelectNode={props.onSelectNode}
+                      />
+                    ))
+                )}
+              </div>
+            </>
+          )}
         </>
       )}
     </aside>
+  );
+}
+
+interface AssetTreeBucket {
+  id: string;
+  label: string;
+  count: number;
+  tone: "green" | "amber" | "red" | "gray";
+}
+
+interface AssetTreeGroup {
+  id: AssetGroupId;
+  label: string;
+  count: number;
+  tone: "green" | "amber" | "red" | "gray";
+  buckets: AssetTreeBucket[];
+}
+
+function AssetTree(props: {
+  loading: boolean;
+  total: number;
+  tree: AssetTreeGroup[];
+  visibleAssets: AssetInboxItem[];
+  selection: AssetTreeSelection;
+  statusFilter: AssetStatusFilter;
+  search: string;
+  selectedAssetId: string;
+  onSelectionChange(selection: AssetTreeSelection): void;
+  onStatusFilterChange(filter: AssetStatusFilter): void;
+  onSearchChange(query: string): void;
+  onSelectAsset(assetId: string): void;
+}) {
+  return (
+    <>
+      <div className="sidebar-section-title" style={{ marginTop: 4 }}>
+        Asset tree
+      </div>
+      <div className="tree-controls asset-tree-controls">
+        <div className="tree-search-row">
+          <input
+            type="text"
+            className="tree-search"
+            placeholder="Search paths, nodes, evidence…"
+            value={props.search}
+            onChange={(event) => props.onSearchChange(event.target.value)}
+          />
+          {props.search ? (
+            <button className="tree-search-clear" onClick={() => props.onSearchChange("")} title="Clear search">
+              ×
+            </button>
+          ) : null}
+        </div>
+        <div className="tree-chip-row asset-status-filter-row">
+          {ASSET_STATUS_FILTERS.map((filter) => (
+            <button
+              key={filter.id}
+              className={`chip asset-status-chip ${props.statusFilter === filter.id ? "on" : "off"}`}
+              onClick={() => props.onStatusFilterChange(filter.id)}
+              title={filter.title}
+            >
+              {filter.label}
+            </button>
+          ))}
+        </div>
+        <div className="tree-counter">
+          {props.visibleAssets.length} of {props.total} assets
+        </div>
+      </div>
+      <div className="sidebar-tree asset-sidebar-tree">
+        {props.loading ? (
+          <div className="asset-sidebar-empty">Loading…</div>
+        ) : props.total === 0 ? (
+          <div className="asset-sidebar-empty">No assets</div>
+        ) : (
+          props.tree.map((group) => (
+            <div key={group.id}>
+              <button
+                type="button"
+                className={`tree-row asset-tree-row ${props.selection.groupId === group.id && !props.selection.bucketId ? "active" : ""}`}
+                onClick={() => props.onSelectionChange({ groupId: group.id, bucketId: "" })}
+              >
+                <span className={`asset-state-dot tone-${group.tone}`} />
+                <span className="tree-name">{group.label}</span>
+                <span className="tree-meta">{group.count}</span>
+              </button>
+              {group.buckets.map((bucket) => (
+                <button
+                  key={`${group.id}:${bucket.id}`}
+                  type="button"
+                  className={`tree-row asset-tree-row asset-tree-bucket ${
+                    props.selection.groupId === group.id && props.selection.bucketId === bucket.id ? "active" : ""
+                  }`}
+                  onClick={() => props.onSelectionChange({ groupId: group.id, bucketId: bucket.id })}
+                >
+                  <span className={`asset-state-dot tone-${bucket.tone}`} />
+                  <span className="tree-name">{bucket.label}</span>
+                  <span className="tree-meta">{bucket.count}</span>
+                </button>
+              ))}
+            </div>
+          ))
+        )}
+        <div className="asset-sidebar-results">
+          {props.visibleAssets.slice(0, 24).map((item) => (
+            <button
+              key={item.asset_id}
+              type="button"
+              className={`asset-sidebar-asset${props.selectedAssetId === item.asset_id ? " active" : ""}`}
+              onClick={() => props.onSelectAsset(item.asset_id)}
+              title={item.path}
+            >
+              <span className={`asset-state-dot tone-${assetTone(item)}`} />
+              <span className="mono">{item.path}</span>
+              <span>{assetStatusLabel(item.asset_status)}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -581,4 +777,177 @@ function layerOrder(l: Layer | string): number {
 
 function sortChildren(children: NodeRecord[]): NodeRecord[] {
   return children.slice().sort(layerThenId);
+}
+
+function buildAssetTree(items: AssetInboxItem[]): AssetTreeGroup[] {
+  return ASSET_GROUP_ORDER.map((groupId) => {
+    const groupItems = groupId === "ALL" ? items : items.filter((item) => assetGroupId(item) === groupId);
+    const buckets = assetBucketsForGroup(groupId)
+      .map((bucket) => {
+        const bucketItems = groupItems.filter((item) => assetBucketMatches(item, bucket));
+        return { id: bucket, label: ASSET_BUCKET_LABELS[bucket] ?? bucket, count: bucketItems.length, tone: bucketTone(bucket, bucketItems) };
+      })
+      .filter((bucket) => bucket.count > 0 || bucket.id === "all");
+    return {
+      id: groupId,
+      label: ASSET_GROUP_LABELS[groupId],
+      count: groupItems.length,
+      tone: highestAssetTone(groupItems),
+      buckets,
+    };
+  });
+}
+
+function assetBucketsForGroup(groupId: AssetGroupId): string[] {
+  if (groupId === "doc") return ["all", "unbound", "candidate", "accepted", "orphan", "drift"];
+  if (groupId === "generated") return ["all", "ignored"];
+  if (groupId === "test" || groupId === "config") return ["all", "candidate", "accepted", "orphan", "drift", "pending"];
+  return ["all", "health", "candidate", "orphan", "drift"];
+}
+
+function filterAssetRows(
+  items: AssetInboxItem[],
+  selection: AssetTreeSelection,
+  statusFilter: AssetStatusFilter,
+  search: string,
+): AssetInboxItem[] {
+  const q = search.trim().toLowerCase();
+  return items.filter((item) => {
+    if (selection.groupId !== "ALL" && assetGroupId(item) !== selection.groupId) return false;
+    if (selection.bucketId && !assetBucketMatches(item, selection.bucketId)) return false;
+    if (statusFilter !== "all" && !assetStatusFilterMatches(item, statusFilter)) return false;
+    if (!q) return true;
+    const relations = [
+      ...(item.mount_relations ?? []),
+      ...(item.accepted_bindings ?? []).map((binding) => ({
+        target_node_id: binding.node_id,
+        target_title: binding.title,
+        status: "accepted",
+        role: binding.role,
+        source: binding.source,
+        evidence_kind: "accepted_binding",
+        proposal_hash: "",
+      })),
+      ...(item.binding_candidates ?? []).map((candidate) => ({
+        target_node_id: candidate.target_node_id,
+        target_title: candidate.target_title,
+        status: "candidate",
+        role: candidate.operation,
+        source: candidate.source,
+        evidence_kind: candidate.evidence_kind,
+        proposal_hash: candidate.proposal_hash,
+      })),
+    ];
+    const hay = [
+      item.path,
+      item.asset_kind,
+      item.asset_status,
+      item.graph_status,
+      item.scan_status,
+      item.binding_status,
+      item.risk,
+      ...(item.evidence ?? []).map((evidence) => `${evidence.kind} ${evidence.message}`),
+      ...relations.map((relation) =>
+        [
+          relation.status,
+          relation.role,
+          relation.target_node_id,
+          relation.target_title,
+          relation.source,
+          relation.evidence_kind,
+          relation.proposal_hash,
+        ].join(" "),
+      ),
+    ]
+      .join(" ")
+      .toLowerCase();
+    return hay.includes(q);
+  });
+}
+
+function assetGroupId(item: AssetInboxItem): AssetGroupId {
+  const kind = normalizeAssetKind(item.asset_kind);
+  if (kind === "doc") return "doc";
+  if (kind === "test") return "test";
+  if (kind === "config") return "config";
+  if (kind === "source") return "source";
+  if (kind === "generated" || kind === "ignored" || item.asset_status === "ignored" || item.asset_status === "archive") return "generated";
+  const lowerPath = item.path.toLowerCase();
+  if (lowerPath.endsWith(".md") || lowerPath.endsWith(".mdx") || lowerPath.includes("/docs/")) return "doc";
+  if (lowerPath.includes("/test") || lowerPath.endsWith(".test.ts") || lowerPath.endsWith(".spec.ts")) return "test";
+  if (/\.(ya?ml|toml|ini|cfg|json)$/.test(lowerPath)) return "config";
+  return "other";
+}
+
+function assetBucketMatches(item: AssetInboxItem, bucketId: string): boolean {
+  if (!bucketId || bucketId === "all") return true;
+  if (bucketId === "health" || bucketId === "accepted") return assetStatusFilterMatches(item, "health");
+  if (bucketId === "candidate") return assetStatusFilterMatches(item, "candidate");
+  if (bucketId === "drift") return assetStatusFilterMatches(item, "drift");
+  if (bucketId === "orphan" || bucketId === "unbound") return assetStatusFilterMatches(item, "orphan");
+  if (bucketId === "ignored") return item.asset_status === "ignored" || item.asset_status === "archive" || normalizeAssetKind(item.asset_kind) === "generated";
+  if (bucketId === "pending") return item.asset_status.includes("pending") || item.asset_status.includes("decision");
+  return item.asset_status === bucketId;
+}
+
+function assetStatusFilterMatches(item: AssetInboxItem, filter: AssetStatusFilter): boolean {
+  const status = item.asset_status;
+  if (filter === "health") {
+    return status === "accepted" || item.binding_status === "accepted" || (item.accepted_bindings ?? []).length > 0 || item.graph_status === "current";
+  }
+  if (filter === "candidate") {
+    return status.includes("candidate") || status.includes("pending") || (item.binding_candidates ?? []).length > 0;
+  }
+  if (filter === "drift") {
+    return status.includes("drift") || status === "stale" || normalizeDriftState(item.drift?.state) !== "not_drifted";
+  }
+  if (filter === "orphan") {
+    return status.includes("orphan") || status.includes("unbound") || item.scan_status === "orphan" || (item.accepted_bindings ?? []).length === 0;
+  }
+  return true;
+}
+
+function highestAssetTone(items: AssetInboxItem[]): "green" | "amber" | "red" | "gray" {
+  if (items.some((item) => assetTone(item) === "red")) return "red";
+  if (items.some((item) => assetTone(item) === "amber")) return "amber";
+  if (items.some((item) => assetTone(item) === "green")) return "green";
+  return "gray";
+}
+
+function bucketTone(bucket: string, items: AssetInboxItem[]): "green" | "amber" | "red" | "gray" {
+  if (bucket === "accepted" || bucket === "health") return "green";
+  if (bucket === "candidate" || bucket === "pending") return "amber";
+  if (bucket === "drift" || bucket === "orphan" || bucket === "unbound") return "red";
+  if (bucket === "ignored") return "gray";
+  return highestAssetTone(items);
+}
+
+function assetTone(item: AssetInboxItem): "green" | "amber" | "red" | "gray" {
+  const status = item.asset_status;
+  if (status === "accepted" || status === "drift_resolved" || status === "drift_waived") return "green";
+  if (status.includes("candidate") || status.includes("pending") || status === "drift_suspected") return "amber";
+  if (status.includes("orphan") || status.includes("unbound") || status === "drift_confirmed" || status === "stale") return "red";
+  if (status === "ignored" || status === "archive" || normalizeAssetKind(item.asset_kind) === "generated") return "gray";
+  return "gray";
+}
+
+function assetStatusLabel(status: string): string {
+  return status.replaceAll("_", " ");
+}
+
+function normalizeDriftState(state?: string): string {
+  return state === "suspected" || state === "confirmed" || state === "resolved" || state === "waived" ? state : "not_drifted";
+}
+
+function normalizeAssetKind(kind?: string): string {
+  const value = (kind || "").trim().toLowerCase();
+  if (value === "index_doc") return "doc";
+  if (value === "unknown") return "other";
+  return value;
+}
+
+function compareAssetRows(a: AssetInboxItem, b: AssetInboxItem): number {
+  const group = ASSET_GROUP_ORDER.indexOf(assetGroupId(a)) - ASSET_GROUP_ORDER.indexOf(assetGroupId(b));
+  if (group !== 0) return group;
+  return a.path.localeCompare(b.path);
 }

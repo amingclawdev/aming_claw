@@ -1,5 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import FileLink from "../components/FileLink";
+import type { AssetStatusFilter, AssetTreeSelection } from "../components/TreePanel";
 import { api, ApiError } from "../lib/api";
 import type {
   AssetInboxBatchAction,
@@ -15,6 +16,11 @@ interface Props {
   projectId: string;
   snapshotId: string;
   nodes: NodeRecord[];
+  treeSelection: AssetTreeSelection;
+  statusFilter: AssetStatusFilter;
+  search: string;
+  selectedAssetId: string;
+  onSelectedAssetIdChange(assetId: string): void;
   onSelectNode?: (nodeId: string) => void;
   workspaceRoot?: string;
 }
@@ -39,6 +45,12 @@ interface ActionResult {
   state: ActionState;
   message: string;
   followUpId?: string;
+}
+
+interface RemoveConfirmState {
+  item: AssetInboxItem;
+  relation: RelationView;
+  reason: string;
 }
 
 interface RelationView extends AssetInboxMountRelation {
@@ -102,18 +114,31 @@ const DRIFT_LABELS: Record<DriftStateName, string> = {
 
 const REMOVE_BINDING_RUNTIME_DRIFT_ID = "HN-ASSET-REMOVE-BINDING-RUNTIME-DRIFT-20260525";
 
-export default function AssetInboxView({ assetInbox, projectId, snapshotId, nodes, onSelectNode, workspaceRoot }: Props) {
-  const [groupFilter, setGroupFilter] = useState<AssetGroupId>("ALL");
-  const [query, setQuery] = useState("");
-  const [selectedAssetId, setSelectedAssetId] = useState("");
+export default function AssetInboxView({
+  assetInbox,
+  projectId,
+  snapshotId,
+  nodes,
+  treeSelection,
+  statusFilter,
+  search,
+  selectedAssetId,
+  onSelectedAssetIdChange,
+  onSelectNode,
+  workspaceRoot,
+}: Props) {
   const [selectedRelationId, setSelectedRelationId] = useState("");
   const [drafts, setDrafts] = useState<Record<string, AttachDraft>>({});
   const [attachResults, setAttachResults] = useState<Record<string, AttachResult>>({});
   const [actionResults, setActionResults] = useState<Record<string, ActionResult>>({});
+  const [removeConfirm, setRemoveConfirm] = useState<RemoveConfirmState | null>(null);
 
   const items = useMemo(() => (assetInbox.items ?? []).slice().sort(compareAssets), [assetInbox.items]);
   const groups = useMemo(() => buildGroups(assetInbox, items), [assetInbox, items]);
-  const visibleItems = useMemo(() => filterAssets(items, groups, groupFilter, query), [items, groups, groupFilter, query]);
+  const visibleItems = useMemo(
+    () => filterAssets(items, groups, treeSelection.groupId, treeSelection.bucketId, statusFilter, search),
+    [items, groups, search, statusFilter, treeSelection.bucketId, treeSelection.groupId],
+  );
   const selectedItem = useMemo(() => {
     if (selectedAssetId) {
       const selected = visibleItems.find((item) => item.asset_id === selectedAssetId);
@@ -257,6 +282,19 @@ export default function AssetInboxView({ assetInbox, projectId, snapshotId, node
   };
 
   const proposeRelationAction = async (item: AssetInboxItem, relation: RelationView, action: "attach_to_node" | "remove_binding") => {
+    if (action === "remove_binding") {
+      setRemoveConfirm({ item, relation, reason: "" });
+      return;
+    }
+    await recordRelationAction(item, relation, action, "Proposal-safe binding add from Asset Inbox.");
+  };
+
+  const recordRelationAction = async (
+    item: AssetInboxItem,
+    relation: RelationView,
+    action: "attach_to_node" | "remove_binding",
+    reason: string,
+  ) => {
     const key = `${relation.relation_id}:${action}`;
     setActionResults((current) => ({ ...current, [key]: { state: "writing", message: "Recording proposal..." } }));
     try {
@@ -265,7 +303,7 @@ export default function AssetInboxView({ assetInbox, projectId, snapshotId, node
         path: item.path,
         target_node_id: relation.target_node_id,
         role: roleForAsset(item),
-        reason: action === "remove_binding" ? "Proposal-safe binding removal from Asset Inbox." : "Proposal-safe binding add from Asset Inbox.",
+        reason,
         actor: "dashboard_user",
       });
       setActionResults((current) => ({
@@ -287,6 +325,14 @@ export default function AssetInboxView({ assetInbox, projectId, snapshotId, node
         },
       }));
     }
+  };
+
+  const confirmRemoveBinding = async () => {
+    if (!removeConfirm) return;
+    const reason = removeConfirm.reason.trim() || "Proposal-safe binding removal from Asset Inbox.";
+    const pending = removeConfirm;
+    setRemoveConfirm(null);
+    await recordRelationAction(pending.item, pending.relation, "remove_binding", reason);
   };
 
   return (
@@ -315,68 +361,6 @@ export default function AssetInboxView({ assetInbox, projectId, snapshotId, node
       </div>
 
       <section className="asset-relation-browser">
-        <aside className="asset-selector-panel">
-          <div className="asset-selector-head">
-            <div>
-              <div className="asset-panel-title">Assets</div>
-              <div className="asset-panel-meta">{total} files in snapshot</div>
-            </div>
-            <span className="asset-chip-count">{visibleItems.length}</span>
-          </div>
-          <input
-            className="asset-search"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search paths, nodes, evidence"
-          />
-          <div className="asset-group-list">
-            {GROUP_ORDER.map((groupId) => {
-              const group = groups[groupId] ?? emptyGroup(groupId);
-              return (
-                <button
-                  key={groupId}
-                  type="button"
-                  className={`asset-group-row${groupFilter === groupId ? " active" : ""}`}
-                  onClick={() => setGroupFilter(groupId)}
-                >
-                  <span className="asset-group-main">
-                    <span>{group.label}</span>
-                    <span className="asset-group-count">{group.count}</span>
-                  </span>
-                  <StatusChipStrip statuses={group.statuses} />
-                </button>
-              );
-            })}
-          </div>
-          <div className="asset-selector-list scrollbar-thin">
-            {visibleItems.length === 0 ? (
-              <div className="asset-browser-empty">No assets match this group or search.</div>
-            ) : (
-              visibleItems.map((item) => {
-                const relations = deriveRelations(item);
-                const active = selectedItem?.asset_id === item.asset_id;
-                return (
-                  <button
-                    key={item.asset_id}
-                    type="button"
-                    className={`asset-selector-row${active ? " active" : ""}`}
-                    onClick={() => setSelectedAssetId(item.asset_id)}
-                  >
-                    <span className="asset-selector-path mono">{item.path}</span>
-                    <span className="asset-selector-meta">
-                      {labelForKind(item.asset_kind)} - {STATUS_LABELS[item.asset_status] ?? item.asset_status}
-                    </span>
-                    <span className="asset-selector-relations">
-                      {relations.filter((relation) => relation.status === "accepted").length} accepted /{" "}
-                      {relations.filter((relation) => relation.status !== "accepted").length} candidate
-                    </span>
-                  </button>
-                );
-              })
-            )}
-          </div>
-        </aside>
-
         <main className="asset-detail-panel">
           {selectedItem ? (
             <>
@@ -413,6 +397,24 @@ export default function AssetInboxView({ assetInbox, projectId, snapshotId, node
                 actionResults={actionResults}
                 projectId={projectId}
                 onPropose={proposeRelationAction}
+              />
+
+              <AssetInspector
+                item={selectedItem}
+                relations={selectedRelations}
+                nodeOptions={nodeOptions}
+                workspaceRoot={workspaceRoot}
+                attachResult={attachResults[selectedItem.path] ?? { state: "idle", message: "Not written." }}
+                draft={
+                  drafts[selectedItem.path] ?? {
+                    targetNodeId: suggestedTargetNodeId(selectedItem, nodeOptions),
+                    role: roleForAsset(selectedItem),
+                  }
+                }
+                snapshotId={snapshotId}
+                onSelectNode={onSelectNode}
+                onUpdateDraft={(patch) => updateDraft(selectedItem.path, patch)}
+                onWriteHint={() => writeHint(selectedItem)}
               />
 
               <div className="asset-detail-grid">
@@ -540,7 +542,7 @@ export default function AssetInboxView({ assetInbox, projectId, snapshotId, node
                 key={`compact-${item.asset_id}`}
                 type="button"
                 className="asset-compact-row"
-                onClick={() => setSelectedAssetId(item.asset_id)}
+                onClick={() => onSelectedAssetIdChange(item.asset_id)}
               >
                 <span className="mono">{item.path}</span>
                 <span>{labelForKind(item.asset_kind)}</span>
@@ -551,6 +553,15 @@ export default function AssetInboxView({ assetInbox, projectId, snapshotId, node
           </div>
         )}
       </section>
+      {removeConfirm ? (
+        <RemoveBindingDialog
+          state={removeConfirm}
+          projectId={projectId}
+          onReasonChange={(reason) => setRemoveConfirm((current) => current ? { ...current, reason } : current)}
+          onCancel={() => setRemoveConfirm(null)}
+          onConfirm={confirmRemoveBinding}
+        />
+      ) : null}
     </div>
   );
 }
@@ -641,6 +652,11 @@ function AssetRelationGraph(props: {
               );
             })
           )}
+          <button type="button" className="asset-relation-add-slot" title="Focus the Asset Inspector add-binding flow">
+            <span>+</span>
+            <strong>Add binding</strong>
+            <small>Target node, role, and proposal/hint flow stay review-gated.</small>
+          </button>
         </div>
       </div>
       <SelectedRelationOperation
@@ -663,6 +679,143 @@ function RelationLegend() {
           {RELATION_LABELS[status]}
         </span>
       ))}
+    </div>
+  );
+}
+
+function AssetInspector(props: {
+  item: AssetInboxItem;
+  relations: RelationView[];
+  nodeOptions: NodeRecord[];
+  workspaceRoot?: string;
+  attachResult: AttachResult;
+  draft: AttachDraft;
+  snapshotId: string;
+  onSelectNode?: (nodeId: string) => void;
+  onUpdateDraft(patch: Partial<AttachDraft>): void;
+  onWriteHint(): void;
+}) {
+  const connected = props.relations.filter((relation) => relation.target_node_id);
+  const candidates = props.relations.filter((relation) => relation.status === "candidate");
+  return (
+    <section className="asset-inspector" aria-label="Asset Inspector">
+      <div className="asset-inspector-head">
+        <div>
+          <div className="asset-detail-block-title">Asset Inspector</div>
+          <div className="asset-panel-meta">Overview, nodes, candidates, and AI mount surfaces</div>
+        </div>
+        <FileLink path={props.item.path} workspaceRoot={props.workspaceRoot} />
+      </div>
+      <div className="asset-inspector-grid">
+        <DetailBlock title="Overview">
+          <div className="asset-policy-lines">
+            <span>Kind: {labelForKind(props.item.asset_kind)}</span>
+            <span>Status: {STATUS_LABELS[props.item.asset_status] ?? props.item.asset_status}</span>
+            <span>Scan: {props.item.scan_status || "n/a"}</span>
+            <span>Hash: <span className="mono">{props.item.file_hash || props.item.sha256 || "n/a"}</span></span>
+          </div>
+        </DetailBlock>
+        <DetailBlock title="Nodes">
+          {connected.length === 0 ? (
+            <div className="asset-browser-muted">No connected graph nodes yet.</div>
+          ) : (
+            <div className="asset-inspector-list">
+              {connected.map((relation) => (
+                <TargetNodeButton key={relation.relation_id} nodeId={relation.target_node_id} onSelectNode={props.onSelectNode} />
+              ))}
+            </div>
+          )}
+        </DetailBlock>
+        <DetailBlock title="Candidates">
+          {candidates.length === 0 ? (
+            <div className="asset-browser-muted">No weak-evidence candidates in this payload.</div>
+          ) : (
+            <div className="asset-inspector-list">
+              {candidates.slice(0, 6).map((relation) => (
+                <span key={relation.relation_id} className="asset-meta-pill">
+                  <strong>{relation.target_node_id}</strong>
+                  {relation.evidence_kind || "candidate"} / {relation.binding_strength || "weak"}
+                </span>
+              ))}
+            </div>
+          )}
+          <div className="asset-browser-muted">
+            Queueing candidates remains review-gated; accepted changes become graph truth only after Review Queue and commit/apply.
+          </div>
+        </DetailBlock>
+        <DetailBlock title="AI mount">
+          <div className="asset-hint-controls">
+            <select
+              value={props.draft.role}
+              onChange={(event) => props.onUpdateDraft({ role: event.target.value as AttachRole })}
+              disabled={props.attachResult.state === "writing" || props.attachResult.state === "written_uncommitted"}
+            >
+              <option value="doc">doc</option>
+              <option value="test">test</option>
+              <option value="config">config</option>
+            </select>
+            <select
+              value={props.draft.targetNodeId}
+              onChange={(event) => props.onUpdateDraft({ targetNodeId: event.target.value })}
+              disabled={props.attachResult.state === "writing" || props.attachResult.state === "written_uncommitted"}
+            >
+              {props.nodeOptions.map((node) => (
+                <option key={node.node_id} value={node.node_id}>
+                  {node.title || node.node_id} - {node.node_id}
+                </option>
+              ))}
+            </select>
+            <button
+              className="action-btn action-btn-primary"
+              disabled={props.attachResult.state === "writing" || props.attachResult.state === "written_uncommitted"}
+              onClick={props.onWriteHint}
+              title="Write a source-controlled governance hint; AI proposals still require Review Queue acceptance"
+            >
+              {props.attachResult.state === "writing" ? "Writing..." : "Mount"}
+            </button>
+          </div>
+          <div className={`attach-state attach-state-${props.attachResult.state}`}>{props.attachResult.message}</div>
+        </DetailBlock>
+      </div>
+    </section>
+  );
+}
+
+function RemoveBindingDialog(props: {
+  state: RemoveConfirmState;
+  projectId: string;
+  onReasonChange(reason: string): void;
+  onCancel(): void;
+  onConfirm(): void;
+}) {
+  return (
+    <div className="modal-backdrop asset-confirm-backdrop" role="presentation">
+      <div className="asset-confirm-dialog" role="dialog" aria-modal="true" aria-label="Confirm binding removal proposal">
+        <div className="asset-detail-block-title">Confirm remove binding proposal</div>
+        <p>
+          This records a proposal-safe removal for <span className="mono">{props.state.relation.target_node_id}</span>. It enters
+          Review Queue and becomes effective only after the corresponding commit/apply flow.
+        </p>
+        <label className="asset-confirm-reason">
+          <span>Operator reason</span>
+          <textarea
+            value={props.state.reason}
+            onChange={(event) => props.onReasonChange(event.target.value)}
+            placeholder="Why should this binding be removed?"
+          />
+        </label>
+        <div className="asset-browser-muted">
+          Backend dependency: if the queue endpoint rejects remove_binding, the UI surfaces follow-up {REMOVE_BINDING_RUNTIME_DRIFT_ID}.
+        </div>
+        <div className="asset-confirm-actions">
+          <button type="button" className="action-btn" onClick={props.onCancel}>
+            Cancel
+          </button>
+          <button type="button" className="action-btn action-btn-primary" onClick={props.onConfirm}>
+            Queue proposal
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1083,23 +1236,6 @@ function MetaPill({ label, value }: { label: string; value: string }) {
   );
 }
 
-function StatusChipStrip({ statuses }: { statuses: Record<string, number> }) {
-  const entries = Object.entries(statuses)
-    .filter(([, count]) => count > 0)
-    .sort((a, b) => statusWeight(a[0]) - statusWeight(b[0]))
-    .slice(0, 3);
-  if (entries.length === 0) return <span className="asset-group-statuses muted">No files</span>;
-  return (
-    <span className="asset-group-statuses">
-      {entries.map(([status, count]) => (
-        <span key={status}>
-          {STATUS_LABELS[status] ?? status} {count}
-        </span>
-      ))}
-    </span>
-  );
-}
-
 function ActionCard({ action }: { action: AssetInboxBatchAction }) {
   return (
     <div className="asset-action-card">
@@ -1189,12 +1325,16 @@ function filterAssets(
   items: AssetInboxItem[],
   groups: Record<AssetGroupId, GroupView>,
   groupFilter: AssetGroupId,
+  bucketFilter: string,
+  statusFilter: AssetStatusFilter,
   query: string,
 ): AssetInboxItem[] {
   const q = query.trim().toLowerCase();
   const group = groups[groupFilter];
   return items.filter((item) => {
     if (groupFilter !== "ALL" && group && !group.itemIds.has(item.asset_id)) return false;
+    if (bucketFilter && !assetBucketMatches(item, bucketFilter)) return false;
+    if (statusFilter !== "all" && !assetStatusFilterMatches(item, statusFilter)) return false;
     if (!q) return true;
     const relations = deriveRelations(item);
     const hay = [
@@ -1220,6 +1360,33 @@ function filterAssets(
       .toLowerCase();
     return hay.includes(q);
   });
+}
+
+function assetBucketMatches(item: AssetInboxItem, bucketId: string): boolean {
+  if (!bucketId || bucketId === "all") return true;
+  if (bucketId === "health" || bucketId === "accepted") return assetStatusFilterMatches(item, "health");
+  if (bucketId === "candidate") return assetStatusFilterMatches(item, "candidate");
+  if (bucketId === "drift") return assetStatusFilterMatches(item, "drift");
+  if (bucketId === "orphan" || bucketId === "unbound") return assetStatusFilterMatches(item, "orphan");
+  if (bucketId === "ignored") return item.asset_status === "ignored" || item.asset_status === "archive";
+  if (bucketId === "pending") return item.asset_status.includes("pending") || item.asset_status.includes("decision");
+  return item.asset_status === bucketId;
+}
+
+function assetStatusFilterMatches(item: AssetInboxItem, filter: AssetStatusFilter): boolean {
+  if (filter === "health") {
+    return item.asset_status === "accepted" || item.binding_status === "accepted" || (item.accepted_bindings ?? []).length > 0 || item.graph_status === "current";
+  }
+  if (filter === "candidate") {
+    return item.asset_status.includes("candidate") || item.asset_status.includes("pending") || (item.binding_candidates ?? []).length > 0;
+  }
+  if (filter === "drift") {
+    return item.asset_status.includes("drift") || item.asset_status === "stale" || normalizeDriftState(item.drift?.state) !== "not_drifted";
+  }
+  if (filter === "orphan") {
+    return item.asset_status.includes("orphan") || item.asset_status.includes("unbound") || item.scan_status === "orphan" || (item.accepted_bindings ?? []).length === 0;
+  }
+  return true;
 }
 
 function deriveRelations(item: AssetInboxItem): RelationView[] {

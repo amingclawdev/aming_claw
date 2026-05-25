@@ -513,6 +513,7 @@ function verifyEditorJumpWorkspaceContract() {
 function verifyAssetRelationGraphOpsContract() {
   phase("asset relation graph operation contract");
   const appSource = readFileSync(path.join(REPO_ROOT, "frontend/dashboard/src/App.tsx"), "utf8");
+  const treeSource = readFileSync(path.join(REPO_ROOT, "frontend/dashboard/src/components/TreePanel.tsx"), "utf8");
   const assetSource = readFileSync(path.join(REPO_ROOT, "frontend/dashboard/src/views/AssetInboxView.tsx"), "utf8");
   const cssSource = readFileSync(path.join(REPO_ROOT, "frontend/dashboard/src/styles.css"), "utf8");
   assert(
@@ -527,7 +528,15 @@ function verifyAssetRelationGraphOpsContract() {
   assert(assetSource.includes("function TargetNodeButton"), "Asset relation targets should have a graph-jump target button");
   assert(assetSource.includes('className="target-link asset-target-link"'), "Target node jump should reuse target-link visual language");
   assert(assetSource.includes("function AssetRelationGraph"), "Asset relation graph component should exist");
+  assert(treeSource.includes("Asset tree"), "Asset Inbox should render ASSET TREE in the sidebar tree slot");
+  assert(treeSource.includes("ASSET_STATUS_FILTERS"), "Asset tree should expose All/Health/Candidate/Drift/Orphan status filters");
+  assert(treeSource.includes("assetBucketsForGroup"), "Asset tree should expose two-level group/bucket navigation");
+  assert(!assetSource.includes('className="asset-selector-panel"'), "Asset Inbox main view should not duplicate the bulky selector panel");
   assert(assetSource.includes("asset-relation-map"), "Asset relation graph should render the operation-first relation map");
+  assert(assetSource.includes("asset-relation-add-slot"), "Relation graph should expose the plus add-binding slot");
+  assert(assetSource.includes("function AssetInspector"), "Asset inspector should expose overview/nodes/candidates/AI mount surfaces");
+  assert(assetSource.includes("function RemoveBindingDialog"), "Remove binding should require confirmation and reason capture");
+  assert(assetSource.includes("Review Queue and becomes effective only after"), "Remove confirmation should warn about review/commit/apply gating");
   assert(assetSource.includes("Selected relation operation result"), "Selected relation action result should be visible from graph surface");
   assert(assetSource.includes("primaryRelationAction"), "Asset relation graph should choose add/remove actions by relation status");
   assert(assetSource.includes("Add relation"), "Candidate relation should expose Add relation");
