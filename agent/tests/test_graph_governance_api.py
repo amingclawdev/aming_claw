@@ -953,6 +953,7 @@ def test_parallel_branch_finish_gate_records_validated_checkpoint(conn):
             base_commit="base-finish",
             head_commit="base-finish",
             target_head_commit="target-finish",
+            merge_queue_id="mergeq-api-finish",
         ),
         now_iso="2026-05-17T07:30:00Z",
     )
@@ -1005,6 +1006,7 @@ def test_parallel_branch_finish_gate_accepts_mf_sub_session(conn):
             base_commit="base-finish",
             head_commit="base-finish",
             target_head_commit="target-finish",
+            merge_queue_id="mergeq-api-finish-mf-sub",
         ),
         now_iso="2026-05-17T07:30:00Z",
     )
@@ -1046,6 +1048,7 @@ def test_parallel_branch_finish_gate_rejects_stale_fence(conn):
             worktree_path="/tmp/nonexistent-finish-stale-task",
             base_commit="base",
             target_head_commit="target",
+            merge_queue_id="mergeq-api-finish-stale",
         ),
         now_iso="2026-05-17T07:30:00Z",
     )
@@ -1101,6 +1104,7 @@ def test_parallel_branch_finish_gate_validates_worktree_changed_files(conn, tmp_
             base_commit=base,
             head_commit=base,
             target_head_commit=base,
+            merge_queue_id="mergeq-api-finish-diff",
         ),
         now_iso="2026-05-17T07:33:00Z",
     )
@@ -1158,6 +1162,7 @@ def test_mf_sub_merge_queue_requires_finish_gate_checkpoint(conn):
             base_commit="base",
             head_commit="head",
             target_head_commit="target",
+            merge_queue_id=queue_id,
         ),
         now_iso="2026-05-17T07:32:00Z",
     )
@@ -1227,6 +1232,7 @@ def test_mf_sub_session_cannot_enqueue_or_execute_merge(conn):
             head_commit="head",
             target_head_commit="target",
             checkpoint_id="ckpt-mf-sub-denied",
+            merge_queue_id=queue_id,
             replay_source="mf_sub_finish_gate",
         ),
         now_iso="2026-05-17T07:32:00Z",
