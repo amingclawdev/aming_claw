@@ -496,10 +496,16 @@ def _token_errors(subject: Mapping[str, Any], *, current_commit: str) -> list[st
     )
     token_fence = _first_text(token_subject, "fence_token")
     subject_fence = _first_text(subject, "fence_token")
-    if current_commit and token_commit and token_commit != current_commit:
-        errors.append("precheck_token_subject_commit_mismatch")
-    if subject_fence and token_fence and subject_fence != token_fence:
-        errors.append("precheck_token_subject_fence_mismatch")
+    if current_commit:
+        if not token_commit:
+            errors.append("missing_precheck_token_subject_commit")
+        elif token_commit != current_commit:
+            errors.append("precheck_token_subject_commit_mismatch")
+    if subject_fence:
+        if not token_fence:
+            errors.append("missing_precheck_token_subject_fence")
+        elif token_fence != subject_fence:
+            errors.append("precheck_token_subject_fence_mismatch")
     return errors
 
 

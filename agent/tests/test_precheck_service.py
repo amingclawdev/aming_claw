@@ -191,6 +191,68 @@ def test_scn_mf_wf_004_merge_requires_clean_source_token_and_timeline(
     assert "precheck_token_subject_commit_mismatch" in stale["evidence"]["errors"]
 
 
+def test_merge_reconcile_and_close_block_weak_empty_subject_token(
+    tmp_path: Path,
+) -> None:
+    contract = load_workflow_contract()
+    fixture = create_runtime_fixture(tmp_path)
+    source_commit = commit_worker_candidate(fixture)
+    weak_token = {
+        "precheck_run_id": "precheck-audit-weak-token",
+        "evidence_hash": "sha256:" + ("b" * 64),
+        "subject": {},
+    }
+
+    merge = run_precheck(
+        "workflow.merge",
+        CONTRACT_ID,
+        "merge_gate",
+        fixture.merge_subject(
+            contract,
+            source_commit=source_commit,
+            precheck_token=weak_token,
+        ),
+        "pytest",
+    )
+    assert merge["decision"] == "block"
+    assert "missing_precheck_token_subject_commit" in merge["evidence"]["errors"]
+    assert "missing_precheck_token_subject_fence" in merge["evidence"]["errors"]
+
+    reconcile = run_precheck(
+        "workflow.reconcile_policy",
+        CONTRACT_ID,
+        "reconcile",
+        {
+            "contract": {**contract, "contract_instance_id": CONTRACT_ID},
+            "source_commit": source_commit,
+            "fence_token": FENCE_TOKEN,
+            "precheck_token": weak_token,
+            "changed_files": ["agent/governance/precheck_service.py"],
+            "scope_kind": "code_module",
+            "e2e_decision": "e2e_not_applicable",
+        },
+        "pytest",
+    )
+    assert reconcile["decision"] == "block"
+    assert "missing_precheck_token_subject_commit" in reconcile["evidence"]["errors"]
+    assert "missing_precheck_token_subject_fence" in reconcile["evidence"]["errors"]
+
+    close = run_precheck(
+        "backlog.close",
+        CONTRACT_ID,
+        "close_gate",
+        fixture.close_subject(
+            contract,
+            merge_commit=source_commit,
+            precheck_token=weak_token,
+        ),
+        "pytest",
+    )
+    assert close["decision"] == "block"
+    assert "missing_precheck_token_subject_commit" in close["evidence"]["errors"]
+    assert "missing_precheck_token_subject_fence" in close["evidence"]["errors"]
+
+
 def test_reconcile_policy_verifies_token_and_blocks_runtime_without_e2e() -> None:
     contract = load_workflow_contract()
     source_commit = "1" * 40
