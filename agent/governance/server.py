@@ -16836,6 +16836,7 @@ def _backlog_full_bug(row: sqlite3.Row | dict) -> dict:
             bug[key] = []
     bug["bypass_policy"] = backlog_runtime.parse_json_object(bug.get("bypass_policy_json", "{}"))
     bug["takeover"] = backlog_runtime.parse_json_object(bug.get("takeover_json", "{}"))
+    bug["contract_summary"] = _backlog_contract_summary(bug.get("chain_trigger_json"))
     return bug
 
 
