@@ -35,6 +35,19 @@ Canonical source: `docs/governance/manual-fix-sop.md`. This file is only the sho
    - write `e2e_not_applicable` with a reason for docs-only or non-runtime changes.
 7. For parallel MF or subagent work, instantiate a source-controlled contract template before delegation:
    - start from `agent/governance/contract_templates/mf_parallel.v1.json`;
+   - when a deterministic MF workflow worker is used, instantiate
+     `agent/governance/contract_templates/mf_workflow_runtime.v1.json` and run
+     each privileged stage through
+     `agent.governance.precheck_service.run_precheck(kind, contract_id, stage,
+     subject, actor)`;
+   - use the workflow runtime stage graph
+     `dispatch -> implementation_wait -> handoff_gate -> merge_gate ->
+     reconcile -> close_gate -> done`, with `observer_review` for yellow-lane
+     results and `blocked` for red-lane results;
+   - require every precheck result to carry `precheck_run_id`, `kind`,
+     `contract_id`, `stage`, `decision`, `status`, `subject`, `evidence`,
+     `evidence_hash`, and `created_at`; merge/reconcile/close gates must verify
+     the referenced token still matches subject commit/fence evidence;
    - write the instance to `chain_trigger_json.parallel_contract`;
    - treat subagents as local Codex workers governed by the MF backlog row,
      contract, file/worktree fence, and timeline evidence; do not use
@@ -77,6 +90,13 @@ Canonical source: `docs/governance/manual-fix-sop.md`. This file is only the sho
      `none`, `reuse_existing`, or `new_scenario_required`, give the reason,
      list required evidence ids, and record the E2E run/defer/not_applicable
      decision with a follow-up backlog id when deferred;
+   - when the decision is `new_scenario_required`, name the fixture path and
+     scenario ids in the contract and require fixture-backed tests before or
+     with implementation. For `MF-WORKFLOW-PRECHECK-SERVICE-20260525`, the
+     decision is `new_scenario_required`; the fixture
+     `agent/tests/fixtures/mf_workflow_runtime.py` is required and must create
+     isolated temporary git repositories/worktrees without mutating the live
+     repo;
    - require structured worker final output with status, branch/worktree, owned
      changed files, tests run, graph query trace ids, precheck evidence,
      generated assets policy, and risks/open questions;

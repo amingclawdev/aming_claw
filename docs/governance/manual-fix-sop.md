@@ -224,6 +224,49 @@ verification timeline evidence, then stop after dispatch unless the user
 explicitly asks to wait, review, merge, close, or perform another privileged
 action.
 
+#### R19.2 Contract-driven MF Workflow Runtime and Unified Precheck Gates
+
+MF workflow workers may drive the deterministic stage graph only when the
+backlog row instantiates a contract from
+`agent/governance/contract_templates/mf_workflow_runtime.v1.json`. The runtime
+stage order is:
+
+```text
+dispatch -> implementation_wait -> handoff_gate -> merge_gate -> reconcile -> close_gate -> done
+```
+
+`observer_review` and `blocked` are explicit branch targets. Green-lane
+prechecks may advance to the next stage. Yellow-lane results go to
+`observer_review`. Red-lane results go to `blocked`.
+
+The authoritative local gate is
+`agent.governance.precheck_service.run_precheck(kind, contract_id, stage,
+subject, actor)`. Workflow workers MUST call this service for registered gate
+kinds instead of duplicating policy logic:
+
+- `mf_subagent.dispatch`
+- `mf_subagent.handoff`
+- `workflow.merge`
+- `workflow.reconcile_policy`
+- `backlog.close`
+
+Every precheck result MUST include `precheck_run_id`, `kind`, `contract_id`,
+`stage`, `decision`, `status`, `subject`, `evidence`, `evidence_hash`, and
+`created_at`. Merge, reconcile, and close gates MUST verify that the referenced
+precheck token still matches the subject commit/fence evidence.
+
+The observer owns the optional test-scenario decision before delegation:
+`none`, `reuse_existing`, or `new_scenario_required`. When the observer chooses
+`new_scenario_required`, the contract MUST name the fixture path and scenario
+ids, and the worker must add or update fixture-backed tests before or with the
+implementation. For backlog `MF-WORKFLOW-PRECHECK-SERVICE-20260525`, the
+decision is `new_scenario_required`; `agent/tests/fixtures/mf_workflow_runtime.py`
+is required and must create isolated temporary git repositories/worktrees
+without mutating the live repo. E2E remains `e2e_not_applicable` while the
+change stays in local Python service/runtime modules, contract template,
+fixture tests, and SOP docs. If server, dashboard, MCP API, or operator runtime
+behavior is needed, the worker must stop with `needs_revision`.
+
 ---
 
 ### R13 Graph-First Reuse Checklist
