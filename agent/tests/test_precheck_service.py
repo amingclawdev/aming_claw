@@ -23,6 +23,7 @@ from agent.tests.fixtures.mf_workflow_runtime import (
     make_handoff_dirty_scope,
     make_many_ignored_files,
     make_precheck_token,
+    make_target_dirty_owned_file,
     merge_worker_candidate,
 )
 
@@ -153,6 +154,57 @@ def test_dispatch_blocks_missing_merge_queue_target_move_graph_stale_and_bad_ado
     )
     assert moved_result["decision"] == "block"
     assert "target_head_mismatch" in moved_result["evidence"]["errors"]
+
+
+def test_scn_mf_wf_010_startup_identity_allows_assigned_worker_worktree(
+    tmp_path: Path,
+) -> None:
+    contract = load_workflow_contract()
+    fixture = create_runtime_fixture(tmp_path)
+
+    result = run_precheck(
+        "mf_subagent.startup",
+        CONTRACT_ID,
+        "startup_gate",
+        fixture.startup_subject(contract),
+        "pytest",
+    )
+
+    assert _result_contract_fields_present(result)
+    assert result["decision"] == "allow"
+    assert result["evidence"]["expected_worker_git"]["root"] == str(fixture.worker_worktree)
+    assert result["evidence"]["actual_runtime_git"]["root"] == str(fixture.worker_worktree)
+    assert result["evidence"]["target_git"]["root"] == str(fixture.main_worktree)
+    assert result["evidence"]["same_as_expected_worker"] is True
+    assert result["evidence"]["same_as_target_main"] is False
+    assert result["evidence"]["fence_token_matches"] is True
+
+
+def test_scn_mf_wf_010_startup_blocks_wrong_main_worktree_and_dirty_owned_overlap(
+    tmp_path: Path,
+) -> None:
+    contract = load_workflow_contract()
+    fixture = create_runtime_fixture(tmp_path)
+    make_target_dirty_owned_file(fixture)
+
+    result = run_precheck(
+        "mf_subagent.startup",
+        CONTRACT_ID,
+        "startup_gate",
+        fixture.startup_subject(contract, actual_git_root=fixture.main_worktree),
+        "pytest",
+    )
+
+    assert result["decision"] == "block"
+    assert result["evidence"]["expected_worker_git"]["dirty"] is False
+    assert result["evidence"]["actual_runtime_git"]["root"] == str(fixture.main_worktree)
+    assert result["evidence"]["target_dirty_owned_files"] == [
+        "agent/governance/precheck_service.py"
+    ]
+    assert "actual_worktree_is_target_main" in result["evidence"]["errors"]
+    assert "actual_worktree_mismatch" in result["evidence"]["errors"]
+    assert "dirty_target_main_worktree_at_startup" in result["evidence"]["errors"]
+    assert "target_dirty_owned_file_overlap" in result["evidence"]["errors"]
 
 
 def test_unknown_gate_and_invalid_contract_block(tmp_path: Path) -> None:

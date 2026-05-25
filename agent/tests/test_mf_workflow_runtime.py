@@ -43,10 +43,12 @@ def test_scn_mf_wf_001_contract_declares_runtime_stage_graph_and_lanes() -> None
             "SCN-MF-WF-007",
             "SCN-MF-WF-008",
             "SCN-MF-WF-009",
+            "SCN-MF-WF-010",
         }
     )
     assert list(stages) == [
         "dispatch",
+        "startup_gate",
         "implementation_wait",
         "handoff_gate",
         "merge_gate",
@@ -57,6 +59,7 @@ def test_scn_mf_wf_001_contract_declares_runtime_stage_graph_and_lanes() -> None
         "close_gate",
     ]
     assert gate_kind_for_stage(contract, "dispatch") == "mf_subagent.dispatch"
+    assert gate_kind_for_stage(contract, "startup_gate") == "mf_subagent.startup"
     assert gate_kind_for_stage(contract, "handoff_gate") == "mf_subagent.handoff"
     assert gate_kind_for_stage(contract, "merge_gate") == "workflow.merge"
     assert gate_kind_for_stage(contract, "merge_queue_entry") == "workflow.merge_queue_entry"
@@ -87,6 +90,19 @@ def test_contract_declares_stage_inputs_and_outputs() -> None:
             "merge_queue_id",
             "base_commit",
             "fence_token",
+        }
+    )
+    assert set(stage_io["startup_gate"]["inputs"]).issuperset(
+        {
+            "worker_worktree",
+            "target_worktree",
+            "actual_git_root",
+            "actual_cwd",
+            "branch_ref",
+            "base_commit",
+            "target_head_commit",
+            "fence_token",
+            "actual_fence_token",
         }
     )
     assert set(stage_io["merge_gate"]["inputs"]).issuperset(
@@ -125,8 +141,27 @@ def test_runtime_dispatch_calls_precheck_and_advances_green_lane(tmp_path: Path)
 
     assert result["decision"] == "allow"
     assert result["lane"] == "green"
-    assert result["next_stage"] == "implementation_wait"
+    assert result["next_stage"] == "startup_gate"
     assert result["precheck"]["kind"] == "mf_subagent.dispatch"
+
+
+def test_runtime_startup_gate_calls_identity_precheck_and_advances_to_worker_wait(
+    tmp_path: Path,
+) -> None:
+    contract = {**load_workflow_contract(), "contract_instance_id": CONTRACT_ID}
+    fixture = create_runtime_fixture(tmp_path)
+
+    result = run_workflow_stage(
+        contract,
+        "startup_gate",
+        fixture.startup_subject(contract),
+        actor="pytest",
+    )
+
+    assert result["decision"] == "allow"
+    assert result["lane"] == "green"
+    assert result["next_stage"] == "implementation_wait"
+    assert result["precheck"]["kind"] == "mf_subagent.startup"
 
 
 def test_runtime_implementation_wait_advances_only_after_review_ready() -> None:
@@ -190,12 +225,16 @@ def test_runtime_can_advance_green_stages_until_worker_wait(tmp_path: Path) -> N
     result = run_until_pause(
         contract,
         "dispatch",
-        {"dispatch": fixture.dispatch_subject(contract)},
+        {
+            "dispatch": fixture.dispatch_subject(contract),
+            "startup_gate": fixture.startup_subject(contract),
+        },
         actor="pytest",
     )
 
     assert result["current_stage"] == "implementation_wait"
     assert result["history"][0]["lane"] == "green"
+    assert result["history"][1]["lane"] == "green"
 
 
 def test_runtime_can_run_merge_to_close_gate_after_candidate_commit(

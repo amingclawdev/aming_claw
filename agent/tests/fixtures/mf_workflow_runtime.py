@@ -22,6 +22,7 @@ SCENARIOS = {
     "SCN-MF-WF-007": "existing branch adoption evidence",
     "SCN-MF-WF-008": "compact ignored-file precheck evidence",
     "SCN-MF-WF-009": "active graph stale at dispatch",
+    "SCN-MF-WF-010": "startup identity fence blocks wrong runtime worktree",
 }
 
 CONTRACT_ID = "MF-WORKFLOW-PRECHECK-SERVICE-20260525"
@@ -69,6 +70,29 @@ class MfWorkflowFixture:
             "forbidden_paths": list(self.forbidden_paths),
             "tests_evidence": passed_tests(),
             "timeline_evidence": implementation_verification_timeline(),
+        }
+
+    def startup_subject(
+        self,
+        contract: dict[str, Any],
+        *,
+        actual_git_root: Path | None = None,
+        actual_fence_token: str = FENCE_TOKEN,
+    ) -> dict[str, Any]:
+        return {
+            "contract": {**contract, "contract_instance_id": CONTRACT_ID},
+            "worker_worktree": str(self.worker_worktree),
+            "target_worktree": str(self.main_worktree),
+            "actual_git_root": str(actual_git_root or self.worker_worktree),
+            "actual_cwd": str(actual_git_root or self.worker_worktree),
+            "branch": self.branch,
+            "branch_ref": self.branch,
+            "base_commit": self.base_commit,
+            "target_head_commit": self.target_head_commit,
+            "fence_token": FENCE_TOKEN,
+            "actual_fence_token": actual_fence_token,
+            "owned_files": list(self.owned_files),
+            "forbidden_paths": list(self.forbidden_paths),
         }
 
     def merge_subject(
@@ -225,6 +249,10 @@ def make_handoff_dirty_scope(fixture: MfWorkflowFixture) -> None:
     _write(fixture.worker_worktree / "agent/governance/mf_workflow_runtime.py", "BASE = 2\n")
     _write(fixture.worker_worktree / "agent/tests/fixtures/mf_workflow_runtime.py", "fixture = True\n")
     _write(fixture.worker_worktree / "scratch.ignored", "ignored\n")
+
+
+def make_target_dirty_owned_file(fixture: MfWorkflowFixture) -> None:
+    _write(fixture.main_worktree / "agent/governance/precheck_service.py", "BASE = 99\n")
 
 
 def make_forbidden_change(fixture: MfWorkflowFixture) -> None:

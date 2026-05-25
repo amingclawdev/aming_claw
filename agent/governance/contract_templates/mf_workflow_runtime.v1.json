@@ -22,13 +22,21 @@
       "SCN-MF-WF-006",
       "SCN-MF-WF-007",
       "SCN-MF-WF-008",
-      "SCN-MF-WF-009"
+      "SCN-MF-WF-009",
+      "SCN-MF-WF-010"
     ]
   },
   "stage_graph": [
     {
       "stage": "dispatch",
       "gate_kind": "mf_subagent.dispatch",
+      "on_allow": "startup_gate",
+      "on_review_required": "observer_review",
+      "on_block": "blocked"
+    },
+    {
+      "stage": "startup_gate",
+      "gate_kind": "mf_subagent.startup",
       "on_allow": "implementation_wait",
       "on_review_required": "observer_review",
       "on_block": "blocked"
@@ -123,6 +131,32 @@
       ],
       "outputs": [
         "decision",
+        "next_stage"
+      ]
+    },
+    "startup_gate": {
+      "inputs": [
+        "contract",
+        "worker_worktree",
+        "target_worktree",
+        "actual_git_root",
+        "actual_cwd",
+        "branch_ref",
+        "base_commit",
+        "target_head_commit",
+        "fence_token",
+        "actual_fence_token",
+        "owned_files"
+      ],
+      "outputs": [
+        "precheck_run_id",
+        "decision",
+        "expected_worker_git",
+        "actual_runtime_git",
+        "target_git",
+        "same_as_expected_worker",
+        "same_as_target_main",
+        "target_dirty_owned_files",
         "next_stage"
       ]
     },
@@ -283,6 +317,19 @@
       "branch_ref_present",
       "merge_queue_id_present",
       "active_graph_current_at_dispatch",
+      "write_scope_present",
+      "contract_shape_valid"
+    ],
+    "mf_subagent.startup": [
+      "actual_runtime_git_root_reported",
+      "actual_runtime_matches_expected_worker_worktree",
+      "actual_runtime_not_target_main_worktree",
+      "worker_and_actual_heads_match_base_commit",
+      "worker_and_actual_branches_match_branch_ref",
+      "target_head_matches_target_head_commit",
+      "target_main_worktree_clean",
+      "target_dirty_owned_file_overlap_absent",
+      "fence_token_reported_and_matches",
       "write_scope_present",
       "contract_shape_valid"
     ],

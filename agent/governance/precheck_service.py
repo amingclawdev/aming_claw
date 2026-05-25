@@ -20,6 +20,7 @@ BLOCK = "block"
 
 GATE_KINDS = (
     "mf_subagent.dispatch",
+    "mf_subagent.startup",
     "mf_subagent.handoff",
     "workflow.merge",
     "workflow.merge_queue_entry",
@@ -176,6 +177,121 @@ def _dispatch_gate(
         ),
         "branch_adoption_mode": adoption_mode,
         "fence_token_present": bool(_text(subject.get("fence_token"))),
+    }
+
+
+def _startup_gate(
+    contract_id: str,
+    stage: str,
+    subject: dict[str, Any],
+    actor: str,
+) -> dict[str, Any]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    errors.extend(_contract_errors(subject, contract_id, stage, "mf_subagent.startup"))
+
+    expected_worker_path = _path(subject, "worker_worktree", "expected_worker_worktree", "worktree")
+    actual_path = _path(
+        subject,
+        "actual_git_root",
+        "runtime_git_root",
+        "actual_worktree",
+        "actual_cwd",
+        "cwd",
+    )
+    target_path = _path(subject, "target_worktree", "main_worktree")
+    expected_worker_git = _git_evidence(expected_worker_path)
+    actual_runtime_git = _git_evidence(actual_path)
+    target_git = _git_evidence(target_path)
+    owned_files = _string_list(subject.get("owned_files") or subject.get("write_scope"))
+    branch_ref = _first_text(subject, "branch_ref", "branch")
+    base_commit = _text(subject.get("base_commit"))
+    target_head_commit = _text(subject.get("target_head_commit"))
+    fence_token = _text(subject.get("fence_token"))
+    actual_fence_token = _first_text(subject, "actual_fence_token", "reported_fence_token")
+    target_dirty_owned_files = _dirty_owned_overlap(target_git, owned_files)
+
+    expected_root = _text(expected_worker_git.get("root"))
+    actual_root = _text(actual_runtime_git.get("root"))
+    target_root = _text(target_git.get("root"))
+
+    if not expected_worker_path:
+        errors.append("missing_worker_worktree")
+    if not actual_path:
+        errors.append("missing_actual_runtime_path")
+    if not target_path:
+        errors.append("missing_target_worktree")
+    if not owned_files:
+        errors.append("missing_write_scope")
+    if not branch_ref:
+        errors.append("missing_branch_ref")
+    if not base_commit:
+        errors.append("missing_base_commit")
+    if not target_head_commit:
+        errors.append("missing_target_head_commit")
+    if not fence_token:
+        errors.append("missing_fence_token")
+    if not actual_fence_token:
+        errors.append("missing_actual_fence_token")
+    elif fence_token and actual_fence_token != fence_token:
+        errors.append("actual_fence_token_mismatch")
+
+    if expected_worker_git["error"]:
+        errors.append("worker_git_unavailable")
+    if actual_runtime_git["error"]:
+        errors.append("actual_runtime_git_unavailable")
+    if target_git["error"]:
+        errors.append("target_git_unavailable")
+    if expected_worker_git["dirty"]:
+        errors.append("dirty_worker_worktree_at_startup")
+    if actual_runtime_git["dirty"]:
+        errors.append("dirty_actual_runtime_worktree_at_startup")
+    if target_git["dirty"]:
+        errors.append("dirty_target_main_worktree_at_startup")
+    if target_dirty_owned_files:
+        errors.append("target_dirty_owned_file_overlap")
+
+    if expected_root and target_root and expected_root == target_root:
+        errors.append("expected_worker_is_target_main")
+    if actual_root and target_root and actual_root == target_root:
+        errors.append("actual_worktree_is_target_main")
+    if expected_root and actual_root and expected_root != actual_root:
+        errors.append("actual_worktree_mismatch")
+    if base_commit and expected_worker_git["head"] and expected_worker_git["head"] != base_commit:
+        errors.append("worker_head_mismatch")
+    if base_commit and actual_runtime_git["head"] and actual_runtime_git["head"] != base_commit:
+        errors.append("actual_head_mismatch")
+    if target_head_commit and target_git["head"] and target_git["head"] != target_head_commit:
+        errors.append("target_head_mismatch")
+    if branch_ref and expected_worker_git["branch"] and expected_worker_git["branch"] != branch_ref:
+        errors.append("worker_branch_mismatch")
+    if branch_ref and actual_runtime_git["branch"] and actual_runtime_git["branch"] != branch_ref:
+        errors.append("actual_branch_mismatch")
+
+    return {
+        "schema_version": PRECHECK_RESULT_SCHEMA_VERSION,
+        "actor": actor,
+        "gate_kind": "mf_subagent.startup",
+        "stage": stage,
+        "errors": _dedupe(errors),
+        "warnings": _dedupe(warnings),
+        "expected_worker_git": expected_worker_git,
+        "actual_runtime_git": actual_runtime_git,
+        "target_git": target_git,
+        "expected_worker_root": expected_root,
+        "actual_runtime_root": actual_root,
+        "target_root": target_root,
+        "actual_path": actual_path,
+        "owned_files": owned_files,
+        "target_dirty_owned_files": target_dirty_owned_files,
+        "same_as_expected_worker": bool(expected_root and actual_root and expected_root == actual_root),
+        "same_as_target_main": bool(actual_root and target_root and actual_root == target_root),
+        "branch_ref": branch_ref,
+        "base_commit": base_commit,
+        "target_head_commit": target_head_commit,
+        "fence_token_present": bool(fence_token),
+        "actual_fence_token_present": bool(actual_fence_token),
+        "fence_token_matches": bool(fence_token and actual_fence_token == fence_token),
     }
 
 
@@ -576,6 +692,7 @@ def _close_gate(
 _Gate = Callable[[str, str, dict[str, Any], str], dict[str, Any]]
 _GATE_REGISTRY: dict[str, _Gate] = {
     "mf_subagent.dispatch": _dispatch_gate,
+    "mf_subagent.startup": _startup_gate,
     "mf_subagent.handoff": _handoff_gate,
     "workflow.merge": _merge_gate,
     "workflow.merge_queue_entry": _merge_queue_entry_gate,
@@ -633,6 +750,7 @@ def _git_evidence(path: str) -> dict[str, Any]:
             "path": "",
             "root": "",
             "head": "",
+            "branch": "",
             "dirty": True,
             "dirty_files": [],
             "tracked_dirty_files": [],
@@ -646,6 +764,7 @@ def _git_evidence(path: str) -> dict[str, Any]:
         }
     root = _git(path, "rev-parse", "--show-toplevel")
     head = _git(path, "rev-parse", "HEAD")
+    branch = _git(path, "rev-parse", "--abbrev-ref", "HEAD")
     status = _git(path, "status", "--porcelain=v1", "-uall", "--ignored")
     error = ""
     if root is None or head is None or status is None:
@@ -663,6 +782,7 @@ def _git_evidence(path: str) -> dict[str, Any]:
         "path": str(Path(path).expanduser()),
         "root": _text(root),
         "head": _text(head),
+        "branch": _text(branch),
         "dirty": bool(dirty_files) or bool(error),
         "dirty_files": dirty_files,
         "tracked_dirty_files": tracked_dirty,
@@ -710,6 +830,12 @@ def _parse_status(output: str) -> list[dict[str, str]]:
             kind = "tracked"
         rows.append({"status": code, "path": path, "kind": kind})
     return rows
+
+
+def _dirty_owned_overlap(git: Mapping[str, Any], owned_files: Sequence[str]) -> list[str]:
+    dirty = set(_string_list(git.get("dirty_files")))
+    owned = set(_string_list(owned_files))
+    return sorted(dirty & owned)
 
 
 def _contract_errors(

@@ -224,6 +224,15 @@ verification timeline evidence, then stop after dispatch unless the user
 explicitly asks to wait, review, merge, close, or perform another privileged
 action.
 
+After a local `mf_sub` worker starts and before it edits files, it MUST report
+its actual runtime identity (`actual_git_root` or `actual_cwd`,
+`actual_fence_token`, branch, HEAD, and target/main HEAD) through the unified
+`mf_subagent.startup` precheck. The gate blocks if the runtime git root is the
+target/main worktree, differs from the assigned worker worktree, has the wrong
+branch/HEAD/fence token, or if target/main became dirty after dispatch. When
+target/main dirty files overlap the worker's owned files, the observer must
+stop the worker and preserve the evidence before any handoff or merge review.
+
 #### R19.2 Contract-driven MF Workflow Runtime and Unified Precheck Gates
 
 MF workflow workers may drive the deterministic stage graph only when the
@@ -232,7 +241,7 @@ backlog row instantiates a contract from
 stage order is:
 
 ```text
-dispatch -> implementation_wait -> handoff_gate -> merge_gate -> reconcile -> close_gate -> done
+dispatch -> startup_gate -> implementation_wait -> handoff_gate -> merge_gate -> merge_queue_entry -> merge_preview -> live_merge -> reconcile -> close_gate -> done
 ```
 
 `observer_review` and `blocked` are explicit branch targets. Green-lane
@@ -245,8 +254,12 @@ subject, actor)`. Workflow workers MUST call this service for registered gate
 kinds instead of duplicating policy logic:
 
 - `mf_subagent.dispatch`
+- `mf_subagent.startup`
 - `mf_subagent.handoff`
 - `workflow.merge`
+- `workflow.merge_queue_entry`
+- `workflow.merge_preview`
+- `workflow.live_merge`
 - `workflow.reconcile_policy`
 - `backlog.close`
 

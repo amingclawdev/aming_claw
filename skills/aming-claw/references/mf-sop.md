@@ -41,7 +41,7 @@ Canonical source: `docs/governance/manual-fix-sop.md`. This file is only the sho
      `agent.governance.precheck_service.run_precheck(kind, contract_id, stage,
      subject, actor)`;
    - use the workflow runtime stage graph
-     `dispatch -> implementation_wait -> handoff_gate -> merge_gate ->
+     `dispatch -> startup_gate -> implementation_wait -> handoff_gate -> merge_gate ->
      merge_queue_entry -> merge_preview -> live_merge -> reconcile ->
      close_gate -> done`, with `observer_review` for yellow-lane results and
      `blocked` for red-lane results;
@@ -84,6 +84,13 @@ Canonical source: `docs/governance/manual-fix-sop.md`. This file is only the sho
    - block target/main worktree dispatch by default. A same-worktree exception
      requires `same_worktree_allowed=true`, an explicit operator reason, exact
      dirty-scope evidence, and observer timeline evidence before dispatch;
+   - after the local `mf_sub` worker starts and before it edits files, require
+     `mf_subagent.startup` through the unified precheck service with
+     `actual_git_root` or `actual_cwd`, `actual_fence_token`, branch, HEAD,
+     target/main HEAD, and owned files. Block and stop the worker if actual
+     runtime root is target/main, differs from the assigned worker worktree,
+     carries the wrong branch/HEAD/fence token, or target/main became dirty,
+     especially when dirty files overlap owned files;
    - require subagent implementation or verification timeline evidence to
      include returned graph trace ids in `payload.graph_trace_ids`,
      `payload.graph_query_trace_ids`, `verification.graph_trace_ids`, or
