@@ -1,0 +1,193 @@
+{
+  "schema_version": "mf_workflow_runtime_contract.v1",
+  "template_id": "mf_workflow_runtime.v1",
+  "description": "Contract for deterministic MF workflow workers that call a unified local precheck/gate service for each privileged stage.",
+  "contract_instance_id": "",
+  "control_plane": {
+    "observer_role": "monitoring_requirements_design_exception_handling",
+    "worker_role": "deterministic_state_machine_executor",
+    "precheck_service_role": "authoritative_gate_decision_and_evidence",
+    "timeline_role": "append_only_audit_and_replay_source"
+  },
+  "fixture_policy": {
+    "decision": "new_scenario_required",
+    "fixture_required": true,
+    "fixture_path": "agent/tests/fixtures/mf_workflow_runtime.py",
+    "scenario_ids": [
+      "SCN-MF-WF-001",
+      "SCN-MF-WF-002",
+      "SCN-MF-WF-003",
+      "SCN-MF-WF-004",
+      "SCN-MF-WF-006"
+    ]
+  },
+  "stage_graph": [
+    {
+      "stage": "dispatch",
+      "gate_kind": "mf_subagent.dispatch",
+      "on_allow": "implementation_wait",
+      "on_review_required": "observer_review",
+      "on_block": "blocked"
+    },
+    {
+      "stage": "implementation_wait",
+      "gate_kind": "",
+      "on_worker_review_ready": "handoff_gate"
+    },
+    {
+      "stage": "handoff_gate",
+      "gate_kind": "mf_subagent.handoff",
+      "on_allow": "merge_gate",
+      "on_review_required": "observer_review",
+      "on_block": "blocked"
+    },
+    {
+      "stage": "merge_gate",
+      "gate_kind": "workflow.merge",
+      "on_allow": "reconcile",
+      "on_review_required": "observer_review",
+      "on_block": "blocked"
+    },
+    {
+      "stage": "reconcile",
+      "gate_kind": "workflow.reconcile_policy",
+      "on_allow": "close_gate",
+      "on_review_required": "observer_review",
+      "on_block": "blocked"
+    },
+    {
+      "stage": "close_gate",
+      "gate_kind": "backlog.close",
+      "on_allow": "done",
+      "on_review_required": "observer_review",
+      "on_block": "blocked"
+    }
+  ],
+  "gate_registry": {
+    "mf_subagent.dispatch": [
+      "target_main_worktree_clean",
+      "worker_worktree_clean",
+      "isolated_worktree",
+      "worker_head_matches_base_commit",
+      "target_head_matches_target_head_commit",
+      "write_scope_present",
+      "contract_shape_valid"
+    ],
+    "mf_subagent.handoff": [
+      "dirty_scope_exact_match",
+      "untracked_and_ignored_files_counted",
+      "forbidden_paths_absent",
+      "tests_evidence_present",
+      "timeline_evidence_present"
+    ],
+    "workflow.merge": [
+      "main_worktree_clean",
+      "source_candidate_committed",
+      "subject_commit_matches_precheck_token",
+      "contract_evidence_complete",
+      "implementation_and_verification_timeline_present"
+    ],
+    "workflow.reconcile_policy": [
+      "docs_or_code_module_scope_reconcile_allowed",
+      "graph_rule_change_requires_full_reconcile",
+      "runtime_or_dashboard_change_requires_e2e_or_review",
+      "subject_commit_matches_precheck_token"
+    ],
+    "backlog.close": [
+      "mf_timeline_precheck_passed",
+      "close_ready_present",
+      "merge_commit_recorded",
+      "required_evidence_ids_present",
+      "subject_commit_matches_precheck_token"
+    ]
+  },
+  "lane_policy": {
+    "green": "all gates pass with deterministic evidence and no runtime/API/dashboard change",
+    "yellow": "warnings, env fallback, waiver request, stale token, nonblocking preflight uncertainty, graph-rule/fingerprint change, or runtime/API/dashboard review with E2E -> observer_review",
+    "red": "dirty main, same-worktree dispatch, missing evidence, unknown gate, forbidden paths, conflict, runtime/API/dashboard change without E2E, invalid contract, or token mismatch -> blocked"
+  },
+  "precheck_result_contract": {
+    "required_fields": [
+      "precheck_run_id",
+      "kind",
+      "contract_id",
+      "stage",
+      "decision",
+      "status",
+      "subject",
+      "evidence",
+      "evidence_hash",
+      "created_at"
+    ],
+    "allowed_decisions": [
+      "allow",
+      "review_required",
+      "block"
+    ],
+    "token_policy": "merge/reconcile/close must reference a precheck_run_id whose subject commit/path evidence still matches current state"
+  },
+  "observer_escalation": {
+    "review_stages": [
+      "observer_review"
+    ],
+    "blocked_stages": [
+      "blocked"
+    ],
+    "review_required_reasons": [
+      "warnings",
+      "waiver_request",
+      "graph_rule_change",
+      "runtime_or_dashboard_change_with_e2e",
+      "nonblocking_preflight_uncertainty"
+    ],
+    "blocked_reasons": [
+      "dirty_main",
+      "dirty_worker_outside_scope",
+      "same_worktree_dispatch",
+      "missing_required_evidence",
+      "unknown_gate",
+      "invalid_contract",
+      "forbidden_path",
+      "token_mismatch",
+      "runtime_or_dashboard_change_without_e2e"
+    ]
+  },
+  "evidence_requirements": [
+    {
+      "id": "fixture_contract",
+      "required": true,
+      "phase": "implementation",
+      "kind": "test_fixture"
+    },
+    {
+      "id": "precheck_service_tests",
+      "required": true,
+      "phase": "verification",
+      "kind": "pytest"
+    },
+    {
+      "id": "workflow_worker_tests",
+      "required": true,
+      "phase": "verification",
+      "kind": "pytest"
+    },
+    {
+      "id": "merge_close_gate_tests",
+      "required": true,
+      "phase": "verification",
+      "kind": "pytest"
+    },
+    {
+      "id": "docs_policy_update",
+      "required": true,
+      "phase": "implementation",
+      "kind": "docs"
+    },
+    {
+      "id": "e2e_not_applicable",
+      "required": true,
+      "phase": "verification",
+      "kind": "e2e"
+    }
+  ]
+}
