@@ -505,6 +505,69 @@ class TestCliBacklog:
 
 
 class TestCliMf:
+    def test_mf_dispatch_gate_help_visible(self):
+        runner = CliRunner()
+
+        result = runner.invoke(main, ["mf", "--help"])
+        assert result.exit_code == 0
+        assert "dispatch-gate" in result.output
+
+        command_help = runner.invoke(main, ["mf", "dispatch-gate", "--help"])
+        assert command_help.exit_code == 0
+        assert "--contract-file" in command_help.output
+        assert "--target-worktree" in command_help.output
+        assert "--main-worktree" in command_help.output
+
+    def test_mf_dispatch_gate_rejects_invalid_payload(self, tmp_path):
+        runner = CliRunner(mix_stderr=False)
+        contract_path = tmp_path / "dispatch.json"
+        contract_path.write_text(json.dumps({"owned_files": []}), encoding="utf-8")
+
+        result = runner.invoke(main, [
+            "mf",
+            "dispatch-gate",
+            "--contract-file",
+            str(contract_path),
+        ])
+
+        assert result.exit_code == 1
+        assert result.output == ""
+        assert "REJECT: MF subagent dispatch missing required fields:" in result.stderr
+        assert "branch" in result.stderr
+
+    def test_mf_dispatch_gate_prints_pretty_json_on_pass(self, tmp_path):
+        runner = CliRunner()
+        contract_path = tmp_path / "dispatch.json"
+        contract_path.write_text(json.dumps({
+            "branch": "mf/test-worker",
+            "worktree": str(tmp_path / "worker"),
+            "base_commit": "abc123",
+            "target_head_commit": "def456",
+            "merge_queue_id": "mq-test",
+            "fence_token": "fence-test",
+            "owned_files": ["agent/cli.py"],
+            "dirty_scope_check": {
+                "status": "passed",
+                "changed_files": [],
+            },
+        }), encoding="utf-8")
+
+        result = runner.invoke(main, [
+            "mf",
+            "dispatch-gate",
+            "--contract-file",
+            str(contract_path),
+        ])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["schema_version"] == "mf_subagent_dispatch_gate.v1"
+        assert payload["fence_token"] == "fence-test"
+        assert payload["base_commit"] == "abc123"
+        assert payload["target_head_commit"] == "def456"
+        assert payload["owned_files"] == ["agent/cli.py"]
+        assert "\n  \"base_commit\": \"abc123\"" in result.output
+
     def test_mf_precommit_check_passes_on_missing_state_warning(self, tmp_path):
         runner = CliRunner()
 

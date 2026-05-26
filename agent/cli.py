@@ -13,6 +13,7 @@ Usage:
     aming-claw launcher        - write a local launcher HTML artifact
     aming-claw run-executor    - start executor worker
     aming-claw mf precommit-check - run MF pre-commit guards
+    aming-claw mf dispatch-gate - validate MF subagent dispatch evidence
 """
 
 import os
@@ -532,6 +533,33 @@ def mf_precommit_check(plugin_state, json_output):
         click.echo(format_plugin_update_state_status(plugin_status))
     if not result["ok"]:
         raise click.exceptions.Exit(1)
+
+
+@mf.command("dispatch-gate")
+@click.option(
+    "--contract-file",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, readable=True),
+    help="Existing MF subagent dispatch contract JSON path.",
+)
+@click.option("--target-worktree", default="", help="Target worktree path to block same-worktree dispatch.")
+@click.option("--main-worktree", default="", help="Main worktree path to block same-worktree dispatch.")
+def mf_dispatch_gate(contract_file, target_worktree, main_worktree):
+    """Validate MF subagent dispatch evidence before worker handoff."""
+    from agent.governance.mf_subagent_contract import validate_mf_subagent_dispatch_gate
+
+    try:
+        payload = json.loads(Path(contract_file).read_text(encoding="utf-8"))
+        result = validate_mf_subagent_dispatch_gate(
+            payload,
+            target_worktree_path=target_worktree,
+            main_worktree_path=main_worktree,
+        )
+    except Exception as exc:
+        click.echo(f"REJECT: {exc}", err=True)
+        raise click.exceptions.Exit(1) from exc
+
+    click.echo(json.dumps(result, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":
