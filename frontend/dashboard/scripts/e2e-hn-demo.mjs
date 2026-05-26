@@ -5,7 +5,8 @@
 // It intentionally does not replay code workflows or call live AI providers.
 //
 //   node scripts/e2e-hn-demo.mjs --dashboard http://127.0.0.1:40000/dashboard --project aming-claw
-//   node scripts/e2e-hn-demo.mjs --headed --keep-open
+//   node scripts/e2e-hn-demo.mjs --project aming-claw --headed --keep-open
+//   node scripts/e2e-hn-demo.mjs --ensure-fixture --no-browser
 
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -328,132 +329,23 @@ async function ensureFixtureProject() {
     }
     ok(`fixture project already registered: ${PROJECT}`);
   }
-  await seedFixtureBacklog(fixture.commit);
+  if (fixture.commit) ok(`fixture baseline commit=${fixture.commit.slice(0, 12)}`);
 }
 
-async function seedFixtureBacklog(commit) {
-  const chainTrigger = {
-    template_id: "hn_demo_fixture_contract.v1",
-    contract_instance_id: BACKLOG_ID,
-    mode: "isolated_demo_fixture",
-    evidence_requirements: [
-      { id: "project_structure", label: "Graph-first project structure", required: true },
-      { id: "timeline_lanes", label: "Observer and subagent lane evidence", required: true },
-      { id: "asset_review", label: "Docs/tests/config review surface", required: true },
-    ],
-  };
-  await http("POST", `/api/backlog/${pid(PROJECT)}/${pid(BACKLOG_ID)}`, {
-    force_admit: true,
+async function verifyFixtureBaseline(backlog) {
+  assert(Number(backlog.count || backlog.bugs.length || 0) === 0, "fixture must start with an empty backlog");
+  const timeline = await http("GET", `/api/task/${pid(PROJECT)}/timeline`);
+  assert(Number(timeline.count || 0) === 0, "fixture must start with an empty timeline");
+  const query = await http("POST", `/api/graph-governance/${pid(PROJECT)}/query`, {
+    tool: "find_node_by_path",
+    args: { path: "src/order-router.js" },
     actor: "hn_demo_fixture",
-    title: "HN demo fixture: contract, timeline, and asset review",
-    status: "OPEN",
-    priority: "P1",
-    target_files: ["src/order-router.js", "src/runtime-config.js"],
-    test_files: ["tests/order-router.test.mjs"],
-    required_docs: ["docs/order-routing.md"],
-    acceptance_criteria: [
-      "Show project structure before work starts.",
-      "Show observer and subagent evidence while work executes.",
-      "Show docs, tests, and config as reviewable assets after work lands.",
-    ],
-    details_md:
-      "Generated first-run HN demo fixture. It is isolated from the user's active app and exists only to make the demo usable before any real project is bootstrapped.",
-    chain_trigger_json: chainTrigger,
-    provenance_paths: ["HN-DEMO-FIRST-RUN-FIXTURE"],
-    commit,
-    mf_type: "manual_fix",
+    query_source: "observer",
+    query_purpose: "gate_validation",
   });
-
-  const timeline = await http("GET", `/api/task/${pid(PROJECT)}/timeline?backlog_id=${pid(BACKLOG_ID)}`);
-  if (Number(timeline.count || 0) > 0) {
-    ok(`fixture backlog already has ${timeline.count} timeline event(s)`);
-    return;
-  }
-  const base = {
-    backlog_id: BACKLOG_ID,
-    mf_id: BACKLOG_ID,
-    task_id: "hn-demo-fixture-task",
-    attempt_num: 1,
-    correlation_id: "hn-demo-first-run-fixture",
-    commit_sha: commit,
-  };
-  const events = [
-    {
-      event_type: "mf_dispatch",
-      event_kind: "implementation",
-      actor: "observer",
-      phase: "dispatch",
-      status: "accepted",
-      payload: { lane: "observer", orchestration: true, contract_evidence: [{ requirement_id: "project_structure", status: "passed" }] },
-    },
-    {
-      event_type: "subagent_result",
-      event_kind: "implementation",
-      actor: "mf_sub_graph",
-      phase: "graph_lookup",
-      status: "passed",
-      payload: {
-        lane: "frontend",
-        graph_query_trace_ids: ["gqt-hn-demo-fixture-structure"],
-        inspected_node_titles: ["src/order-router.js", "src/runtime-config.js"],
-        contract_evidence: [{ requirement_id: "project_structure", status: "passed" }],
-      },
-    },
-    {
-      event_type: "subagent_result",
-      event_kind: "implementation",
-      actor: "mf_sub_worker",
-      phase: "implementation",
-      status: "passed",
-      payload: {
-        lane: "backend",
-        changed_files: ["src/order-router.js", "src/runtime-config.js", "config/feature-flags.json"],
-        required_docs: ["docs/order-routing.md"],
-        contract_evidence: [{ requirement_id: "timeline_lanes", status: "passed" }],
-      },
-    },
-    {
-      event_type: "verification",
-      event_kind: "verification",
-      actor: "observer",
-      phase: "verification",
-      status: "passed",
-      verification: {
-        tests_run: ["npm test"],
-        passed: true,
-        contract_evidence: [{ requirement_id: "timeline_lanes", status: "passed" }],
-      },
-    },
-    {
-      event_type: "asset_review",
-      event_kind: "verification",
-      actor: "observer",
-      phase: "asset_review",
-      status: "passed",
-      payload: {
-        docs_updated: ["docs/order-routing.md"],
-        test_files: ["tests/order-router.test.mjs"],
-        config_files: ["config/feature-flags.json"],
-        contract_evidence: [{ requirement_id: "asset_review", status: "passed" }],
-      },
-    },
-    {
-      event_type: "close_ready",
-      event_kind: "close_ready",
-      actor: "observer",
-      phase: "close_ready",
-      status: "passed",
-      verification: {
-        contract_evidence: [
-          { requirement_id: "project_structure", status: "passed" },
-          { requirement_id: "timeline_lanes", status: "passed" },
-          { requirement_id: "asset_review", status: "passed" },
-        ],
-      },
-    },
-  ];
-  for (const event of events) await http("POST", `/api/task/${pid(PROJECT)}/timeline`, { ...base, ...event });
-  ok(`seeded fixture backlog=${BACKLOG_ID} timeline=${events.length} events`);
+  assert(Number(query.result?.count || 0) > 0, "fixture graph cannot resolve src/order-router.js");
+  ok("fixture graph resolves src/order-router.js");
+  ok("fixture starts with empty backlog and timeline evidence");
 }
 
 async function checkGovernance() {
@@ -472,13 +364,17 @@ async function checkGovernance() {
   assert(projects.projects.some((project) => project.project_id === PROJECT), `project ${PROJECT} is not registered`);
   assert(status.active_snapshot_id, `${PROJECT} active graph snapshot is missing`);
   assert(Array.isArray(backlog.bugs), `/api/backlog/${PROJECT} did not return bugs[]`);
-  assert(backlog.bugs.some((bug) => bug.bug_id === BACKLOG_ID), `backlog row ${BACKLOG_ID} is not visible`);
   assert(feedback.summary || Array.isArray(feedback.items) || Array.isArray(feedback.groups), "review queue response shape is not recognized");
+  if (ENSURE_FIXTURE) {
+    await verifyFixtureBaseline(backlog);
+  } else {
+    assert(backlog.bugs.some((bug) => bug.bug_id === BACKLOG_ID), `backlog row ${BACKLOG_ID} is not visible`);
+    ok(`backlog=${BACKLOG_ID}`);
+  }
 
   ok(`governance reachable at ${BACKEND}`);
   ok(`dashboard target ${DASHBOARD}`);
   ok(`project=${PROJECT} snapshot=${status.active_snapshot_id}`);
-  ok(`backlog=${BACKLOG_ID}`);
 }
 
 async function loadPlaywright() {
@@ -597,6 +493,13 @@ async function main() {
   try {
     await checkGovernance();
     if (NO_BROWSER) {
+      console.log("");
+      console.log(c("green", "HN DEMO FIXTURE OK"));
+      return;
+    }
+    if (ENSURE_FIXTURE) {
+      warn("fixture mode no longer seeds observer backlog/timeline evidence; skipping browser screenshots");
+      info(`rerun with --project ${PROJECT} --backlog <observer-created-backlog-id> to capture dashboard evidence`);
       console.log("");
       console.log(c("green", "HN DEMO FIXTURE OK"));
       return;
