@@ -1,184 +1,222 @@
-# Why do Codex and Claude still grep?
+# Hope is not an engineering control for AI coding agents
 
-Every serious coding agent eventually reaches for grep.
+Right now, when you ask an AI coding agent to ship a feature, you give it a
+prompt and hope.
 
-That is not a failure. Grep is fast, local, inspectable, and honest. If the
-question is "where does this symbol appear?" or "which file contains this
-string?", grep is still one of the best tools we have.
+You hope it touched the right files. You hope it did not reimplement something
+the project already had. You hope it ran the right tests. You hope it did not
+break docs or config you forgot to mention. You hope the diff is actually what
+you asked for.
 
-The problem is that grep is not project memory.
+Hope is not an engineering control.
 
-It can show matching text, but it does not know which file owns a feature, which
-work item changed it, which reviewer accepted a semantic claim, which generated
-asset is merely noise, or which verification evidence should block a merge. It
-does not remember the difference between "this doc mentions a module" and "this
-doc is accepted as the module's governance record." It does not know whether an
-agent is reading a current commit-bound model of the project or just sampling
-whatever the working tree happens to contain.
+I have been building Aming Claw around a simple idea: an AI coding agent should
+not just produce a diff. It should work against a contract, leave typed evidence,
+and update the project facts that the next agent will read.
 
-That gap is where many AI coding sessions become repetitive. The model asks the
-filesystem the same broad questions again and again because the durable fact
-layer is missing or too weak to trust.
+The problem is not that agents use grep. Grep is fast, local, inspectable, and
+honest. The problem is using grep, prompts, and chat history as the only memory
+of a project.
 
-## The three fact layers we are dogfooding
+## The three fears
 
-In Aming Claw we have been trying to separate three kinds of project facts.
+The way I now think about AI coding work is split across three ordinary fears.
 
-**Structural facts** are facts about the project shape. Which files belong to
-which subsystem? Which functions call which functions? Which docs, tests, and
-config files are bound to a node, and which are just unowned assets? Which graph
-snapshot was built from which commit?
+**Before work:** will the agent understand the project before it edits, or will
+it duplicate an existing pattern and touch the wrong owner?
 
-Structural facts should not be vibes from an embedding search. They should be
-commit-bound, queryable, and repairable. If the graph is wrong, the repair path
-should be source-controlled hints, config, rules, accepted review events, or a
-new reconcile run, not a silent database edit.
+**During work:** can I see what the agent actually did, which files it owned,
+which evidence it produced, and whether the work satisfied the contract?
 
-**Work facts** are facts about intent, scope, and responsibility. What backlog
-row authorized the change? Which branch and worktree is this agent allowed to
-touch? Which paths are forbidden because another agent or the observer owns
-them? What acceptance criteria are being tested?
+**After work:** once the patch lands, do I know what changed in docs, tests,
+config, generated assets, graph memory, and semantic memory before the next agent
+trusts stale project state?
 
-These facts matter more once you have multiple agents. Without work facts, an
-assistant can be locally correct and globally destructive: it can "clean up"
-dirty files that belong to someone else, edit a sibling draft, or merge a branch
-before the observer has reviewed the evidence.
+Those fears map to three kinds of project facts.
 
-**Execution facts** are facts about what actually happened. Which graph queries
-were run? Which trace ids came back? Which tests passed? Was an ignored doc file
-force-added or still invisible to normal git status? Which runtime version was
-serving the dashboard when the work was verified?
+## Structural facts: before the edit
 
-These facts are boring in the right way. They make an agent's claims auditable
-after the context window is gone.
+Structural facts describe what the project is.
 
-## Dogfood case: Asset Inbox relation browser
+Which files belong to which subsystem? Which functions call which functions?
+Which docs, tests, config files, and assets are bound to a node? Which graph
+snapshot was built from which commit? Is the active graph current, or is the
+project asking the agent to reason from stale structure?
 
-One concrete example is the Asset Inbox relation browser work.
+This matters because AI can make plausible architecture mistakes that are not
+syntax errors.
 
-The naive version of this feature is a search page for orphan files. That is
-useful, but it is not enough. A repo has source files, unbound docs, generated
-artifacts, stale mappings, weak candidate matches, accepted bindings, and
-ignored archives. Treating all of that as one pile produces bad governance:
-agents start filing work from noise, or they treat a weak AI proposal as if it
-were trusted graph state.
+One of my earlier failures was a service-pattern miss. A project already had a
+standard HTTP service pattern, but the AI introduced a parallel WebSocket-style
+service that looked coherent in isolation and wrong in context. The code could
+compile. The problem was that the agent did not see the existing project shape
+before writing.
 
-The fact-layer version separates source state from derived state:
+Aming Claw treats the graph as a commit-bound projection of source, hints, config,
+and accepted review events. The graph is not a mutable memory blob that the AI
+edits directly. If the graph is wrong, the repair path is source-controlled
+evidence or a reconcile run, not a silent database edit.
 
-- committed files, hints, config, accepted events, and deterministic inventory
-  are source inputs;
-- Asset Inbox rows, candidate binding proposals, dashboard grouping, and backlog
-  payloads are derived outputs;
-- weak matches can be shown to an operator, but accepted bindings are the only
-  ones that enter review impact scope.
+Case: [Fear Before Work](../hn-demo/cases/before-work.md)
 
-Grep can find "Asset Inbox." It cannot tell you whether a doc is a candidate,
-accepted binding, stale projection, generated artifact, or ignored asset unless
-that state has been modeled somewhere else.
+Related deeper story:
+[AI proposed 5 components for my parallel system. After walking one scenario, only 3 were real.](https://dev.to/amingin_ai/ai-proposed-5-components-for-my-parallel-system-after-walking-one-scenario-only-3-were-real-12nd)
 
-## Dogfood case: observer-only merge workflow
+## Work facts: during the edit
 
-The second example is the observer-only merge workflow we use for parallel
-Manual Fix work.
+Work facts describe what was promised.
 
-In that workflow, implementation agents are deliberately boring. A worker gets a
-backlog id, a branch, a worktree, a fence token, an owned file list, forbidden
-paths, required checks, and a stop condition. It does not merge. It does not
-push. It does not close the backlog row. It does not activate graph refs or
-mutate merge queues. It stops at review_ready with evidence.
+What backlog row authorized the change? Which target files are in scope? Which
+paths are forbidden? Which branch, worktree, fence token, source head, and
+precheck belong to this worker? Which acceptance criteria are required before a
+human can close the task?
 
-That sounds bureaucratic until you have two agents writing related launch docs
-at the same time while the observer has unrelated dirty edits in governance
-files. In that situation, grep can tell an agent that a phrase exists in a
-forbidden file. It cannot tell the agent that the file is out of contract and
-must not be touched. The work fact has to come from the backlog and the parallel
-contract, and the execution fact has to come from timeline evidence and focused
-checks.
+Without work facts, an agent can be locally correct and globally destructive. It
+can edit a sibling draft, clean up someone else's dirty file, or merge a branch
+because its own final answer sounds confident.
+
+In the Aming Claw V1 flow, a worker does not accept its own work. It can
+implement, run checks, and append evidence. It cannot merge, close the backlog
+row, or make branch-local graph state canonical. Observer review and machine
+prechecks are separate state transitions.
+
+This is the part I think of as contract-driven execution. The contract names the
+work, target files, acceptance criteria, required evidence, and review boundary.
+The execution timeline records dispatch, implementation, verification, and
+close-ready events. The interesting part is not that a timeline exists. The
+interesting part is that "I implemented it", "it passed verification", "it is
+ready to merge", and "the backlog is closed" are different facts.
+
+Case: [Fear During Work](../hn-demo/cases/during-work.md)
+
+Related deeper story:
+[I told my AI to build a feature. Did it? I had no idea.](https://dev.to/amingin_ai/i-told-my-ai-to-build-a-feature-did-it-i-had-no-idea-1f1)
+
+## Execution and project-memory facts: after the edit
+
+Execution facts describe what actually happened.
+
+Which graph queries ran? Which trace ids came back? Which tests passed? Which
+commit landed? Which runtime version served the dashboard when verification ran?
+Which docs, tests, config files, and generated assets changed, and are they
+trusted project memory or just candidate evidence?
+
+This is where a lot of AI work rots quietly. A diff can be correct while the
+project's memory is not. A doc can mention a feature without being a trusted
+governance record for that feature. A path match can be useful evidence without
+being strong enough to enter review impact scope. A smoke test can pass while a
+reader-facing case page still points at old screenshots.
+
+That is why the after-work case separates source records from derived views:
+committed files, source-controlled hints, config, accepted bindings, review
+decisions, and timeline events are durable inputs; Asset Inbox rows, graph
+snapshots, semantic projections, candidate bindings, and operations-queue state
+are derived views.
+
+A changed doc first becomes a commit-bound asset with status and provenance. It
+becomes graph impact scope only after a reviewed binding, not because an AI or a
+path heuristic guessed it belonged there.
+
+Case: [Fear After Work](../hn-demo/cases/after-work.md)
+
+Related deeper story:
+[AI's tech debt is invisible - even to AI. I solved it at the architecture layer.](https://dev.to/amingin_ai/ais-tech-debt-is-invisible-even-to-ai-i-solved-it-at-the-architecture-layer-1nh1)
 
 ## A small real audit trail
 
 This article draft caught one of its own boring failures during launch prep.
+
 The HN demo browser smoke was passing, but the reader-facing docs still pointed
 at old screenshot filenames. That is exactly the kind of drift that usually
 survives because no source file is "broken."
 
-We filed it as `HN-FEAR-DEMO-SCREENSHOT-INDEX-20260526`, patched the demo
-README and case pages, reran the HN browser smoke, committed the fix, and then
-reconciled the graph before closing the backlog row. The source-visible part is
-the audit commit:
+We filed it as `HN-FEAR-DEMO-SCREENSHOT-INDEX-20260526`, patched the demo README
+and case pages, reran the HN browser smoke, committed the fix, reconciled the
+graph, and only then closed the backlog row. The source-visible part is the
+audit commit:
 [3ae68da8834cf24404c4d9672b2adaf02c19443e](https://github.com/amingclawdev/aming-claw/commit/3ae68da8834cf24404c4d9672b2adaf02c19443e).
-The demo entry point is
-[docs/hn-demo/README.md](../hn-demo/README.md), with the three case pages for
-[before work](../hn-demo/cases/before-work.md),
-[during work](../hn-demo/cases/during-work.md), and
-[after work](../hn-demo/cases/after-work.md).
+
+The follow-up commit that made the audit link visible from the article draft is:
+[70243f2dffe96c3a1bc5a9d6ed602ae6d236a60d](https://github.com/amingclawdev/aming-claw/commit/70243f2dffe96c3a1bc5a9d6ed602ae6d236a60d).
 
 GitHub shows the source diff. The backlog row, timeline events, close gate, and
 graph snapshot are local governance records unless you run the demo yourself.
-That boundary matters: source history is public evidence; governance state is
-the local audit trail that produced and verified it.
+That boundary matters: public source history is not the same thing as the local
+audit trail that produced and verified it.
 
 ## What this changes for coding agents
 
-The interesting question is not whether agents should stop using grep. They
-should keep using grep.
+The point is not to make agents stop using grep. They should keep using grep.
 
 The question is what grep should be surrounded by.
 
 A better local coding loop looks like this:
 
-1. Ask the project graph for the relevant structure.
-2. Ask the backlog or contract for the permitted work boundary.
+1. Ask the project graph for current structure and ownership.
+2. Ask the backlog or contract for permitted scope.
 3. Use grep and file reads for exact local evidence.
 4. Make the scoped change.
 5. Record execution facts: traces, changed files, tests, ignored-path status,
-   and any deferred review.
+   runtime state, and any deferred review.
+6. Reconcile source-derived project memory before the next agent trusts it.
 
 That loop does not require magic. It requires refusing to let the model's
 temporary context be the only memory of the project.
 
 ## Boundaries
 
-The boundaries are important because the claim is easy to overstate.
+The claim is easy to overstate, so here are the boundaries.
 
 This is not a claim that OpenAI, Anthropic, or any other lab cannot build these
 layers. They can. Some parts may already exist inside proprietary products or
-enterprise workflows. The point is narrower: the default local coding-agent
-experience still often falls back to repeated grep because durable,
-project-specific facts are not always present, trusted, or exposed to the agent
-as first-class tools.
+enterprise workflows.
 
 This is also not a claim that graphs solve everything. A bad graph is worse than
 no graph if agents treat it as authority. The graph has to be commit-bound,
 inspectable, and repairable. AI-generated semantics have to go through review
-before they become trusted project memory. Docs and tests have to remain assets
-until their binding is accepted.
+before they become trusted project memory. Docs, tests, and config files have to
+remain assets until their binding is accepted.
 
 And grep remains part of the system. Exact text search is still the fastest way
 to verify many local claims. The failure mode is using grep as a substitute for
 ownership, work scope, and execution history.
 
-## Challenge
+## Links for readers
 
-The challenge is to make the extra memory earn its keep.
+Demo entry point:
+[HN Fear Demo](../hn-demo/README.md)
 
-The Hacker News skeptical version of this is fair:
+The three case pages:
 
-- Is the graph fresh, or is it stale ceremony?
-- Can a developer inspect and repair the facts, or did we just create another
-  opaque index?
-- Does the workflow catch real multi-agent failures, or does it only produce
-  audit logs?
-- Can the system degrade gracefully to grep and local files when governance is
-  unavailable?
-- Are we measuring whether this reduces repeated context gathering, merge
-  conflicts, and unsupported claims?
+- [Before work: project understanding and contract](../hn-demo/cases/before-work.md)
+- [During work: timeline, evidence, and merge boundary](../hn-demo/cases/during-work.md)
+- [After work: asset review, drift, and reconcile](../hn-demo/cases/after-work.md)
 
-Those are the right questions. A project-memory layer earns trust only when it
-helps on messy real repos, under dirty worktrees, ignored files, parallel
-branches, and skeptical review.
+Deeper background stories:
 
-My current answer is: grep is still necessary. It is just not enough. The next
-useful layer for coding agents is not another bigger prompt. It is durable
-project facts: structural facts about the code, work facts about the contract,
-and execution facts about what actually happened.
+- [Before work: AI proposed 5 components for my parallel system. After walking one scenario, only 3 were real.](https://dev.to/amingin_ai/ai-proposed-5-components-for-my-parallel-system-after-walking-one-scenario-only-3-were-real-12nd)
+- [During work: I told my AI to build a feature. Did it? I had no idea.](https://dev.to/amingin_ai/i-told-my-ai-to-build-a-feature-did-it-i-had-no-idea-1f1)
+- [After work: AI's tech debt is invisible - even to AI. I solved it at the architecture layer.](https://dev.to/amingin_ai/ais-tech-debt-is-invisible-even-to-ai-i-solved-it-at-the-architecture-layer-1nh1)
+
+Public audit commits:
+
+- [Real audit fix: align HN demo screenshot index](https://github.com/amingclawdev/aming-claw/commit/3ae68da8834cf24404c4d9672b2adaf02c19443e)
+- [Article audit link: add real HN audit trail](https://github.com/amingclawdev/aming-claw/commit/70243f2dffe96c3a1bc5a9d6ed602ae6d236a60d)
+
+Suggested HN comment:
+
+```text
+I wrote this around three concrete fears I kept hitting with AI coding agents:
+
+Before work: will it understand the project or invent a plausible wrong design?
+https://github.com/amingclawdev/aming-claw/blob/main/docs/hn-demo/cases/before-work.md
+
+During work: can I reconstruct what the agent actually did and what evidence it produced?
+https://github.com/amingclawdev/aming-claw/blob/main/docs/hn-demo/cases/during-work.md
+
+After work: do docs, tests, config, and graph memory drift after the patch lands?
+https://github.com/amingclawdev/aming-claw/blob/main/docs/hn-demo/cases/after-work.md
+
+The small audit commit mentioned in the article is here:
+https://github.com/amingclawdev/aming-claw/commit/3ae68da8834cf24404c4d9672b2adaf02c19443e
+```

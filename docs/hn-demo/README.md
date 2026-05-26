@@ -33,6 +33,14 @@ case pages:
 | During work | [Fear During Work](cases/during-work.md) | `http://localhost:40000/dashboard?project_id=<project_id>&view=backlog&backlog=<backlog_id>` |
 | After work | [Fear After Work](cases/after-work.md) | `http://localhost:40000/dashboard?project_id=<project_id>&view=assets` |
 
+Each case also has a longer dogfood writeup:
+
+| Case | Deeper story |
+| --- | --- |
+| Before work | [AI proposed 5 components for my parallel system. After walking one scenario, only 3 were real.](https://dev.to/amingin_ai/ai-proposed-5-components-for-my-parallel-system-after-walking-one-scenario-only-3-were-real-12nd) |
+| During work | [I told my AI to build a feature. Did it? I had no idea.](https://dev.to/amingin_ai/i-told-my-ai-to-build-a-feature-did-it-i-had-no-idea-1f1) |
+| After work | [AI's tech debt is invisible - even to AI. I solved it at the architecture layer.](https://dev.to/amingin_ai/ais-tech-debt-is-invisible-even-to-ai-i-solved-it-at-the-architecture-layer-1nh1) |
+
 Useful supporting dashboard patterns after the skill runs:
 
 - `http://localhost:40000/dashboard?project_id=<project_id>&view=operations`

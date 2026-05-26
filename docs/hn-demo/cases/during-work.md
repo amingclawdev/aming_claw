@@ -48,6 +48,20 @@ multiple workers: branch-local evidence is candidate evidence, target graph trut
 changes only after ordered merge and target reconcile, and stale fences are
 rejected instead of trusted.
 
+The important boundary is that the worker does not accept its own work. Dispatch,
+implementation, verification, merge readiness, and backlog close are separate
+state transitions. The contract, source head, dirty scope, and evidence timeline
+make those transitions reviewable.
+
+Related dogfood story:
+
+[I told my AI to build a feature. Did it? I had no
+idea.](https://dev.to/amingin_ai/i-told-my-ai-to-build-a-feature-did-it-i-had-no-idea-1f1)
+
+That post is the earlier backlog/state-machine case behind this fear: a task is
+not done because the agent says so; it needs status, commit evidence, and a
+queryable ledger that both the human and AI can read.
+
 Architecture references:
 
 - [Manual Fix SOP](../../governance/manual-fix-sop.md)

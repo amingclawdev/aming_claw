@@ -57,6 +57,20 @@ queue state are derived views. That separation lets the dashboard explain what
 is trusted, what is only a candidate, and what must be reconciled before the
 next agent treats it as project memory.
 
+A changed doc first becomes a commit-bound asset with status and provenance. It
+becomes graph impact scope only after a reviewed binding, not because an AI or
+path heuristic guessed it belonged there.
+
+Related dogfood story:
+
+[AI's tech debt is invisible - even to AI. I solved it at the architecture
+layer.](https://dev.to/amingin_ai/ais-tech-debt-is-invisible-even-to-ai-i-solved-it-at-the-architecture-layer-1nh1)
+
+That post is the earlier graph-memory case behind this fear: after an AI change
+lands, the project graph must be marked stale and reconciled before the next
+agent treats old structure as truth. This case extends that idea to docs, tests,
+config, weak bindings, and review impact scope.
+
 Architecture references:
 
 - [Asset Inbox API Contract](../../api/asset-inbox-contract.md)

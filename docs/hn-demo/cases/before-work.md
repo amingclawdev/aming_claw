@@ -48,6 +48,19 @@ is graph-first, backlog-first, then scoped manual-fix work. The graph is tied to
 a commit, so dirty workspace guesses do not become project truth. Backlog rows
 record intent and acceptance criteria before mutation.
 
+This case is not about finding text faster. It is about showing the agent the
+existing ownership, peer modules, function surface, docs, tests, config, and
+accepted project patterns before it invents a plausible new one.
+
+Related dogfood story:
+
+[AI proposed 5 components for my parallel system. After walking one scenario,
+only 3 were real.](https://dev.to/amingin_ai/ai-proposed-5-components-for-my-parallel-system-after-walking-one-scenario-only-3-were-real-12nd)
+
+That post is the earlier scenario-walk case behind this fear: a plausible AI
+architecture is not enough until it survives a concrete project scenario and a
+contract.
+
 Architecture references:
 
 - [System Architecture](../../architecture.md)
