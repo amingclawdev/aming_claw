@@ -10,8 +10,8 @@ may look like source, and the next agent may reason from old graph memory.
 
 Run the HN demo skill and choose the after-work case. The demo should show the
 post-change hygiene path: Asset Inbox or file state for changed docs/tests/config
-assets, Operations Queue or reconcile status, and any Review Queue item that
-must be accepted before weak evidence becomes trusted memory.
+assets and Review Queue boundaries for reminders, proposals, and impact review
+before weak evidence becomes trusted memory.
 
 Expected dashboard pattern:
 
@@ -23,13 +23,14 @@ Supporting pattern:
 
 ```text
 http://localhost:40000/dashboard?project_id=<project_id>&view=operations
+http://localhost:40000/dashboard?project_id=<project_id>&view=review
 ```
 
 Optional screenshot slots:
 
 ```text
 docs/hn-demo/screenshots/05-after-work-asset-inbox.png
-docs/hn-demo/screenshots/06-after-work-reconcile.png
+docs/hn-demo/screenshots/06-after-work-review-queue.png
 ```
 
 ## Evidence

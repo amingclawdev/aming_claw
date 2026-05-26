@@ -10,10 +10,9 @@ which branch, worktree, fence token, tests, and merge gate it belongs to.
 ## Demo
 
 Run the HN demo skill and choose the during-work case. The demo should show a
-manual-fix or subagent work item with bounded ownership: branch/worktree
-identity, target commit, owned files, fence token, and review-ready evidence.
-For parallel work, it should also show the merge queue or the decision that a
-branch is waiting on dependency, freshness, or gate evidence.
+manual-fix or subagent work item with bounded ownership, timeline lanes, and
+evidence details: dispatch, implementation, verification, close-ready state,
+actors, target files, and any inferred or blocked checkpoints.
 
 Expected dashboard pattern:
 
@@ -24,8 +23,8 @@ http://localhost:40000/dashboard?project_id=<project_id>&view=backlog&backlog=<b
 Optional screenshot slots:
 
 ```text
-docs/hn-demo/screenshots/03-during-work-fences.png
-docs/hn-demo/screenshots/04-during-work-merge-queue.png
+docs/hn-demo/screenshots/03-during-work-timeline.png
+docs/hn-demo/screenshots/04-during-work-evidence.png
 ```
 
 ## Evidence
@@ -34,10 +33,9 @@ The visible evidence is not "the agent said it was careful." It is durable
 coordination state:
 
 - a manual-fix backlog row with target files and acceptance criteria;
-- an isolated branch/worktree assignment for subagent work;
-- a fence token that stale callbacks cannot reuse;
-- review-ready output that names changed files and verification evidence;
-- merge-queue state that keeps dependency order and target freshness explicit.
+- timeline lanes that separate observer and worker actions;
+- dispatch, implementation, verification, and close-ready checkpoints;
+- evidence inspector details that show actor, phase, status, and artifacts.
 
 The demo can use deterministic fixtures or dry-run evidence. It does not require
 live AI execution to show the isolation and gate model.

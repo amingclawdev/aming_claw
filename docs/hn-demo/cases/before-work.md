@@ -22,8 +22,8 @@ http://localhost:40000/dashboard?project_id=<project_id>&view=graph
 Optional screenshot slots:
 
 ```text
-docs/hn-demo/screenshots/01-before-work-graph.png
-docs/hn-demo/screenshots/02-before-work-backlog.png
+docs/hn-demo/screenshots/01-before-work-contract.png
+docs/hn-demo/screenshots/02-before-work-graph.png
 ```
 
 ## Evidence
