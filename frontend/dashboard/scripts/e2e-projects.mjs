@@ -517,38 +517,41 @@ function verifyAssetRelationGraphOpsContract() {
   const assetSource = readFileSync(path.join(REPO_ROOT, "frontend/dashboard/src/views/AssetInboxView.tsx"), "utf8");
   const cssSource = readFileSync(path.join(REPO_ROOT, "frontend/dashboard/src/styles.css"), "utf8");
   assert(
-    /<AssetInboxView[\s\S]*onSelectNode=\{handleSelectNode\}[\s\S]*workspaceRoot=\{activeWorkspaceRoot\}/.test(appSource),
-    "App should pass graph navigation and active workspace root into AssetInboxView",
+    /<AssetInboxView[\s\S]*onSelectNode=\{handleSelectNodeFromAsset\}[\s\S]*workspaceRoot=\{activeWorkspaceRoot\}/.test(appSource),
+    "App should pass asset-aware graph navigation and active workspace root into AssetInboxView",
   );
   assert(assetSource.includes('import FileLink from "../components/FileLink"'), "Asset inbox should reuse FileLink");
   assert(
-    assetSource.includes("<FileLink path={selectedItem.path} workspaceRoot={workspaceRoot} />"),
+    assetSource.includes("<FileLink path={props.item.path} workspaceRoot={props.workspaceRoot} />"),
     "Asset path should use FileLink with the active workspace root",
   );
   assert(assetSource.includes("function TargetNodeButton"), "Asset relation targets should have a graph-jump target button");
   assert(assetSource.includes('className="target-link asset-target-link"'), "Target node jump should reuse target-link visual language");
-  assert(assetSource.includes("function AssetRelationGraph"), "Asset relation graph component should exist");
   assert(treeSource.includes("Asset tree"), "Asset Inbox should render ASSET TREE in the sidebar tree slot");
   assert(treeSource.includes("ASSET_STATUS_FILTERS"), "Asset tree should expose All/Health/Candidate/Drift/Orphan status filters");
-  assert(treeSource.includes("assetBucketsForGroup"), "Asset tree should expose two-level group/bucket navigation");
+  assert(treeSource.includes("buildAssetTree"), "Asset tree should build group-scoped asset leaves");
+  assert(treeSource.includes("assetLeafForItem"), "Asset tree should show asset file leaves under groups");
   assert(!assetSource.includes('className="asset-selector-panel"'), "Asset Inbox main view should not duplicate the bulky selector panel");
-  assert(assetSource.includes("asset-relation-map"), "Asset relation graph should render the operation-first relation map");
-  assert(assetSource.includes("asset-relation-add-slot"), "Relation graph should expose the plus add-binding slot");
-  assert(assetSource.includes("function AssetInspector"), "Asset inspector should expose overview/nodes/candidates/AI mount surfaces");
+  assert(assetSource.includes("function AssetInspector"), "Asset inspector should expose overview/relations/candidates/actions surfaces");
+  assert(assetSource.includes("ASSET_INSPECTOR_TABS"), "Asset inspector tabs should be explicit and stable");
+  assert(assetSource.includes("function RelationPanel"), "Trusted bindings should render in the Relations tab");
+  assert(assetSource.includes("function CandidateRelationGroup"), "Candidate bindings should render in the Candidates tab");
+  assert(assetSource.includes("function AssetActionFlow"), "Actions tab should explain binding and drift flows");
+  assert(assetSource.includes("Queue Observer review"), "Actions tab should steer drift changes through Observer review");
   assert(assetSource.includes("function RemoveBindingDialog"), "Remove binding should require confirmation and reason capture");
-  assert(assetSource.includes("Review Queue and becomes effective only after"), "Remove confirmation should warn about review/commit/apply gating");
+  assert(assetSource.includes("It enters Review Queue"), "Remove confirmation should warn about review/commit/apply gating");
   assert(assetSource.includes("Selected relation operation result"), "Selected relation action result should be visible from graph surface");
   assert(assetSource.includes("primaryRelationAction"), "Asset relation graph should choose add/remove actions by relation status");
-  assert(assetSource.includes("Add relation"), "Candidate relation should expose Add relation");
+  assert(assetSource.includes("Queue add for review"), "Candidate relation should expose review-gated add");
   assert(assetSource.includes("Propose remove"), "Accepted/impact/stale relation should expose Propose remove");
   assert(
     assetSource.includes("HN-ASSET-REMOVE-BINDING-RUNTIME-DRIFT-20260525"),
     "Remove-binding runtime drift should surface the linked follow-up backlog id",
   );
   assert(!assetSource.includes("editorUrl("), "AssetInboxView should not create a new editor URI helper");
-  assert(cssSource.includes(".asset-relation-map"), "CSS should style the asset relation mind-map surface");
+  assert(cssSource.includes(".asset-action-flow-block"), "CSS should style the action flow surface");
   assert(cssSource.includes(".asset-selected-relation-op"), "CSS should keep selected relation operation result readable");
-  ok("asset relation graph exposes navigation, FileLink, add/remove operations, and known drift follow-up");
+  ok("asset relation inspector exposes navigation, FileLink, review-gated operations, and known drift follow-up");
 }
 
 function verifyBacklogEvidenceContract() {
@@ -567,6 +570,10 @@ function verifyBacklogEvidenceContract() {
   assert(viewSource.includes("BacklogDetailModal"), "Backlog rows should open a detail modal");
   assert(viewSource.includes("BACKLOG_URL_PARAM"), "Backlog detail modal should be URL addressable");
   assert(viewSource.includes("buildTimelineDag"), "Backlog detail should derive a timeline DAG");
+  assert(viewSource.includes("buildTimelineLaneContext"), "Backlog timeline should derive readable actor-family lane context");
+  assert(viewSource.includes("Subagents / Workers ·"), "Parallel worker DAG sublanes should stay under the Subagents / Workers family");
+  assert(viewSource.includes("workers parallel"), "Backlog timeline should make parallel worker execution visible");
+  assert(viewSource.includes("rawLaneKeyForEvent"), "Backlog timeline should keep raw lane ids inspectable without using them as labels");
   assert(viewSource.includes("ImplementationStepGrid"), "Timeline tab should group implementation evidence into audit steps");
   assert(viewSource.includes("ArtifactPills"), "Timeline and inspector should surface concrete artifacts");
   assert(viewSource.includes("EvidenceInspector"), "Backlog DAG nodes should open an evidence inspector");

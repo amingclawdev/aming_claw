@@ -8,6 +8,7 @@ from agent.governance.asset_impact import (
     EVENT_IMPACT_DETECTED,
     EVENT_RESOLUTION_RECORDED,
     STATUS_RECORDED,
+    build_asset_impact_trace,
     build_asset_impact_reminder_projection,
     get_asset_impact_reminder_events,
     get_asset_drift_state,
@@ -16,6 +17,7 @@ from agent.governance.asset_impact import (
     list_pending_asset_impact_reminders,
     queue_asset_drift_proposal,
     record_asset_drift_state,
+    record_asset_impact_detected,
     record_asset_impact_resolution,
     record_scope_asset_impacts,
     resolve_asset_impact_reminder,
@@ -125,6 +127,223 @@ def _scope_delta(*changed_paths: str) -> dict:
     changed = list(changed_paths)
     return {
         "updated_nodes": ["L7.runtime"],
+        "file_inventory_delta": {
+            "hash_changed_files": changed,
+            "impacted_files": changed,
+            "changed_file_count": len(changed),
+            "impacted_file_count": len(changed),
+        },
+    }
+
+
+def _bidirectional_graph() -> dict:
+    return {
+        "deps_graph": {
+            "nodes": [
+                {
+                    "id": "L7.alpha",
+                    "layer": "L7",
+                    "title": "Feature Alpha",
+                    "kind": "feature",
+                    "primary": ["src/alpha.py"],
+                    "secondary": ["docs/alpha.md"],
+                    "test": ["tests/test_alpha_shared.py"],
+                    "metadata": {"config_files": ["config/alpha.yaml"]},
+                },
+                {
+                    "id": "L7.beta",
+                    "layer": "L7",
+                    "title": "Feature Beta",
+                    "kind": "feature",
+                    "primary": ["src/beta.py"],
+                    "secondary": [],
+                    "test": ["tests/test_alpha_shared.py"],
+                    "metadata": {"config_files": ["config/beta.yaml"]},
+                },
+            ],
+            "edges": [],
+        }
+    }
+
+
+def _index_bidirectional_snapshot(
+    conn: sqlite3.Connection,
+    snapshot_id: str = "scope-bi",
+    commit_sha: str = "c-bi",
+    *,
+    include_doc_candidate: bool = False,
+) -> None:
+    graph = _bidirectional_graph()
+    store.create_graph_snapshot(
+        conn,
+        PID,
+        snapshot_id=snapshot_id,
+        commit_sha=commit_sha,
+        snapshot_kind="scope",
+        graph_json=graph,
+        file_inventory=[
+            {
+                "path": "src/alpha.py",
+                "file_kind": "source",
+                "scan_status": "clustered",
+                "graph_status": "mapped",
+                "attached_node_ids": ["L7.alpha"],
+                "mapped_node_ids": ["L7.alpha"],
+            },
+            {
+                "path": "src/beta.py",
+                "file_kind": "source",
+                "scan_status": "clustered",
+                "graph_status": "mapped",
+                "attached_node_ids": ["L7.beta"],
+                "mapped_node_ids": ["L7.beta"],
+            },
+            {
+                "path": "docs/alpha.md",
+                "file_kind": "doc",
+                "scan_status": "secondary_attached",
+                "graph_status": "attached",
+                "attached_node_ids": ["L7.alpha"],
+                "mapped_node_ids": ["L7.alpha"],
+            },
+            {
+                "path": "tests/test_alpha_shared.py",
+                "file_kind": "test",
+                "scan_status": "secondary_attached",
+                "graph_status": "attached",
+                "attached_node_ids": ["L7.alpha", "L7.beta"],
+                "mapped_node_ids": ["L7.alpha", "L7.beta"],
+            },
+            {
+                "path": "config/alpha.yaml",
+                "file_kind": "config",
+                "scan_status": "secondary_attached",
+                "graph_status": "attached",
+                "attached_node_ids": ["L7.alpha"],
+                "mapped_node_ids": ["L7.alpha"],
+            },
+        ],
+        notes=json.dumps({"pending_scope_reconcile": {}}),
+    )
+    store.index_graph_snapshot(
+        conn,
+        PID,
+        snapshot_id,
+        nodes=graph["deps_graph"]["nodes"],
+        edges=[],
+    )
+    doc_candidates = []
+    if include_doc_candidate:
+        doc_candidates.append(
+            {
+                "schema_version": "asset_binding_proposal.v1",
+                "operation": "bind_review",
+                "asset_kind": "doc",
+                "asset_path": "docs/alpha.md",
+                "target_node_id": "L7.beta",
+                "target_title": "Feature Beta",
+                "evidence_kind": "path_reference",
+                "source": "semantic_weak_match",
+                "proposal_hash": "sha256:doc-alpha-beta",
+                "precheck": {
+                    "ok": True,
+                    "decision": "review_required",
+                    "binding_strength": "weak",
+                    "proposal_hash": "sha256:doc-alpha-beta",
+                },
+            }
+        )
+    for asset_kind, rows in {
+        "doc": [
+            {
+                "path": "docs/alpha.md",
+                "file_kind": "doc",
+                "binding_status": "accepted",
+                "accepted_bindings": [
+                    {
+                        "node_id": "L7.alpha",
+                        "title": "Feature Alpha",
+                        "role": "doc",
+                        "source": "source_controlled_hint",
+                    }
+                ],
+                "binding_candidates": doc_candidates,
+                "impact_scope_policy": "accepted_bindings_only",
+            }
+        ],
+        "test": [
+            {
+                "path": "tests/test_alpha_shared.py",
+                "file_kind": "test",
+                "binding_status": "accepted",
+                "accepted_bindings": [
+                    {
+                        "node_id": "L7.alpha",
+                        "title": "Feature Alpha",
+                        "role": "test",
+                        "source": "test_coverage",
+                    },
+                    {
+                        "node_id": "L7.beta",
+                        "title": "Feature Beta",
+                        "role": "test",
+                        "source": "test_coverage",
+                    },
+                ],
+                "binding_candidates": [],
+                "impact_scope_policy": "accepted_bindings_only",
+            }
+        ],
+        "config": [
+            {
+                "path": "config/alpha.yaml",
+                "file_kind": "config",
+                "binding_status": "accepted",
+                "accepted_bindings": [
+                    {
+                        "node_id": "L7.alpha",
+                        "title": "Feature Alpha",
+                        "role": "config",
+                        "source": "config_coverage",
+                    }
+                ],
+                "binding_candidates": [
+                    {
+                        "schema_version": "asset_binding_proposal.v1",
+                        "operation": "bind_review",
+                        "asset_kind": "config",
+                        "asset_path": "config/alpha.yaml",
+                        "target_node_id": "L7.beta",
+                        "target_title": "Feature Beta",
+                        "evidence_kind": "config_key_reference",
+                        "source": "semantic_weak_match",
+                        "proposal_hash": "sha256:config-alpha-beta",
+                        "precheck": {
+                            "ok": True,
+                            "decision": "review_required",
+                            "binding_strength": "weak",
+                        },
+                    }
+                ],
+                "impact_scope_policy": "accepted_bindings_only",
+            }
+        ],
+    }.items():
+        upsert_asset_projection_rows(
+            conn,
+            project_id=PID,
+            snapshot_id=snapshot_id,
+            commit_sha=commit_sha,
+            asset_kind=asset_kind,
+            rows=rows,
+        )
+    conn.commit()
+
+
+def _bidirectional_scope_delta(*changed_paths: str, updated_nodes: list[str] | None = None) -> dict:
+    changed = list(changed_paths)
+    return {
+        "updated_nodes": updated_nodes or ["L7.alpha"],
         "file_inventory_delta": {
             "hash_changed_files": changed,
             "impacted_files": changed,
@@ -433,6 +652,190 @@ def test_scope_asset_impacts_cover_accepted_doc_test_config_bindings_only() -> N
         ("config", "config/runtime-contract.yaml"),
     }
     assert not any(row["asset_path"].startswith("candidate/") for row in reminders)
+
+
+def test_bidirectional_trace_for_node_change_covers_doc_test_config_assets() -> None:
+    conn = _conn()
+    _index_bidirectional_snapshot(conn)
+
+    results = {
+        asset_kind: record_scope_asset_impacts(
+            conn,
+            PID,
+            snapshot_id="scope-bi",
+            commit_sha="c-alpha-change",
+            scope_graph_delta=_bidirectional_scope_delta("src/alpha.py"),
+            asset_kind=asset_kind,
+            actor="scope-reconcile",
+        )
+        for asset_kind in ("doc", "test", "config")
+    }
+
+    assert {kind: result["event_count"] for kind, result in results.items()} == {
+        "doc": 1,
+        "test": 1,
+        "config": 1,
+    }
+    node_trace = build_asset_impact_trace(conn, PID, snapshot_id="scope-bi", node_id="L7.alpha")
+    assert set(node_trace["summary"]["asset_paths"]) == {
+        "config/alpha.yaml",
+        "docs/alpha.md",
+        "tests/test_alpha_shared.py",
+    }
+    assert node_trace["summary"]["event_count"] == 3
+    assert node_trace["summary"]["pending_reminder_count"] == 3
+    assert node_trace["summary"]["drift_state_count"] == 3
+
+    for asset_kind, asset_path in (
+        ("doc", "docs/alpha.md"),
+        ("test", "tests/test_alpha_shared.py"),
+        ("config", "config/alpha.yaml"),
+    ):
+        asset_trace = build_asset_impact_trace(
+            conn,
+            PID,
+            snapshot_id="scope-bi",
+            asset_kind=asset_kind,
+            asset_path=asset_path,
+        )
+        assert "L7.alpha" in asset_trace["summary"]["node_ids"]
+        assert asset_trace["events"][0]["event_type"] == EVENT_IMPACT_DETECTED
+        assert asset_trace["events"][0]["node_id"] == "L7.alpha"
+        assert asset_trace["drift_states"][0]["drift_state"] == "suspected"
+        assert asset_trace["drift_states"][0]["evidence"]["policy"] == "unchanged_bound_asset_impacted"
+
+    unrelated = build_asset_impact_trace(conn, PID, snapshot_id="scope-bi", node_id="L7.beta")
+    assert unrelated["summary"]["event_count"] == 0
+    assert unrelated["summary"]["pending_reminder_count"] == 0
+
+
+def test_bidirectional_trace_marks_changed_gate_covered_assets_not_drifted() -> None:
+    conn = _conn()
+    _index_bidirectional_snapshot(conn)
+    changed_assets = ["docs/alpha.md", "tests/test_alpha_shared.py", "config/alpha.yaml"]
+    scope_delta = _bidirectional_scope_delta("src/alpha.py", *changed_assets)
+    scope_delta["file_inventory_delta"]["gate_covered_files"] = changed_assets
+    scope_delta["file_inventory_delta"]["contract_covered_files"] = changed_assets
+
+    for asset_kind in ("doc", "test", "config"):
+        result = record_scope_asset_impacts(
+            conn,
+            PID,
+            snapshot_id="scope-bi",
+            commit_sha="c-alpha-covered",
+            scope_graph_delta=scope_delta,
+            asset_kind=asset_kind,
+            actor="merge-gate",
+        )
+        assert result["event_count"] == 0
+        assert result["changed_asset_resolved_count"] == 1
+
+    node_trace = build_asset_impact_trace(conn, PID, snapshot_id="scope-bi", node_id="L7.alpha")
+    assert node_trace["summary"]["event_count"] == 0
+    assert node_trace["summary"]["pending_reminder_count"] == 0
+    assert node_trace["summary"]["drift_state_count"] == 3
+    assert {row["asset_path"]: row["drift_state"] for row in node_trace["drift_states"]} == {
+        "config/alpha.yaml": "not_drifted",
+        "docs/alpha.md": "not_drifted",
+        "tests/test_alpha_shared.py": "not_drifted",
+    }
+    assert all(row["evidence"]["policy"] == "changed_asset_gate_covered" for row in node_trace["drift_states"])
+
+
+def test_bidirectional_trace_exposes_rebind_candidate_and_stale_old_node() -> None:
+    conn = _conn()
+    _index_bidirectional_snapshot(conn, include_doc_candidate=True)
+    record_asset_drift_state(
+        conn,
+        project_id=PID,
+        asset_kind="doc",
+        asset_path="docs/alpha.md",
+        drift_state="suspected",
+        snapshot_id="scope-bi",
+        commit_sha="c-doc-rewrite",
+        actor="observer",
+        evidence={
+            "reason": "doc now references beta runtime behavior",
+            "stale_node_id": "L7.alpha",
+            "candidate_node_id": "L7.beta",
+        },
+    )
+
+    asset_trace = build_asset_impact_trace(conn, PID, snapshot_id="scope-bi", asset_kind="doc", asset_path="docs/alpha.md")
+    assert asset_trace["summary"]["accepted_binding_count"] == 1
+    assert asset_trace["summary"]["candidate_binding_count"] == 1
+    assert asset_trace["summary"]["node_ids"] == ["L7.alpha", "L7.beta"]
+    assert {row["binding_status"] for row in asset_trace["bindings"]} == {"accepted", "candidate"}
+    assert asset_trace["drift_states"][0]["evidence"]["stale_node_id"] == "L7.alpha"
+    assert asset_trace["drift_states"][0]["evidence"]["candidate_node_id"] == "L7.beta"
+
+    old_node_trace = build_asset_impact_trace(conn, PID, snapshot_id="scope-bi", node_id="L7.alpha")
+    new_node_trace = build_asset_impact_trace(conn, PID, snapshot_id="scope-bi", node_id="L7.beta")
+    assert "docs/alpha.md" in old_node_trace["summary"]["asset_paths"]
+    assert "docs/alpha.md" in new_node_trace["summary"]["asset_paths"]
+
+
+def test_bidirectional_trace_shared_test_unbind_affects_removed_node_only() -> None:
+    conn = _conn()
+    _index_bidirectional_snapshot(conn)
+    record_asset_impact_detected(
+        conn,
+        project_id=PID,
+        asset_kind="test",
+        asset_path="tests/test_alpha_shared.py",
+        node_id="L7.alpha",
+        node_title="Feature Alpha",
+        commit_sha="c-test-unbind",
+        snapshot_id="scope-bi",
+        actor="governance-hint-replay",
+        evidence={
+            "operation": "binding_removed",
+            "source": "governance_hint_unbind",
+            "remaining_node_ids": ["L7.beta"],
+        },
+    )
+    upsert_asset_projection_rows(
+        conn,
+        project_id=PID,
+        snapshot_id="scope-bi",
+        commit_sha="c-bi",
+        asset_kind="test",
+        rows=[
+            {
+                "path": "tests/test_alpha_shared.py",
+                "file_kind": "test",
+                "binding_status": "accepted",
+                "accepted_bindings": [
+                    {
+                        "node_id": "L7.beta",
+                        "title": "Feature Beta",
+                        "role": "test",
+                        "source": "test_coverage",
+                    }
+                ],
+                "binding_candidates": [],
+                "impact_scope_policy": "accepted_bindings_only",
+            }
+        ],
+    )
+
+    asset_trace = build_asset_impact_trace(
+        conn,
+        PID,
+        snapshot_id="scope-bi",
+        asset_kind="test",
+        asset_path="tests/test_alpha_shared.py",
+    )
+    assert asset_trace["summary"]["node_ids"] == ["L7.alpha", "L7.beta"]
+    assert [(row["binding_status"], row["node_id"]) for row in asset_trace["bindings"]] == [("accepted", "L7.beta")]
+    assert asset_trace["events"][0]["evidence"]["operation"] == "binding_removed"
+
+    removed_node_trace = build_asset_impact_trace(conn, PID, snapshot_id="scope-bi", asset_kind="test", node_id="L7.alpha")
+    remaining_node_trace = build_asset_impact_trace(conn, PID, snapshot_id="scope-bi", asset_kind="test", node_id="L7.beta")
+    assert removed_node_trace["summary"]["event_count"] == 1
+    assert removed_node_trace["summary"]["accepted_binding_count"] == 0
+    assert remaining_node_trace["summary"]["event_count"] == 0
+    assert remaining_node_trace["summary"]["accepted_binding_count"] == 1
 
 
 def test_asset_drift_state_defaults_manual_updates_and_ai_proposal_precheck() -> None:

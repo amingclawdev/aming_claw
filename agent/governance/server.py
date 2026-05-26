@@ -3388,6 +3388,30 @@ def handle_graph_governance_asset_impact_reminders(ctx: RequestContext):
         conn.close()
 
 
+@route("GET", "/api/graph-governance/{project_id}/asset-impact/trace")
+def handle_graph_governance_asset_impact_trace(ctx: RequestContext):
+    """Return a bidirectional asset/node trace across bindings, events, and drift state."""
+    project_id = ctx.get_project_id()
+    from . import asset_impact
+
+    conn = get_connection(project_id)
+    try:
+        _require_graph_governance_operator(ctx, conn, "graph-governance.asset-impact.trace")
+        result = asset_impact.build_asset_impact_trace(
+            conn,
+            project_id,
+            snapshot_id=str(ctx.query.get("snapshot_id") or ""),
+            asset_kind=str(ctx.query.get("asset_kind") or ""),
+            asset_path=str(ctx.query.get("asset_path") or ""),
+            node_id=str(ctx.query.get("node_id") or ""),
+            include_candidates=_query_bool(ctx.query, "include_candidates", True),
+            limit=_query_int(ctx.query, "limit", 500),
+        )
+        return {"ok": True, **result}
+    finally:
+        conn.close()
+
+
 @route("GET", "/api/graph-governance/{project_id}/asset-impact/reminders/{reminder_id}/events")
 def handle_graph_governance_asset_impact_reminder_events(ctx: RequestContext):
     """Return one asset impact reminder and its event history."""

@@ -1133,6 +1133,170 @@ def queue_asset_drift_proposal(
     }
 
 
+def _binding_trace_row(row: sqlite3.Row | Mapping[str, Any]) -> dict[str, Any]:
+    out = dict(row)
+    out["evidence"] = _loads(out.pop("evidence_json", "{}"), {})
+    return out
+
+
+def _drift_state_matches_node(row: Mapping[str, Any], node_id: str) -> bool:
+    if not node_id:
+        return True
+    evidence = row.get("evidence") if isinstance(row.get("evidence"), Mapping) else {}
+    candidate_values = {
+        str(evidence.get("node_id") or ""),
+        str(evidence.get("target_node_id") or ""),
+        str(evidence.get("stale_node_id") or ""),
+        str(evidence.get("candidate_node_id") or ""),
+        str(evidence.get("removed_node_id") or ""),
+    }
+    affected = evidence.get("affected_node_ids")
+    if isinstance(affected, Iterable) and not isinstance(affected, (str, bytes)):
+        candidate_values.update(str(item or "") for item in affected)
+    return node_id in candidate_values
+
+
+def build_asset_impact_trace(
+    conn: sqlite3.Connection,
+    project_id: str,
+    *,
+    snapshot_id: str = "",
+    asset_kind: str = "",
+    asset_path: str = "",
+    node_id: str = "",
+    include_candidates: bool = True,
+    limit: int = 500,
+) -> dict[str, Any]:
+    """Return one bidirectional asset/node impact trace for UI and tests.
+
+    The trace intentionally joins durable projections rather than declaring new
+    truth: source-controlled bindings, impact/reminder events, and drift state
+    remain the individual sources of record.
+    """
+
+    ensure_schema(conn)
+    from . import asset_projection
+
+    asset_projection.ensure_schema(conn)
+    pid = _text(project_id)
+    sid = _text(snapshot_id)
+    kind = _text(asset_kind)
+    path = _norm_path(asset_path)
+    node = _text(node_id)
+    max_rows = max(1, min(int(limit or 500), 5000))
+
+    bindings_clauses = ["project_id = ?"]
+    bindings_params: list[Any] = [pid]
+    for column, value in (
+        ("snapshot_id", sid),
+        ("asset_kind", kind),
+        ("asset_path", path),
+        ("node_id", node),
+    ):
+        if value:
+            bindings_clauses.append(f"{column} = ?")
+            bindings_params.append(value)
+    if not include_candidates:
+        bindings_clauses.append("binding_status = 'accepted'")
+    bindings_params.append(max_rows)
+    binding_rows = [
+        _binding_trace_row(row)
+        for row in conn.execute(
+            f"""SELECT * FROM graph_asset_bindings
+                WHERE {' AND '.join(bindings_clauses)}
+                ORDER BY asset_kind, asset_path, binding_status, node_id
+                LIMIT ?""",
+            bindings_params,
+        ).fetchall()
+    ]
+
+    event_rows = list_asset_impact_events(
+        conn,
+        pid,
+        asset_kind=kind,
+        asset_path=path,
+        node_id=node,
+        limit=max_rows,
+    )
+
+    reminder_clauses = ["project_id = ?"]
+    reminder_params: list[Any] = [pid]
+    for column, value in (
+        ("asset_kind", kind),
+        ("asset_path", path),
+        ("node_id", node),
+    ):
+        if value:
+            reminder_clauses.append(f"{column} = ?")
+            reminder_params.append(value)
+    reminder_params.append(max_rows)
+    reminder_rows = [
+        _reminder_row(row)
+        for row in conn.execute(
+            f"""SELECT * FROM graph_asset_impact_reminders
+                WHERE {' AND '.join(reminder_clauses)}
+                ORDER BY latest_event_id DESC
+                LIMIT ?""",
+            reminder_params,
+        ).fetchall()
+    ]
+
+    if path and kind:
+        drift_rows = [get_asset_drift_state(conn, pid, asset_kind=kind, asset_path=path)]
+        drift_rows = [row for row in drift_rows if row]
+    else:
+        drift_map = list_asset_drift_states(conn, pid, snapshot_id=sid, limit=max_rows)
+        drift_rows = [
+            row for (row_kind, row_path), row in drift_map.items()
+            if (not kind or row_kind == kind)
+            and (not path or row_path == path)
+            and _drift_state_matches_node(row, node)
+        ][:max_rows]
+
+    asset_paths = sorted({
+        _norm_path(row.get("asset_path"))
+        for row in [*binding_rows, *event_rows, *reminder_rows, *drift_rows]
+        if _norm_path(row.get("asset_path"))
+    })
+    node_ids = sorted({
+        _text(row.get("node_id"))
+        for row in [*binding_rows, *event_rows, *reminder_rows]
+        if _text(row.get("node_id"))
+    } | {
+        _text((row.get("evidence") or {}).get(key))
+        for row in drift_rows
+        if isinstance(row.get("evidence"), Mapping)
+        for key in ("node_id", "target_node_id", "stale_node_id", "candidate_node_id", "removed_node_id")
+        if _text((row.get("evidence") or {}).get(key))
+    })
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "project_id": pid,
+        "snapshot_id": sid,
+        "filters": {
+            "asset_kind": kind,
+            "asset_path": path,
+            "node_id": node,
+            "include_candidates": bool(include_candidates),
+        },
+        "bindings": binding_rows,
+        "events": event_rows,
+        "reminders": reminder_rows,
+        "drift_states": drift_rows,
+        "summary": {
+            "asset_paths": asset_paths,
+            "node_ids": node_ids,
+            "binding_count": len(binding_rows),
+            "event_count": len(event_rows),
+            "reminder_count": len(reminder_rows),
+            "drift_state_count": len(drift_rows),
+            "accepted_binding_count": sum(1 for row in binding_rows if row.get("binding_status") == "accepted"),
+            "candidate_binding_count": sum(1 for row in binding_rows if row.get("binding_status") == "candidate"),
+            "pending_reminder_count": sum(1 for row in reminder_rows if row.get("status") == STATUS_PENDING),
+        },
+    }
+
+
 def build_asset_impact_reminder_projection(
     conn: sqlite3.Connection,
     project_id: str,
@@ -1299,6 +1463,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "STATUS_PENDING",
     "STATUS_RECORDED",
+    "build_asset_impact_trace",
     "build_asset_impact_reminder_projection",
     "ensure_schema",
     "get_asset_drift_state",

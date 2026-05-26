@@ -3,7 +3,7 @@ import FileLink from "../components/FileLink";
 import type { AssetStatusFilter, AssetTreeSelection } from "../components/TreePanel";
 import { api, ApiError } from "../lib/api";
 import type {
-  AssetInboxBatchAction,
+  AssetInboxBindingCandidate,
   AssetInboxItem,
   AssetInboxMountRelation,
   AssetInboxResponse,
@@ -31,7 +31,7 @@ type AttachRole = "doc" | "test" | "config";
 type AttachState = "idle" | "writing" | "written_uncommitted" | "error";
 type DriftStateName = "not_drifted" | "suspected" | "confirmed" | "resolved" | "waived";
 type ActionState = "idle" | "writing" | "written" | "blocked" | "error";
-type AssetInspectorTab = "overview" | "nodes" | "candidates" | "actions";
+type AssetInspectorTab = "overview" | "relations" | "candidates" | "actions";
 
 interface AttachDraft {
   targetNodeId: string;
@@ -65,6 +65,7 @@ interface RelationView extends AssetInboxMountRelation {
   relation_id: string;
   status: "accepted" | "candidate" | "unbound" | "stale_drift" | "impact_pending" | string;
   target_node_id: string;
+  precheck?: AssetInboxBindingCandidate["precheck"];
 }
 
 interface GroupView {
@@ -75,7 +76,7 @@ interface GroupView {
   statuses: Record<string, number>;
 }
 
-const GROUP_ORDER: AssetGroupId[] = ["ALL", "doc", "test", "config", "source", "generated", "other"];
+const GROUP_ORDER: AssetGroupId[] = ["doc", "test", "config", "source", "generated", "other", "ALL"];
 
 const GROUP_LABELS: Record<AssetGroupId, string> = {
   ALL: "All assets",
@@ -112,10 +113,12 @@ const RELATION_LABELS: Record<string, string> = {
   impact_pending: "Impact pending",
 };
 
+const trustedRelationStatuses = new Set(["accepted", "impact_pending", "stale_drift", "unbound"]);
+
 const DRIFT_LABELS: Record<DriftStateName, string> = {
-  not_drifted: "Not drifted",
-  suspected: "Suspected",
-  confirmed: "Confirmed",
+  not_drifted: "Baseline",
+  suspected: "Possible drift",
+  confirmed: "Drift confirmed",
   resolved: "Resolved",
   waived: "Waived",
 };
@@ -124,9 +127,9 @@ const REMOVE_BINDING_RUNTIME_DRIFT_ID = "HN-ASSET-REMOVE-BINDING-RUNTIME-DRIFT-2
 
 const ASSET_INSPECTOR_TABS: Array<{ id: AssetInspectorTab; label: string }> = [
   { id: "overview", label: "Overview" },
-  { id: "nodes", label: "Nodes / Relations" },
+  { id: "relations", label: "Relations" },
   { id: "candidates", label: "Candidates" },
-  { id: "actions", label: "Actions / Evidence" },
+  { id: "actions", label: "Actions" },
 ];
 
 export default function AssetInboxView({
@@ -440,118 +443,54 @@ export default function AssetInboxView({
       <div className="view-head">
         <h2 className="view-title">Asset Inbox</h2>
         <span className="view-subtitle">
-          Relation browser - <span className="mono">/api/graph-governance/{projectId}/snapshots/{snapshotId}/asset-inbox</span> -{" "}
-          {visibleItems.length} shown - {total} total
+          File governance status - {visibleItems.length} shown - {total} total
         </span>
-      </div>
-
-      <div className="asset-browser-policy">
-        <div>
-          <strong>Asset review surface.</strong> Files stay separate from backlog rows; backlog work is created only from selected
-          assets.
-        </div>
-        <span className="mono">{assetInbox.impact_scope_policy || "accepted_bindings_only"}</span>
-      </div>
-
-      <div className="score-grid asset-browser-score-grid">
-        <Kpi label="Review" value={reviewCount} tone={reviewCount > 0 ? "amber" : "green"} />
-        <Kpi label="Backlog eligible" value={backlogEligible} tone={backlogEligible > 0 ? "red" : "neutral"} />
-        <Kpi label="Candidates" value={candidateCount} tone={candidateCount > 0 ? "amber" : "neutral"} />
-        <Kpi label="Accepted" value={acceptedCount} tone="green" />
       </div>
 
       <section className="asset-relation-browser">
         <main className="asset-detail-panel">
           {selectedItem ? (
-            <>
-              <div className="asset-detail-head">
-                <div>
-                  <div className="asset-detail-kicker">
-                    {labelForKind(selectedItem.asset_kind)} - {selectedItem.language || "language n/a"}
-                  </div>
-                  <h3 className="asset-detail-title">
-                    <FileLink path={selectedItem.path} workspaceRoot={workspaceRoot} />
-                  </h3>
-                </div>
-                <span className={`status-badge ${assetStatusClass(selectedItem.asset_status)}`}>
-                  {STATUS_LABELS[selectedItem.asset_status] ?? selectedItem.asset_status}
-                </span>
-              </div>
-
-              <AssetInspector
-                item={selectedItem}
-                relations={selectedRelations}
-                selectedRelation={selectedRelation}
-                selectedRelationId={selectedRelation?.relation_id || ""}
-                selectedSummary={selectedSummary}
-                nodeOptions={nodeOptions}
-                workspaceRoot={workspaceRoot}
-                attachResult={attachResults[selectedItem.path] ?? { state: "idle", message: "Not written." }}
-                draft={
-                  drafts[selectedItem.path] ?? {
-                    targetNodeId: suggestedTargetNodeId(selectedItem, nodeOptions),
-                    role: roleForAsset(selectedItem),
-                  }
+            <AssetInspector
+              item={selectedItem}
+              relations={selectedRelations}
+              selectedRelation={selectedRelation}
+              selectedRelationId={selectedRelation?.relation_id || ""}
+              selectedSummary={selectedSummary}
+              nodeOptions={nodeOptions}
+              workspaceRoot={workspaceRoot}
+              attachResult={attachResults[selectedItem.path] ?? { state: "idle", message: "Not written." }}
+              draft={
+                drafts[selectedItem.path] ?? {
+                  targetNodeId: suggestedTargetNodeId(selectedItem, nodeOptions),
+                  role: roleForAsset(selectedItem),
                 }
-                snapshotId={snapshotId}
-                actionResults={actionResults}
-                projectId={projectId}
-                backlogPolicyReason={assetInbox.backlog_policy?.reason || "Create backlog rows only from selected assets."}
-                onSelectNode={onSelectNode}
-                onSelectRelation={setSelectedRelationId}
-                onUpdateDraft={(patch) => updateDraft(selectedItem.path, patch)}
-                onWriteHint={() => writeHint(selectedItem)}
-                onPropose={proposeRelationAction}
-                onDriftStateChange={(driftState) => recordDriftState(selectedItem, driftState)}
-                onResolveDrift={() => queueResolveDrift(selectedItem, selectedRelation)}
-              />
-            </>
+              }
+              snapshotId={snapshotId}
+              actionResults={actionResults}
+              projectId={projectId}
+              impactScopePolicy={assetInbox.impact_scope_policy || "accepted_bindings_only"}
+              metrics={{
+                reviewCount,
+                backlogEligible,
+                candidateCount,
+                acceptedCount,
+                total,
+                visible: visibleItems.length,
+              }}
+              onSelectNode={onSelectNode}
+              onSelectRelation={setSelectedRelationId}
+              onUpdateDraft={(patch) => updateDraft(selectedItem.path, patch)}
+              onWriteHint={() => writeHint(selectedItem)}
+              onPropose={proposeRelationAction}
+              onDriftStateChange={(driftState) => recordDriftState(selectedItem, driftState)}
+              onResolveDrift={() => queueResolveDrift(selectedItem, selectedRelation)}
+            />
           ) : (
             <div className="asset-browser-empty asset-browser-empty-large">
               No assets are available in this snapshot.
             </div>
           )}
         </main>
-
-        <aside className="asset-relations-panel">
-          <div className="asset-selector-head">
-            <div>
-              <div className="asset-panel-title">Mount relations</div>
-              <div className="asset-panel-meta">
-                {selectedSummary ? relationSummaryLabel(selectedSummary) : "Select an asset"}
-              </div>
-            </div>
-          </div>
-          {selectedItem ? (
-            <RelationPanel
-              item={selectedItem}
-              relations={selectedRelations}
-              selectedRelationId={selectedRelation?.relation_id || ""}
-              actionResults={actionResults}
-              onSelect={setSelectedRelationId}
-              onSelectNode={onSelectNode}
-              onPropose={proposeRelationAction}
-              projectId={projectId}
-            />
-          ) : (
-            <div className="asset-browser-empty">Select an asset to inspect graph bindings.</div>
-          )}
-        </aside>
-      </section>
-
-      <section className="section">
-        <div className="section-head">
-          Batch actions <span className="head-hint">read-only preview in this slice</span>
-        </div>
-        {(assetInbox.batch_actions ?? []).length === 0 ? (
-          <div className="empty empty-compact">No batch actions are advertised for this payload.</div>
-        ) : (
-          <div className="asset-action-grid">
-            {(assetInbox.batch_actions ?? []).map((action) => (
-              <ActionCard key={action.action} action={action} />
-            ))}
-          </div>
-        )}
       </section>
 
       {removeConfirm ? (
@@ -563,132 +502,6 @@ export default function AssetInboxView({
           onConfirm={confirmRemoveBinding}
         />
       ) : null}
-    </div>
-  );
-}
-
-function AssetRelationGraph(props: {
-  item: AssetInboxItem;
-  relations: RelationView[];
-  selectedRelationId: string;
-  onSelect(relationId: string): void;
-  onSelectNode?: (nodeId: string) => void;
-  actionResults: Record<string, ActionResult>;
-  projectId: string;
-  onPropose(item: AssetInboxItem, relation: RelationView, action: "attach_to_node" | "remove_binding"): void;
-  onAddBindingFocus(): void;
-}) {
-  const relationSlots = props.relations.slice(0, 10);
-  const selectedRelation =
-    props.relations.find((relation) => relation.relation_id === props.selectedRelationId) ?? props.relations[0] ?? null;
-  return (
-    <section className="asset-one-hop-graph" aria-label="Asset relation graph">
-      <div className="asset-graph-head">
-        <div>
-          <div className="asset-detail-block-title">Relation map</div>
-          <div className="asset-panel-meta">Jump to graph nodes and record relation operations from this surface</div>
-        </div>
-        <RelationLegend />
-      </div>
-      <div className="asset-relation-map" aria-label={`Operation-first relation map for ${props.item.path}`}>
-        <div className="asset-relation-map-root">
-          <span className="asset-map-root-label">Asset root</span>
-          <strong>{shortPathLabel(props.item.path)}</strong>
-          <span>{labelForKind(props.item.asset_kind)} - {STATUS_LABELS[props.item.asset_status] ?? props.item.asset_status}</span>
-        </div>
-        <div className="asset-relation-map-branches">
-          {relationSlots.length === 0 ? (
-            <div className="asset-browser-empty">No relation branches are available for this asset.</div>
-          ) : (
-            relationSlots.map((relation) => {
-              const active = props.selectedRelationId === relation.relation_id;
-              const action = primaryRelationAction(relation);
-              const result = relationActionResult(props.actionResults, relation);
-              return (
-                <div
-                  key={relation.relation_id}
-                  className={`asset-relation-map-node ${relationStatusClass(relation.status)}${active ? " active" : ""}`}
-                  role="button"
-                  tabIndex={0}
-                  aria-pressed={active}
-                  onClick={() => props.onSelect(relation.relation_id)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      props.onSelect(relation.relation_id);
-                    }
-                  }}
-                >
-                  <div className="asset-relation-map-node-head">
-                    <TargetNodeButton nodeId={relation.target_node_id} onSelectNode={props.onSelectNode} />
-                    <span className={`asset-relation-state ${relationStatusClass(relation.status)}`}>
-                      {RELATION_LABELS[relation.status] ?? relation.status}
-                    </span>
-                  </div>
-                  {relation.target_title ? <div className="asset-relation-title">{relation.target_title}</div> : null}
-                  <div className="asset-relation-map-meta">
-                    <MetaPill label="Role" value={relation.role || "n/a"} />
-                    <MetaPill label="Evidence" value={relation.evidence_kind || "n/a"} />
-                    <MetaPill label="Scope" value={formatImpactScope(relation.impact_scope)} />
-                    {action ? (
-                      <MetaPill label="Operation" value={relationOperationLabel(action, isSourceControlledUnbindCandidate(props.item, relation))} />
-                    ) : null}
-                  </div>
-                  <div className="asset-relation-map-actions">
-                    {action ? (
-                      <button
-                        type="button"
-                        className="action-btn"
-                        disabled={relationActionResult(props.actionResults, relation, action)?.state === "writing"}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          props.onSelect(relation.relation_id);
-                          props.onPropose(props.item, relation, action);
-                        }}
-                      >
-                        {relationActionLabel(action)}
-                      </button>
-                    ) : (
-                      <span className="asset-browser-muted">No relation operation</span>
-                    )}
-                    <ActionResultLine result={result} projectId={props.projectId} compact />
-                  </div>
-                </div>
-              );
-            })
-          )}
-          <button
-            type="button"
-            className="asset-relation-add-slot"
-            title="Focus the Asset Inspector add-binding flow"
-            onClick={props.onAddBindingFocus}
-          >
-            <span>+</span>
-            <strong>Add binding</strong>
-            <small>Target node, role, and proposal/hint flow stay review-gated.</small>
-          </button>
-        </div>
-      </div>
-      <SelectedRelationOperation
-        item={props.item}
-        relation={selectedRelation}
-        result={selectedRelation ? relationActionResult(props.actionResults, selectedRelation) : null}
-        projectId={props.projectId}
-        onSelectNode={props.onSelectNode}
-        onPropose={props.onPropose}
-      />
-    </section>
-  );
-}
-
-function RelationLegend() {
-  return (
-    <div className="asset-relation-legend">
-      {(["accepted", "candidate", "unbound", "stale_drift", "impact_pending"] as const).map((status) => (
-        <span key={status} className={`asset-legend-item ${relationStatusClass(status)}`}>
-          {RELATION_LABELS[status]}
-        </span>
-      ))}
     </div>
   );
 }
@@ -706,7 +519,15 @@ function AssetInspector(props: {
   snapshotId: string;
   actionResults: Record<string, ActionResult>;
   projectId: string;
-  backlogPolicyReason: string;
+  impactScopePolicy: string;
+  metrics: {
+    reviewCount: number;
+    backlogEligible: number;
+    candidateCount: number;
+    acceptedCount: number;
+    total: number;
+    visible: number;
+  };
   onSelectNode?: (nodeId: string) => void;
   onSelectRelation(relationId: string): void;
   onUpdateDraft(patch: Partial<AttachDraft>): void;
@@ -716,17 +537,37 @@ function AssetInspector(props: {
   onResolveDrift(): void;
 }) {
   const [tab, setTab] = useState<AssetInspectorTab>("overview");
-  const connected = props.relations.filter((relation) => relation.target_node_id);
+  const trustedRelations = props.relations.filter((relation) => trustedRelationStatuses.has(relation.status));
+  const connected = trustedRelations.filter((relation) => relation.target_node_id);
   const candidates = props.relations.filter((relation) => relation.status === "candidate");
+  const tone = assetTone(props.item);
+  const selectedTrustedRelation = props.selectedRelation && props.selectedRelation.status !== "candidate" ? props.selectedRelation : null;
   return (
     <section className="asset-inspector" aria-label="Asset Inspector">
-      <div className="asset-inspector-head">
-        <div>
-          <div className="asset-detail-block-title">Asset Inspector</div>
-          <div className="asset-panel-meta">Overview, graph relations, candidates, and review-gated actions</div>
+      <header className="inspector-head asset-inspector-head">
+        <div className="inspector-row">
+          <span className="pill pill-mono">{labelForKind(props.item.asset_kind)}</span>
+          <span className={`status-badge ${assetStatusClass(props.item.asset_status)}`}>
+            {STATUS_LABELS[props.item.asset_status] ?? props.item.asset_status}
+          </span>
+          <span className="pill pill-mono">{props.item.language || "language n/a"}</span>
+          <span className="pill pill-mono">{formatBytes(props.item.size_bytes)}</span>
         </div>
-        <FileLink path={props.item.path} workspaceRoot={props.workspaceRoot} />
-      </div>
+        <div className="inspector-title asset-inspector-title">
+          <FileLink path={props.item.path} workspaceRoot={props.workspaceRoot} />
+        </div>
+        <div className="inspector-mono-line">{props.item.path}</div>
+        <div className="inspector-head-state-row asset-inspector-state-row">
+          <div className={`sem-state-row tone-${assetInspectorTone(tone)}`}>
+            <span className={`asset-state-dot tone-${tone}`} />
+            <span>{relationSummaryLabel(props.selectedSummary)}</span>
+            <span className="head-hint">{driftStateLabel(props.item)}</span>
+          </div>
+          <span className="asset-inspector-counts">
+            {props.metrics.visible}/{props.metrics.total} shown
+          </span>
+        </div>
+      </header>
       <nav className="inspector-tabs asset-inspector-tabs" role="tablist">
         {ASSET_INSPECTOR_TABS.map((candidate) => (
           <button
@@ -741,7 +582,7 @@ function AssetInspector(props: {
           </button>
         ))}
       </nav>
-      <div className="asset-inspector-body">
+      <div className="inspector-body asset-inspector-body scrollbar-thin">
         {tab === "overview" ? (
           <div className="asset-inspector-grid">
             <DetailBlock title="File">
@@ -752,6 +593,7 @@ function AssetInspector(props: {
                 <span>Kind: {labelForKind(props.item.asset_kind)}</span>
                 <span>Status: {STATUS_LABELS[props.item.asset_status] ?? props.item.asset_status}</span>
                 <span>Relations: {relationSummaryLabel(props.selectedSummary)}</span>
+                <span>Impact scope: {props.impactScopePolicy}</span>
               </div>
             </DetailBlock>
             <div className="asset-meta-grid asset-meta-grid-compact">
@@ -766,67 +608,54 @@ function AssetInspector(props: {
           </div>
         ) : null}
 
-        {tab === "nodes" ? (
+        {tab === "relations" ? (
           <div className="asset-inspector-tab-stack">
-            <DetailBlock title="Connected graph nodes">
-              {connected.length === 0 ? (
-                <div className="asset-browser-muted">No connected graph nodes yet.</div>
-              ) : (
-                <div className="asset-inspector-list">
-                  {connected.map((relation) => (
-                    <TargetNodeButton key={relation.relation_id} nodeId={relation.target_node_id} onSelectNode={props.onSelectNode} />
-                  ))}
-                </div>
-              )}
-            </DetailBlock>
-            <AssetRelationGraph
+            <RelationPanel
               item={props.item}
-              relations={props.relations}
+              relations={trustedRelations}
               selectedRelationId={props.selectedRelationId}
+              actionResults={props.actionResults}
               onSelect={props.onSelectRelation}
               onSelectNode={props.onSelectNode}
-              actionResults={props.actionResults}
-              projectId={props.projectId}
               onPropose={props.onPropose}
-              onAddBindingFocus={() => setTab("actions")}
+              projectId={props.projectId}
             />
+            <SelectedRelationOperation
+              item={props.item}
+              relation={selectedTrustedRelation}
+              result={selectedTrustedRelation ? relationActionResult(props.actionResults, selectedTrustedRelation) : null}
+              projectId={props.projectId}
+              onSelectNode={props.onSelectNode}
+              onPropose={props.onPropose}
+            />
+            {connected.length === 0 ? null : (
+              <div className="asset-browser-muted">{connected.length} connected graph node(s) are visible above.</div>
+            )}
           </div>
         ) : null}
 
         {tab === "candidates" ? (
-          <DetailBlock title="Weak evidence candidates">
+          <div className="asset-inspector-tab-stack">
             {candidates.length === 0 ? (
-              <div className="asset-browser-muted">No weak-evidence candidates in this payload.</div>
+              <DetailBlock title="Candidate bindings">
+                <div className="asset-browser-muted">No weak-evidence candidates in this payload.</div>
+              </DetailBlock>
             ) : (
-              <div className="asset-inspector-list asset-candidate-list">
-                {candidates.slice(0, 12).map((relation) => (
-                  <div key={relation.relation_id} className="asset-candidate-row">
-                    <span className="asset-meta-pill">
-                      <strong>{relation.target_node_id || "unbound"}</strong>
-                      {relation.evidence_kind || "candidate"} / {relation.binding_strength || "weak"}
-                    </span>
-                    <TargetNodeButton nodeId={relation.target_node_id} onSelectNode={props.onSelectNode} />
-                    <button
-                      type="button"
-                      className="action-btn"
-                      disabled={relationActionResult(props.actionResults, relation, "attach_to_node")?.state === "writing"}
-                      onClick={() => props.onPropose(props.item, relation, "attach_to_node")}
-                    >
-                      Queue candidate
-                    </button>
-                    <ActionResultLine
-                      result={relationActionResult(props.actionResults, relation, "attach_to_node")}
-                      projectId={props.projectId}
-                      compact
-                    />
-                  </div>
-                ))}
-              </div>
+              <CandidateRelationGroup
+                item={props.item}
+                relations={candidates}
+                selectedRelationId={props.selectedRelationId}
+                actionResults={props.actionResults}
+                onSelect={props.onSelectRelation}
+                onSelectNode={props.onSelectNode}
+                onPropose={props.onPropose}
+                projectId={props.projectId}
+              />
             )}
             <div className="asset-browser-muted">
-              Queueing candidates remains review-gated; accepted changes become graph truth only after Review Queue and commit/apply.
+              Candidate bindings are weak evidence. Queueing a candidate creates review work; graph truth changes only after Review Queue and commit/apply.
             </div>
-          </DetailBlock>
+          </div>
         ) : null}
 
         {tab === "actions" ? (
@@ -834,7 +663,7 @@ function AssetInspector(props: {
             <DriftControls
               item={props.item}
               selectedRelation={props.selectedRelation}
-              result={props.actionResults[`${props.item.asset_id}:drift`] ?? { state: "idle", message: "No manual state change recorded." }}
+              result={props.actionResults[`${props.item.asset_id}:drift`] ?? { state: "idle", message: "No observer state event recorded." }}
               proposalResult={
                 props.actionResults[`${props.item.asset_id}:resolve-drift`] ?? { state: "idle", message: proposalStateLabel(props.item) }
               }
@@ -850,39 +679,6 @@ function AssetInspector(props: {
               onUpdate={props.onUpdateDraft}
               onWrite={props.onWriteHint}
             />
-            <DetailBlock title="Evidence">
-              {(props.item.evidence ?? []).length === 0 ? (
-                <div className="asset-browser-muted">No evidence recorded.</div>
-              ) : (
-                <div className="asset-evidence-list">
-                  {(props.item.evidence ?? []).slice(0, 6).map((evidence, index) => (
-                    <span key={`${props.item.asset_id}-e-${index}`}>
-                      <strong>{evidence.kind}</strong>: {evidence.message}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </DetailBlock>
-            <DetailBlock title="Asset actions">
-              <div className="asset-action-list">
-                {(props.item.recommended_actions ?? []).slice(0, 5).map((action) => (
-                  <span key={action} className="mono">
-                    {action}
-                  </span>
-                ))}
-                {(props.item.recommended_actions ?? []).length === 0 ? (
-                  <span className="asset-browser-muted">No recommended action.</span>
-                ) : null}
-              </div>
-            </DetailBlock>
-            <DetailBlock title="Backlog policy">
-              <div className="asset-policy-lines">
-                <span>{props.backlogPolicyReason}</span>
-                <span className={props.item.backlog?.eligible ? "asset-policy-eligible" : "asset-browser-muted"}>
-                  {props.item.backlog?.eligible ? "Eligible for backlog creation" : props.item.backlog?.reason || "Not eligible"}
-                </span>
-              </div>
-            </DetailBlock>
           </div>
         ) : null}
       </div>
@@ -1091,7 +887,7 @@ function relationActionResult(
 }
 
 function relationActionLabel(action: "attach_to_node" | "remove_binding"): string {
-  return action === "attach_to_node" ? "Add relation" : "Propose remove";
+  return action === "attach_to_node" ? "Queue add for review" : "Propose remove";
 }
 
 function relationOperationLabel(
@@ -1144,14 +940,6 @@ function compactErrorDetail(value: string): string {
   return normalized.length > 220 ? `${normalized.slice(0, 217)}...` : normalized;
 }
 
-function shortPathLabel(path: string): string {
-  if (path.length <= 96) return path;
-  const parts = path.split("/");
-  const fileName = parts.pop() || path;
-  const parent = parts.pop();
-  return parent ? `.../${parent}/${fileName}` : `.../${fileName}`;
-}
-
 function backlogFollowUpHref(projectId: string, backlogId: string): string {
   const query = new URLSearchParams({
     project_id: projectId,
@@ -1175,30 +963,48 @@ function DriftControls(props: {
 }) {
   const currentState = normalizeDriftState(props.item.drift?.state);
   return (
-    <DetailBlock title="Drift controls">
-      <div className="asset-drift-control-grid">
-        {(["not_drifted", "suspected", "confirmed", "resolved", "waived"] as DriftStateName[]).map((state) => (
-          <button
-            key={state}
-            type="button"
-            className={`asset-drift-state-btn${currentState === state ? " active" : ""}`}
-            disabled={props.result.state === "writing"}
-            onClick={() => props.onStateChange(state)}
-          >
-            {DRIFT_LABELS[state]}
-          </button>
-        ))}
+    <DetailBlock title="Observer drift review">
+      <AssetActionFlow
+        title="Drift/status flow"
+        steps={["Commit changes", "Impact scope", "Possible drift", "Observer review", "Review Queue", "Resolved state"]}
+      />
+      <div className="asset-action-explain">
+        <strong>{currentState === "not_drifted" ? "Baseline is not a human audit." : `${DRIFT_LABELS[currentState]} needs review context.`}</strong>
+        <span>
+          Users normally inspect the status here. Ask Observer to verify or resolve drift; accepted changes become trusted only after
+          Review Queue and commit/apply.
+        </span>
       </div>
-      <button
-        type="button"
-        className="action-btn action-btn-primary asset-resolve-drift-btn"
-        disabled={props.proposalResult.state === "writing"}
-        onClick={props.onResolve}
-      >
-        {props.proposalResult.state === "writing" ? "Queueing..." : "Resolve Drift"}
-      </button>
-      <div className={`attach-state attach-state-${props.result.state}`}>{props.result.message}</div>
-      <div className={`attach-state attach-state-${props.proposalResult.state}`}>{props.proposalResult.message}</div>
+      <div className="asset-drift-action-layout">
+        <div className="asset-action-section">
+          <div className="asset-action-subtitle">Current state</div>
+          <div className="asset-state-readout">
+            <span className={`asset-state-dot tone-${assetTone(props.item)}`} />
+            <strong>{driftStateLabel(props.item)}</strong>
+          </div>
+          <div className="asset-action-help">
+            Every commit can mark impacted files as possible drift. Files changed by the implementation can be verified current;
+            unchanged impacted files should be reviewed by Observer.
+          </div>
+          <div className={`attach-state attach-state-${props.result.state}`}>{props.result.message}</div>
+        </div>
+        <div className="asset-action-section asset-action-section-emphasis">
+          <div className="asset-action-subtitle">Ask Observer to resolve</div>
+          <button
+            type="button"
+            className="action-btn action-btn-primary asset-resolve-drift-btn"
+            disabled={props.proposalResult.state === "writing"}
+            onClick={props.onResolve}
+            title="Queue an AI-assisted drift proposal. Review Queue approval is required before it changes graph truth."
+          >
+            {props.proposalResult.state === "writing" ? "Queueing..." : "Queue Observer review"}
+          </button>
+          <div className="asset-action-help">
+            Creates a review-gated proposal for the selected relation. It becomes effective only after review and commit/apply.
+          </div>
+          <div className={`attach-state attach-state-${props.proposalResult.state}`}>{props.proposalResult.message}</div>
+        </div>
+      </div>
       {props.selectedRelation ? (
         <div className="asset-browser-muted">
           Target relation: {props.selectedRelation.target_node_id || RELATION_LABELS[props.selectedRelation.status] || "unbound"}
@@ -1221,12 +1027,11 @@ function RelationPanel(props: {
   const accepted = props.relations.filter((relation) =>
     ["accepted", "impact_pending", "stale_drift"].includes(relation.status),
   );
-  const candidates = props.relations.filter((relation) => relation.status === "candidate");
   const unbound = props.relations.filter((relation) => relation.status === "unbound");
   if (props.relations.length === 0) {
     return (
       <div className="asset-browser-empty">
-        No accepted or candidate graph relations for <span className="mono">{props.item.path}</span>.
+        No trusted graph relations for <span className="mono">{props.item.path}</span>.
       </div>
     );
   }
@@ -1237,18 +1042,6 @@ function RelationPanel(props: {
         item={props.item}
         relations={accepted}
         empty="No accepted binding."
-        selectedRelationId={props.selectedRelationId}
-        actionResults={props.actionResults}
-        onSelect={props.onSelect}
-        onSelectNode={props.onSelectNode}
-        onPropose={props.onPropose}
-        projectId={props.projectId}
-      />
-      <RelationGroup
-        title="Candidates"
-        item={props.item}
-        relations={candidates}
-        empty="No candidate proposal."
         selectedRelationId={props.selectedRelationId}
         actionResults={props.actionResults}
         onSelect={props.onSelect}
@@ -1293,73 +1086,142 @@ function RelationGroup(props: {
       {props.relations.length === 0 ? (
         <div className="asset-browser-muted">{props.empty}</div>
       ) : (
-        props.relations.map((relation) => {
-          const active = props.selectedRelationId === relation.relation_id;
-          const addKey = `${relation.relation_id}:attach_to_node`;
-          const removeKey = `${relation.relation_id}:remove_binding`;
-          return (
-          <div
-            key={relation.relation_id}
-            className={`asset-relation-card ${relationStatusClass(relation.status)}${active ? " active" : ""}`}
-            onClick={() => props.onSelect(relation.relation_id)}
-          >
-            <div className="asset-relation-card-head">
-              <TargetNodeButton nodeId={relation.target_node_id} onSelectNode={props.onSelectNode} />
-              <span className={`asset-relation-state ${relationStatusClass(relation.status)}`}>
-                {RELATION_LABELS[relation.status] ?? relation.status}
-              </span>
-            </div>
-            {relation.target_title ? <div className="asset-relation-title">{relation.target_title}</div> : null}
-            <div className="asset-relation-meta">
-              <MetaPill label="Role" value={relation.role || "n/a"} />
-              <MetaPill label="Source" value={relation.source || "n/a"} />
-              <MetaPill label="Evidence" value={relation.evidence_kind || "n/a"} />
-              <MetaPill label="Strength" value={relation.binding_strength || "n/a"} />
-              <MetaPill label="Scope" value={formatImpactScope(relation.impact_scope)} />
-              <MetaPill label="Review" value={relation.review_required ? "required" : "not required"} />
-              <MetaPill label="Drift" value={relation.drift_state || "not_drifted"} />
-              {primaryRelationAction(relation) ? (
-                <MetaPill
-                  label="Operation"
-                  value={relationOperationLabel(primaryRelationAction(relation), isSourceControlledUnbindCandidate(props.item, relation))}
-                />
-              ) : null}
-            </div>
-            {relation.proposal_hash ? <div className="asset-relation-hash mono">{relation.proposal_hash}</div> : null}
-            <div className="asset-relation-actions">
-              {relation.status === "candidate" && relation.target_node_id ? (
-                <button
-                  type="button"
-                  className="action-btn"
-                  disabled={props.actionResults[addKey]?.state === "writing"}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    props.onPropose(props.item, relation, "attach_to_node");
+        <ul className="link-list asset-relation-list">
+          {props.relations.map((relation) => {
+            const active = props.selectedRelationId === relation.relation_id;
+            const action = primaryRelationAction(relation);
+            const actionKey = action ? `${relation.relation_id}:${action}` : "";
+            const result = action ? props.actionResults[actionKey] : null;
+            return (
+              <li key={relation.relation_id}>
+                <div
+                  className={`link-row asset-relation-row ${relationStatusClass(relation.status)}${active ? " active" : ""}`}
+                  role="button"
+                  tabIndex={0}
+                  aria-pressed={active}
+                  onClick={() => props.onSelect(relation.relation_id)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      props.onSelect(relation.relation_id);
+                    }
                   }}
                 >
-                  Add relation
-                </button>
-              ) : null}
-              {["accepted", "impact_pending", "stale_drift"].includes(relation.status) ? (
-                <button
-                  type="button"
-                  className="action-btn"
-                  disabled={props.actionResults[removeKey]?.state === "writing"}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    props.onPropose(props.item, relation, "remove_binding");
-                  }}
-                >
-                  Propose remove
-                </button>
-              ) : null}
-              <ActionResultLine result={props.actionResults[addKey]} projectId={props.projectId} />
-              <ActionResultLine result={props.actionResults[removeKey]} projectId={props.projectId} />
-            </div>
-          </div>
-          );
-        })
+                  <span className={`asset-relation-state ${relationStatusClass(relation.status)}`}>
+                    {RELATION_LABELS[relation.status] ?? relation.status}
+                  </span>
+                  <TargetNodeButton nodeId={relation.target_node_id} onSelectNode={props.onSelectNode} />
+                  <span className="link-name" title={relation.target_title || relation.target_node_id || "unbound"}>
+                    {relation.target_title || relation.target_node_id || "Unbound asset"}
+                  </span>
+                  <span className="asset-relation-row-meta">
+                    <span>{relation.role || "role n/a"}</span>
+                    <span>{relation.evidence_kind || relation.source || "evidence n/a"}</span>
+                    <span>{formatImpactScope(relation.impact_scope)}</span>
+                    {relation.proposal_hash ? <span className="mono">{relation.proposal_hash}</span> : null}
+                  </span>
+                  <span className="asset-relation-row-actions">
+                    {action ? (
+                      <button
+                        type="button"
+                        className="action-btn"
+                        disabled={result?.state === "writing"}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          props.onSelect(relation.relation_id);
+                          props.onPropose(props.item, relation, action);
+                        }}
+                      >
+                        {relationActionLabel(action)}
+                      </button>
+                    ) : null}
+                    <ActionResultLine result={result} projectId={props.projectId} compact />
+                  </span>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
       )}
+    </section>
+  );
+}
+
+function CandidateRelationGroup(props: {
+  item: AssetInboxItem;
+  relations: RelationView[];
+  selectedRelationId: string;
+  actionResults: Record<string, ActionResult>;
+  onSelect(relationId: string): void;
+  onSelectNode?: (nodeId: string) => void;
+  onPropose(item: AssetInboxItem, relation: RelationView, action: "attach_to_node" | "remove_binding"): void;
+  projectId: string;
+}) {
+  return (
+    <section className="asset-relation-group">
+      <div className="asset-relation-group-title">
+        <span>Candidate bindings</span>
+        <span className="asset-chip-count">{props.relations.length}</span>
+      </div>
+      <ul className="link-list asset-relation-list asset-candidate-list">
+        {props.relations.map((relation) => {
+          const active = props.selectedRelationId === relation.relation_id;
+          const result = props.actionResults[`${relation.relation_id}:attach_to_node`] ?? null;
+          const precheck: Partial<AssetInboxBindingCandidate["precheck"]> = relation.precheck ?? {};
+          return (
+            <li key={relation.relation_id}>
+              <div
+                className={`link-row asset-relation-row asset-candidate-row ${relationStatusClass(relation.status)}${active ? " active" : ""}`}
+                role="button"
+                tabIndex={0}
+                aria-pressed={active}
+                onClick={() => props.onSelect(relation.relation_id)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    props.onSelect(relation.relation_id);
+                  }
+                }}
+              >
+                <span className={`asset-relation-state ${relationStatusClass(relation.status)}`}>
+                  {RELATION_LABELS[relation.status] ?? relation.status}
+                </span>
+                <TargetNodeButton nodeId={relation.target_node_id} onSelectNode={props.onSelectNode} />
+                <span className="link-name" title={relation.target_title || relation.target_node_id || "candidate"}>
+                  {relation.target_title || relation.target_node_id || "Candidate target"}
+                </span>
+                <span className="asset-relation-row-meta asset-candidate-reason">
+                  <span title={relation.source || "source n/a"}>Source {relation.source || "n/a"}</span>
+                  <span title={relation.evidence_kind || "evidence n/a"}>Evidence {relation.evidence_kind || "n/a"}</span>
+                  <span>Strength {relation.binding_strength || precheck.binding_strength || "weak"}</span>
+                  <span>Decision {precheck.decision || (relation.review_required ? "review_required" : "n/a")}</span>
+                  <span>{precheck.ok === false ? "Precheck failed" : "Precheck ok"}</span>
+                  {relation.proposal_hash ? (
+                    <span className="mono" title={relation.proposal_hash}>
+                      {relation.proposal_hash}
+                    </span>
+                  ) : null}
+                </span>
+                <span className="asset-relation-row-actions">
+                  <button
+                    type="button"
+                    className="action-btn"
+                    disabled={result?.state === "writing"}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      props.onSelect(relation.relation_id);
+                      props.onPropose(props.item, relation, "attach_to_node");
+                    }}
+                  >
+                    Queue add for review
+                  </button>
+                  <ActionResultLine result={result} projectId={props.projectId} compact />
+                </span>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
     </section>
   );
 }
@@ -1375,50 +1237,55 @@ function HintBindingPanel(props: {
 }) {
   const supported = canDirectWriteHint(props.item.path);
   const hintable = isHintable(props.item);
+  const selectedNode = props.nodeOptions.find((node) => node.node_id === props.draft.targetNodeId) ?? null;
   const disabledReason = governanceHintDisabledReason(props.item, supported, props.nodeOptions.length, props.snapshotId);
-  const disabled =
-    !props.snapshotId ||
-    !supported ||
-    !hintable ||
-    props.nodeOptions.length === 0 ||
-    props.result.state === "writing" ||
-    props.result.state === "written_uncommitted";
+  const canUseSourceHint = supported && hintable && props.snapshotId && !disabledReason;
   return (
-    <DetailBlock title="Governance hint">
-      <div className="asset-hint-controls">
-        <select
-          value={props.draft.role}
-          onChange={(event) => props.onUpdate({ role: event.target.value as AttachRole })}
-          disabled={props.result.state === "writing" || props.result.state === "written_uncommitted"}
-        >
-          <option value="doc">doc</option>
-          <option value="test">test</option>
-          <option value="config">config</option>
-        </select>
-        <select
-          value={props.draft.targetNodeId}
-          onChange={(event) => props.onUpdate({ targetNodeId: event.target.value })}
-          disabled={props.result.state === "writing" || props.result.state === "written_uncommitted"}
-        >
-          {props.nodeOptions.map((node) => (
-            <option key={node.node_id} value={node.node_id}>
-              {node.title || node.node_id} - {node.node_id}
-            </option>
-          ))}
-        </select>
-        <button
-          className="action-btn action-btn-primary"
-          disabled={disabled}
-          onClick={props.onWrite}
-          title={disabledReason || "Write governance hint into the file"}
-        >
-          {props.result.state === "writing" ? "Writing..." : "Write hint"}
-        </button>
+    <DetailBlock title="Observer binding review">
+      <AssetActionFlow
+        title="Binding flow"
+        steps={["Unbound file", "Candidate evidence", "Observer proposal", "Review Queue", "Commit", "Update Graph"]}
+      />
+      <div className="asset-action-explain">
+        <strong>Binding changes are review-gated.</strong>
+        <span>
+          Users inspect candidates and status here. Observer should decide whether to queue a candidate, write a source hint, or
+          leave the asset unbound.
+        </span>
+      </div>
+      <div className="asset-action-section">
+        <div className="asset-action-subtitle">Observer action path</div>
+        <div className="asset-action-help">
+          {canUseSourceHint
+            ? "Source hint path is available for Observer: write source evidence, commit it, then update the graph."
+            : disabledReason || "Use candidate review actions for this asset."}
+        </div>
+        {selectedNode ? (
+          <div className="asset-node-selected-row">
+            <span>Suggested target</span>
+            <strong>{nodeOptionLabel(selectedNode)}</strong>
+            <span className="mono">{selectedNode.node_id}</span>
+            <span className="asset-browser-muted">{nodeFileHint(selectedNode)}</span>
+          </div>
+        ) : null}
       </div>
       <div className={`attach-state attach-state-${props.result.state}`}>
-        {disabledReason || props.result.message}
+        {props.result.state === "idle" ? "No source hint written from this inspector." : props.result.message}
       </div>
     </DetailBlock>
+  );
+}
+
+function AssetActionFlow({ title, steps }: { title: string; steps: string[] }) {
+  return (
+    <div className="asset-action-flow-block">
+      <div className="asset-action-subtitle">{title}</div>
+      <div className="asset-guide-flow">
+        {steps.map((step) => (
+          <span key={step}>{step}</span>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -1436,45 +1303,6 @@ function Meta({ label, value, mono = false }: { label: string; value: string; mo
     <div className="asset-meta-cell">
       <span>{label}</span>
       <strong className={mono ? "mono" : undefined}>{value}</strong>
-    </div>
-  );
-}
-
-function MetaPill({ label, value }: { label: string; value: string }) {
-  return (
-    <span className="asset-meta-pill">
-      <strong>{label}</strong>
-      {value}
-    </span>
-  );
-}
-
-function ActionCard({ action }: { action: AssetInboxBatchAction }) {
-  return (
-    <div className="asset-action-card">
-      <div className="asset-action-head">
-        <span>{action.label || action.action}</span>
-        <span className={action.mutates_source ? "asset-action-danger" : "asset-action-safe"}>
-          {action.mutates_source ? "source write" : "read/queue"}
-        </span>
-      </div>
-      <div className="asset-action-meta">
-        {(action.allowed_statuses ?? []).map((status) => (
-          <span key={status}>{STATUS_LABELS[status] ?? status}</span>
-        ))}
-      </div>
-      <button className="action-btn" disabled title="Mutation actions are not enabled in this slice">
-        Disabled
-      </button>
-    </div>
-  );
-}
-
-function Kpi({ label, value, tone }: { label: string; value: number; tone: string }) {
-  return (
-    <div className={`score-card tone-${tone}`}>
-      <span>{label}</span>
-      <strong>{value}</strong>
     </div>
   );
 }
@@ -1635,6 +1463,7 @@ function deriveRelations(item: AssetInboxItem): RelationView[] {
     binding_strength: candidate.precheck?.binding_strength,
     impact_scope: candidate.precheck?.mode || "proposal",
     review_required: candidate.precheck?.decision !== "accepted",
+    precheck: candidate.precheck,
   }));
   return [...accepted, ...candidates];
 }
@@ -1661,8 +1490,13 @@ function relationSummaryLabel(summary: ReturnType<typeof summarizeRelations> | n
 
 function driftStateLabel(item: AssetInboxItem): string {
   const state = normalizeDriftState(item.drift?.state);
-  const source = item.drift?.source ? ` (${item.drift.source})` : "";
-  return `${DRIFT_LABELS[state]}${source}`;
+  const source = (item.drift?.source || "").trim();
+  if (state === "not_drifted") {
+    if (!source || source === "default") return "Baseline";
+    if (/(observer|gate|commit|impact|contract|verified|review)/i.test(source)) return "Verified current";
+    return `Current (${source})`;
+  }
+  return `${DRIFT_LABELS[state]}${source ? ` (${source})` : ""}`;
 }
 
 function proposalStateLabel(item: AssetInboxItem): string {
@@ -1685,6 +1519,10 @@ function relationStatusClass(status?: string): string {
   if (status === "stale_drift") return "stale-drift";
   if (status === "unbound") return "unbound";
   return "unbound";
+}
+
+function assetInspectorTone(tone: "green" | "amber" | "red" | "gray"): "green" | "amber" | "red" | "neutral" {
+  return tone === "gray" ? "neutral" : tone;
 }
 
 function normalizeGroupId(kind?: string, status?: string, path?: string): AssetGroupId {
@@ -1736,6 +1574,22 @@ function isHintable(item: AssetInboxItem): boolean {
     item.scan_status === "orphan" &&
     ["doc_unbound"].includes(item.asset_status)
   );
+}
+
+function nodeOptionLabel(node: NodeRecord): string {
+  return `${node.title || node.node_id} - ${node.node_id}`;
+}
+
+function nodeFileHint(node: NodeRecord): string {
+  const files = [
+    ...(node.primary_files ?? []),
+    ...(node.secondary_files ?? []),
+    ...(node.test_files ?? []),
+    ...(node.config_files ?? []),
+  ];
+  if (files.length === 0) return "no files listed";
+  const first = files[0];
+  return files.length === 1 ? first : `${first} +${files.length - 1}`;
 }
 
 function governanceHintDisabledReason(
@@ -1835,6 +1689,15 @@ function assetStatusClass(status: string): string {
   if (status === "source_orphan" || status === "stale") return "failed";
   if (status === "doc_candidate" || status === "test_candidate" || status === "config_pending_decision") return "running";
   return "queued";
+}
+
+function assetTone(item: AssetInboxItem): "green" | "amber" | "red" | "gray" {
+  const status = item.asset_status;
+  if (status === "accepted" || status === "drift_resolved" || status === "drift_waived") return "green";
+  if (status.includes("candidate") || status.includes("pending") || status === "drift_suspected") return "amber";
+  if (status.includes("orphan") || status.includes("unbound") || status === "drift_confirmed" || status === "stale") return "red";
+  if (status === "ignored" || status === "archive" || normalizeAssetKind(item.asset_kind) === "generated") return "gray";
+  return "gray";
 }
 
 function countStatus(assetInbox: AssetInboxResponse, status: string): number {

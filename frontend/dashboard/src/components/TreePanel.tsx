@@ -49,7 +49,7 @@ export interface AssetTreeSelection {
 
 const ASSET_STATUS_FILTERS: Array<{ id: AssetStatusFilter; label: string; title: string }> = [
   { id: "all", label: "All", title: "Show all asset states" },
-  { id: "health", label: "Health", title: "Accepted, bound, healthy, or graph-current assets" },
+  { id: "health", label: "Healthy", title: "Accepted, bound, healthy, or graph-current assets" },
   { id: "candidate", label: "Candidate", title: "Proposed, pending, or review-candidate assets" },
   { id: "drift", label: "Drift", title: "Suspected, confirmed, stale, or drifted assets" },
   { id: "orphan", label: "Orphan", title: "Unbound or actionable orphan assets" },
@@ -63,7 +63,7 @@ const LAYER_LABELS: Record<Layer, { label: string; title: string }> = {
   L7: { label: "Feature", title: "L7 Feature — inspectable implementation feature" },
 };
 
-const ASSET_GROUP_ORDER: AssetGroupId[] = ["ALL", "doc", "test", "config", "source", "generated", "other"];
+const ASSET_GROUP_ORDER: AssetGroupId[] = ["doc", "test", "config", "source", "generated", "other"];
 const ASSET_GROUP_LABELS: Record<AssetGroupId, string> = {
   ALL: "All assets",
   doc: "Docs",
@@ -72,18 +72,6 @@ const ASSET_GROUP_LABELS: Record<AssetGroupId, string> = {
   source: "Source",
   generated: "Generated / Ignored",
   other: "Other",
-};
-
-const ASSET_BUCKET_LABELS: Record<string, string> = {
-  all: "All in group",
-  health: "Health",
-  candidate: "Candidate",
-  drift: "Drift / stale",
-  orphan: "Orphan / actionable",
-  ignored: "Ignored / generated",
-  unbound: "Doc unbound",
-  accepted: "Accepted",
-  pending: "Pending decision",
 };
 
 interface Index {
@@ -368,19 +356,12 @@ export default function TreePanel(props: Props) {
   );
 }
 
-interface AssetTreeBucket {
-  id: string;
-  label: string;
-  count: number;
-  tone: "green" | "amber" | "red" | "gray";
-  leaves: AssetTreeLeaf[];
-}
-
 interface AssetTreeLeaf {
   id: string;
   path: string;
   label: string;
   subtitle: string;
+  statusLabel: string;
   tone: "green" | "amber" | "red" | "gray";
 }
 
@@ -389,7 +370,7 @@ interface AssetTreeGroup {
   label: string;
   count: number;
   tone: "green" | "amber" | "red" | "gray";
-  buckets: AssetTreeBucket[];
+  leaves: AssetTreeLeaf[];
 }
 
 function AssetTree(props: {
@@ -406,35 +387,31 @@ function AssetTree(props: {
   onSearchChange(query: string): void;
   onSelectAsset(assetId: string): void;
 }) {
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(["group:ALL"]));
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
     setExpanded((prev) => {
-      const next = new Set(prev);
-      const selectedGroup = props.selection.groupId || "ALL";
-      next.add(assetGroupKey(selectedGroup));
-      if (props.selection.bucketId) {
-        next.add(assetBucketKey(selectedGroup, props.selection.bucketId));
-      }
-      if (props.search.trim() || props.statusFilter !== "all") {
-        props.tree.forEach((group) => {
-          next.add(assetGroupKey(group.id));
-          group.buckets.forEach((bucket) => {
-            if (bucket.leaves.length > 0 || props.selection.groupId === group.id) {
-              next.add(assetBucketKey(group.id, bucket.id));
-            }
-          });
-        });
+      const valid = new Set<string>();
+      props.tree.forEach((group) => {
+        valid.add(assetGroupKey(group.id));
+      });
+      const next = new Set([...prev].filter((key) => valid.has(key)));
+      if (next.size === prev.size && [...next].every((key) => prev.has(key))) {
+        return prev;
       }
       return next;
     });
-  }, [props.search, props.selection.bucketId, props.selection.groupId, props.statusFilter, props.tree]);
+  }, [props.tree]);
 
-  const toggle = (id: string) => {
+  const toggleGroup = (group: AssetTreeGroup) => {
     setExpanded((prev) => {
+      const groupKey = assetGroupKey(group.id);
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(groupKey)) {
+        next.delete(groupKey);
+        return next;
+      }
+      next.add(groupKey);
       return next;
     });
   };
@@ -494,61 +471,31 @@ function AssetTree(props: {
                 type="button"
                 className={`tree-row asset-tree-row ${props.selection.groupId === group.id && !props.selection.bucketId ? "active" : ""}`}
                 onClick={() => {
-                  toggle(assetGroupKey(group.id));
+                  toggleGroup(group);
                   props.onSelectionChange({ groupId: group.id, bucketId: "" });
                 }}
               >
                 <span className={`tree-caret ${expanded.has(assetGroupKey(group.id)) ? "open" : ""}`}>▶</span>
-                <span className={`asset-state-dot tone-${group.tone}`} />
+                <span className="tree-icon asset-tree-icon">{assetKindIcon(group.id)}</span>
                 <span className="tree-name">{group.label}</span>
                 <span className="tree-meta">{group.count}</span>
               </button>
               {expanded.has(assetGroupKey(group.id))
-                ? group.buckets.map((bucket) => {
-                    const bucketKey = assetBucketKey(group.id, bucket.id);
-                    const bucketOpen = expanded.has(bucketKey);
-                    return (
-                      <div key={bucketKey}>
-                        <button
-                          type="button"
-                          className={`tree-row asset-tree-row asset-tree-bucket ${
-                            props.selection.groupId === group.id && props.selection.bucketId === bucket.id ? "active" : ""
-                          }`}
-                          onClick={() => {
-                            toggle(bucketKey);
-                            props.onSelectionChange({ groupId: group.id, bucketId: bucket.id });
-                          }}
-                        >
-                          <span className={`tree-caret ${bucketOpen ? "open" : ""}${bucket.leaves.length === 0 ? " leaf" : ""}`}>
-                            ▶
-                          </span>
-                          <span className={`asset-state-dot tone-${bucket.tone}`} />
-                          <span className="tree-name">{bucket.label}</span>
-                          <span className="tree-meta">{bucket.count}</span>
-                        </button>
-                        {bucketOpen
-                          ? bucket.leaves.map((leaf) => (
-                              <button
-                                key={`${bucketKey}:${leaf.id}`}
-                                type="button"
-                                className={`tree-row asset-tree-row asset-tree-leaf ${
-                                  props.selectedAssetId === leaf.id ? "active" : ""
-                                }`}
-                                onClick={() => props.onSelectAsset(leaf.id)}
-                                title={leaf.path}
-                              >
-                                <span className="tree-caret leaf">▶</span>
-                                <span className={`asset-state-dot tone-${leaf.tone}`} />
-                                <span className="tree-name mono">{leaf.label}</span>
-                                <span className="tree-meta" title={leaf.subtitle}>
-                                  {leaf.subtitle}
-                                </span>
-                              </button>
-                            ))
-                          : null}
-                      </div>
-                    );
-                  })
+                ? group.leaves.map((leaf) => (
+                    <button
+                      key={`${group.id}:${leaf.id}`}
+                      type="button"
+                      className={`tree-row asset-tree-row asset-tree-leaf ${props.selectedAssetId === leaf.id ? "active" : ""}`}
+                      onClick={() => props.onSelectAsset(leaf.id)}
+                      title={leaf.path}
+                    >
+                      <span className="tree-caret leaf">▶</span>
+                      <span className="tree-name mono">{leaf.label}</span>
+                      <span className={`asset-file-status-badge tone-${leaf.tone}`} title={leaf.subtitle}>
+                        {leaf.statusLabel}
+                      </span>
+                    </button>
+                  ))
                 : null}
             </div>
           ))
@@ -861,47 +808,34 @@ function buildAssetTree(
 ): AssetTreeGroup[] {
   const q = search.trim().toLowerCase();
   return ASSET_GROUP_ORDER.map((groupId) => {
-    const rawGroupItems = groupId === "ALL" ? items : items.filter((item) => assetGroupId(item) === groupId);
+    const rawGroupItems = items.filter((item) => assetGroupId(item) === groupId);
     const scopedGroupItems = rawGroupItems.filter((item) => {
       if (statusFilter !== "all" && !assetStatusFilterMatches(item, statusFilter)) return false;
       if (q && !assetSearchScopeAllows(selection, groupId, "")) return false;
-      if (q && selection.bucketId && !assetBucketMatches(item, selection.bucketId)) return false;
       if (q && !assetSearchMatches(item, q)) return false;
       return true;
     });
     const groupSelected = selection.groupId === groupId;
-    const buckets = assetBucketsForGroup(groupId)
-      .map((bucket) => {
-        const bucketSelected = groupSelected && selection.bucketId === bucket;
-        const scopedBucket = !q || assetSearchScopeAllows(selection, groupId, bucket);
-        const bucketItems = scopedBucket ? scopedGroupItems.filter((item) => assetBucketMatches(item, bucket)) : [];
-        const leaves = bucketItems.map(assetLeafForItem);
-        return {
-          id: bucket,
-          label: ASSET_BUCKET_LABELS[bucket] ?? bucket,
-          count: leaves.length,
-          tone: bucketTone(bucket, bucketItems),
-          leaves,
-          selected: bucketSelected,
-        };
-      })
-      .filter((bucket) => bucket.count > 0 || bucket.selected);
+    const leaves = scopedGroupItems.map(assetLeafForItem);
     return {
       id: groupId,
       label: ASSET_GROUP_LABELS[groupId],
       count: scopedGroupItems.length,
       tone: highestAssetTone(scopedGroupItems),
-      buckets,
+      leaves,
       selected: groupSelected,
     };
   }).filter((group) => group.count > 0 || group.selected);
 }
 
-function assetBucketsForGroup(groupId: AssetGroupId): string[] {
-  if (groupId === "doc") return ["all", "unbound", "candidate", "accepted", "orphan", "drift"];
-  if (groupId === "generated") return ["all", "ignored"];
-  if (groupId === "test" || groupId === "config") return ["all", "candidate", "accepted", "orphan", "drift", "pending"];
-  return ["all", "health", "candidate", "orphan", "drift"];
+function assetKindIcon(groupId: AssetGroupId): string {
+  if (groupId === "doc") return "D";
+  if (groupId === "test") return "T";
+  if (groupId === "config") return "C";
+  if (groupId === "source") return "S";
+  if (groupId === "generated") return "G";
+  if (groupId === "other") return "O";
+  return "A";
 }
 
 function filterAssetRows(
@@ -924,10 +858,6 @@ function assetGroupKey(groupId: AssetGroupId): string {
   return `group:${groupId}`;
 }
 
-function assetBucketKey(groupId: AssetGroupId, bucketId: string): string {
-  return `bucket:${groupId}:${bucketId}`;
-}
-
 function assetSearchScopeAllows(selection: AssetTreeSelection, groupId: AssetGroupId, bucketId: string): boolean {
   if (selection.groupId !== "ALL" && groupId !== selection.groupId) return false;
   if (selection.bucketId && bucketId && bucketId !== selection.bucketId) return false;
@@ -939,8 +869,9 @@ function assetLeafForItem(item: AssetInboxItem): AssetTreeLeaf {
   return {
     id: item.asset_id,
     path: item.path,
-    label: item.path,
+    label: basename(item.path),
     subtitle: assetLeafSubtitle(item),
+    statusLabel: assetLeafStatusLabel(item),
     tone: assetTone(item),
   };
 }
@@ -950,7 +881,20 @@ function assetLeafSubtitle(item: AssetInboxItem): string {
   const candidate = item.relation_summary?.candidate_count ?? (item.binding_candidates ?? []).length;
   const drift = normalizeDriftState(item.drift?.state);
   const driftSuffix = drift === "not_drifted" ? "" : ` / ${drift}`;
-  return `${assetStatusLabel(item.asset_status)} / ${accepted}+${candidate}${driftSuffix}`;
+  const directory = dirname(item.path);
+  const relationText = `${accepted} accepted, ${candidate} candidate`;
+  const stateText = `${assetStatusLabel(item.asset_status)} / ${relationText}${driftSuffix}`;
+  return directory ? `${directory} / ${stateText}` : stateText;
+}
+
+function assetLeafStatusLabel(item: AssetInboxItem): string {
+  const status = item.asset_status;
+  if (status === "ignored" || status === "archive" || normalizeAssetKind(item.asset_kind) === "generated") return "Ignored";
+  if (assetStatusFilterMatches(item, "drift")) return "Drift";
+  if (assetStatusFilterMatches(item, "candidate")) return "Candidate";
+  if (assetStatusFilterMatches(item, "orphan")) return "Orphan";
+  if (assetStatusFilterMatches(item, "health")) return "Healthy";
+  return assetStatusLabel(status);
 }
 
 function assetSearchMatches(item: AssetInboxItem, q: string): boolean {
@@ -1050,14 +994,6 @@ function highestAssetTone(items: AssetInboxItem[]): "green" | "amber" | "red" | 
   return "gray";
 }
 
-function bucketTone(bucket: string, items: AssetInboxItem[]): "green" | "amber" | "red" | "gray" {
-  if (bucket === "accepted" || bucket === "health") return "green";
-  if (bucket === "candidate" || bucket === "pending") return "amber";
-  if (bucket === "drift" || bucket === "orphan" || bucket === "unbound") return "red";
-  if (bucket === "ignored") return "gray";
-  return highestAssetTone(items);
-}
-
 function assetTone(item: AssetInboxItem): "green" | "amber" | "red" | "gray" {
   const status = item.asset_status;
   if (status === "accepted" || status === "drift_resolved" || status === "drift_waived") return "green";
@@ -1069,6 +1005,17 @@ function assetTone(item: AssetInboxItem): "green" | "amber" | "red" | "gray" {
 
 function assetStatusLabel(status: string): string {
   return status.replaceAll("_", " ");
+}
+
+function basename(path: string): string {
+  const parts = path.split(/[\\/]/);
+  return parts[parts.length - 1] || path;
+}
+
+function dirname(path: string): string {
+  const parts = path.split(/[\\/]/);
+  parts.pop();
+  return parts.join("/");
 }
 
 function normalizeDriftState(state?: string): string {

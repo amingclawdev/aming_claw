@@ -570,7 +570,7 @@ function TimelinePanel({ timeline, backlogId }: { timeline: TimelineState; backl
       {!timeline.loading && !timeline.error && lanes.length > 0 ? (
         <div className="backlog-lane-grid" aria-label="One-hop agent lanes">
           {lanes.map((lane) => (
-            <div className={`backlog-lane-card lane-${lane.id} ${lane.deemphasized ? "deemphasized" : ""}`} key={lane.id}>
+            <div className={`backlog-lane-card lane-${cssToken(lane.id)} ${lane.deemphasized ? "deemphasized" : ""}`} key={lane.id}>
               <div className="backlog-lane-head">
                 <span>{lane.label}</span>
                 <span className="mono">{lane.events.length} event{lane.events.length === 1 ? "" : "s"}</span>
@@ -579,7 +579,7 @@ function TimelinePanel({ timeline, backlogId }: { timeline: TimelineState; backl
                 <span className={`status-badge ${statusClass(lane.latestStatus)}`}>
                   {lane.latestStatus || "unknown"}
                 </span>
-                {lane.latestActor ? <span>{lane.latestActor}</span> : null}
+                {lane.latestActor ? <span title={lane.latestActorRaw || lane.latestActor}>{lane.latestActor}</span> : null}
                 {lane.latestCommit ? <span className="mono">{shortCommit(lane.latestCommit)}</span> : null}
               </div>
               {lane.blockers.length > 0 ? (
@@ -607,11 +607,11 @@ function TimelinePanel({ timeline, backlogId }: { timeline: TimelineState; backl
                 <span className="mono">{event.event_type || "unknown_event"}</span>
                 {event.event_kind ? <span className="mono">{event.event_kind}</span> : null}
                 <span className="mono">{shortDateTime(event.created_at)}</span>
-                <span>{event.actor || "actor unknown"}</span>
+                <span title={event.actor || ""}>{displayActorForEvent(event)}</span>
                 <span className="mono">event {timelineEventId(event)}</span>
               </div>
               <div className="backlog-timeline-facts">
-                <span className="mono">lane {laneLabelForEvent(event)}</span>
+                <span className="mono" title={rawLaneKeyForEvent(event)}>lane {titleizeLane(laneLabelForEvent(event))}</span>
                 <span>{formatVerification(event.verification)}</span>
                 <span>{formatArtifactRefs(event.artifact_refs)}</span>
                 {event.task_id ? <span className="mono">task {event.task_id}</span> : null}
@@ -741,6 +741,7 @@ function BacklogDetailModal({
                 <span>Timeline DAG</span>
                 <span className="mono">
                   {dag.nodes.length} node{dag.nodes.length === 1 ? "" : "s"} · {dag.phaseLabels.length} phase{dag.phaseLabels.length === 1 ? "" : "s"}
+                  {dag.workerLaneCount > 1 ? ` · ${dag.workerLaneCount} workers parallel` : ""}
                 </span>
               </div>
               {timeline?.loading ? <div className="timeline-empty">Loading timeline...</div> : null}
@@ -758,8 +759,10 @@ function BacklogDetailModal({
                   </div>
                   <div className="backlog-dag-grid">
                     {dag.lanes.map((lane) => (
-                      <div className={`backlog-dag-lane lane-${lane.id}`} key={lane.id}>
-                        <div className="backlog-dag-lane-label">{lane.label}</div>
+                      <div className={`backlog-dag-lane lane-${cssToken(lane.id)}`} key={lane.id}>
+                        <div className="backlog-dag-lane-label" title={lane.family === "worker" ? "Subagents / Workers" : "Observer"}>
+                          {lane.label}
+                        </div>
                         <div className="backlog-dag-lane-track" style={{ gridTemplateColumns: `repeat(${dag.phaseLabels.length}, minmax(130px, 1fr))` }}>
                           {lane.nodes.map((node) => (
                             <button
@@ -898,6 +901,8 @@ function EvidenceInspector({ node }: { node: TimelineDagNode | null }) {
     ["event_type", event?.event_type],
     ["event_kind", event?.event_kind],
     ["actor", event?.actor],
+    ["display_actor", event ? displayActorForEvent(event) : ""],
+    ["raw_lane", event ? rawLaneKeyForEvent(event) : node?.rawLane],
     ["phase", event?.phase],
     ["status", event?.status ?? node?.statusLabel],
     ["created_at", event?.created_at],
@@ -1210,8 +1215,8 @@ function contractEvidenceMatch(event: TaskTimelineEvent, index: number, requirem
   const status = explicitStatus || contractStatusForEvent(event);
   return {
     key: `${timelineEventKey(event, index)}:${requirementId}`,
-    label: event.event_type || event.event_kind || `event ${index + 1}`,
-    actor: event.actor || "",
+    label: contractEvidenceLabel(event, index, requirementId),
+    actor: displayActorForEvent(event),
     eventKind: event.event_kind || "",
     phase: event.phase || "",
     status,
@@ -1355,18 +1360,21 @@ interface TimelineDag {
   nodes: TimelineDagNode[];
   phaseLabels: string[];
   relatedIds: string[];
+  workerLaneCount: number;
 }
 
 interface TimelineDagLane {
   id: string;
   label: string;
   nodes: TimelineDagNode[];
+  family: "observer" | "worker";
 }
 
 interface TimelineDagNode {
   id: string;
   label: string;
   lane: string;
+  rawLane: string;
   phase: string;
   phaseIndex: number;
   status: "passed" | "missing" | "failed" | "retry" | "bypassed" | "running" | "unknown";
@@ -1408,13 +1416,15 @@ function buildTimelineDag(bug: BacklogBug | null, events: TaskTimelineEvent[], _
   const phaseLabels: string[] = [];
   const nodes: TimelineDagNode[] = [];
   const orderedEvents = events.slice().sort(compareTimelineEvents);
+  const laneContext = buildTimelineLaneContext(orderedEvents);
   orderedEvents.forEach((event, index) => {
     const phase = phaseLabelForEvent(event, index);
-    const lane = laneLabelForEvent(event);
+    const lane = timelineLaneIdForEvent(event, laneContext);
     const eventNode: TimelineDagNode = {
       id: `event:${timelineEventKey(event, index)}`,
-      label: event.event_type || event.event_kind || `event ${index + 1}`,
+      label: timelineNodeLabel(event, index),
       lane,
+      rawLane: rawLaneKeyForEvent(event),
       phase,
       phaseIndex: phaseIndex(phaseLabels, phase),
       status: dagStatusForEvent(event),
@@ -1433,8 +1443,9 @@ function buildTimelineDag(bug: BacklogBug | null, events: TaskTimelineEvent[], _
   const lanes = Array.from(laneMap.entries())
     .map(([id, laneNodes]) => ({
       id,
-      label: titleizeLane(id),
+      label: timelineLaneDisplayLabel(id, laneContext),
       nodes: laneNodes.sort((a, b) => a.phaseIndex - b.phaseIndex || a.label.localeCompare(b.label)),
+      family: id.startsWith("worker") ? "worker" as const : "observer" as const,
     }))
     .sort((a, b) => {
       const ai = laneOrder.indexOf(a.id);
@@ -1448,6 +1459,7 @@ function buildTimelineDag(bug: BacklogBug | null, events: TaskTimelineEvent[], _
     nodes,
     phaseLabels,
     relatedIds: relatedIdsFromBug(bug, events),
+    workerLaneCount: laneContext.workerKeys.length,
   };
 }
 
@@ -1556,15 +1568,139 @@ function compareTimelineEvents(a: TaskTimelineEvent, b: TaskTimelineEvent): numb
   return Number(a.id ?? 0) - Number(b.id ?? 0);
 }
 
+function buildTimelineLaneContext(events: TaskTimelineEvent[]): TimelineLaneContext {
+  const workerKeys = stableUnique(events.filter(isWorkerTimelineEvent).map(rawWorkerKeyForEvent).filter(Boolean));
+  const roleCounts = new Map<string, number>();
+  const workerAliases = new Map<string, string>();
+  workerKeys.forEach((key, index) => {
+    const event = events.find((item) => rawWorkerKeyForEvent(item) === key);
+    const role = event ? workerRoleForEvent(event) : "";
+    const count = role ? (roleCounts.get(role) ?? 0) + 1 : 0;
+    if (role) roleCounts.set(role, count);
+    const roleLabel = role ? `${titleizeLane(role)} worker${count > 1 ? ` ${count}` : ""}` : "";
+    workerAliases.set(key, roleLabel || `Worker ${index + 1}`);
+  });
+  return { workerKeys, workerAliases };
+}
+
+function timelineLaneIdForEvent(event: TaskTimelineEvent, context: TimelineLaneContext): string {
+  if (!isWorkerTimelineEvent(event)) return "observer";
+  if (context.workerKeys.length <= 1) return "worker";
+  const key = rawWorkerKeyForEvent(event);
+  if (!key) return "worker";
+  return `worker_${cssToken(context.workerAliases.get(key) || key)}`;
+}
+
+function timelineLaneDisplayLabel(id: string, context: TimelineLaneContext): string {
+  if (id === "observer") return "Observer";
+  if (id === "worker") return "Subagents / Workers";
+  for (const alias of context.workerAliases.values()) {
+    if (id === `worker_${cssToken(alias)}`) return `Subagents / Workers · ${alias}`;
+  }
+  return id.startsWith("worker_") ? `Subagents / Workers · ${titleizeLane(id.replace(/^worker_/, ""))}` : titleizeLane(id);
+}
+
+function rawWorkerKeyForEvent(event: TaskTimelineEvent): string {
+  const payload = asRecord(event.payload);
+  const verification = asRecord(event.verification);
+  return (
+    stringField(payload, "worker_id") ||
+    stringField(payload, "agent_id") ||
+    stringField(payload, "parallel_agent_id") ||
+    stringField(payload, "subagent_id") ||
+    stringField(verification, "worker_id") ||
+    stringField(verification, "agent_id") ||
+    event.actor ||
+    event.task_id ||
+    event.trace_id ||
+    ""
+  );
+}
+
+function rawLaneKeyForEvent(event: TaskTimelineEvent): string {
+  const payload = asRecord(event.payload);
+  const verification = asRecord(event.verification);
+  return (
+    stringField(payload, "lane") ||
+    stringField(payload, "agent_lane") ||
+    stringField(payload, "worker_lane") ||
+    stringField(payload, "agent_id") ||
+    stringField(payload, "parallel_agent_id") ||
+    stringField(payload, "worker_id") ||
+    stringField(verification, "lane") ||
+    stringField(verification, "agent_id") ||
+    stringField(verification, "worker_id") ||
+    event.actor ||
+    event.phase ||
+    event.event_kind ||
+    event.event_type ||
+    "event"
+  );
+}
+
+function workerRoleForEvent(event: TaskTimelineEvent): string {
+  const text = rawLaneKeyForEvent(event).toLowerCase();
+  if (text.includes("front")) return "frontend";
+  if (text.includes("back")) return "backend";
+  if (text.includes("test") || text.includes("qa") || text.includes("verify")) return "verification";
+  if (text.includes("doc")) return "docs";
+  return "";
+}
+
+function isWorkerTimelineEvent(event: TaskTimelineEvent): boolean {
+  const text = eventSearchText(event);
+  const lane = rawLaneKeyForEvent(event).toLowerCase();
+  if (text.includes("observer") && !text.includes("subagent") && !text.includes("worker") && !text.includes("mf_sub")) return false;
+  return (
+    event.event_kind === "implementation" ||
+    lane.includes("subagent") ||
+    lane.includes("worker") ||
+    lane.includes("mf_sub") ||
+    lane.includes("front") ||
+    lane.includes("back") ||
+    text.includes("subagent") ||
+    text.includes("mf_sub") ||
+    text.includes("changed_files")
+  );
+}
+
+function displayActorForEvent(event: TaskTimelineEvent): string {
+  if (!event.actor) return "actor unknown";
+  if (isWorkerTimelineEvent(event)) return "Subagent worker";
+  if (event.actor.toLowerCase().includes("observer")) return "Observer";
+  return titleizeLane(event.actor.replace(/[^a-zA-Z0-9]+/g, "_"));
+}
+
+function timelineNodeLabel(event: TaskTimelineEvent, index: number): string {
+  if ((event.event_type || "").toLowerCase() === "contract_evidence") {
+    const ids = evidenceRequirementIds(event);
+    return ids.length > 0 ? `contract_evidence · ${ids[0]}` : "contract_evidence";
+  }
+  const ids = evidenceRequirementIds(event);
+  const base = event.event_type || event.event_kind || `event ${index + 1}`;
+  return base === "contract_evidence" || ids.length === 0 ? base : `${base}`;
+}
+
+function contractEvidenceLabel(event: TaskTimelineEvent, index: number, requirementId: string): string {
+  const base = event.event_type || event.event_kind || `event ${index + 1}`;
+  return `${base} · ${requirementId}`;
+}
+
 interface TimelineLane {
   id: string;
   label: string;
   events: TaskTimelineEvent[];
   latestStatus: string;
   latestActor: string;
+  latestActorRaw: string;
   latestCommit: string;
   blockers: string[];
   deemphasized?: boolean;
+}
+
+interface TimelineLaneContext {
+  workerKeys: string[];
+  workerAliases: Map<string, string>;
 }
 
 interface EventArtifactSummary {
@@ -1632,20 +1768,22 @@ interface ContractEvidenceMatch {
 function buildTimelineLanes(events: TaskTimelineEvent[]): TimelineLane[] {
   const grouped = new Map<string, TaskTimelineEvent[]>();
   const hasImplementation = events.some(isImplementationEvidenceEvent);
+  const laneContext = buildTimelineLaneContext(events);
   for (const event of events) {
-    const lane = laneLabelForEvent(event);
+    const lane = timelineLaneIdForEvent(event, laneContext);
     grouped.set(lane, [...(grouped.get(lane) ?? []), event]);
   }
   const preferred = timelineLaneOrder(events);
   return Array.from(grouped.entries())
     .map(([id, laneEvents]) => {
-      const latest = laneEvents[laneEvents.length - 1] ?? {};
+      const latest = laneEvents[laneEvents.length - 1];
       return {
         id,
-        label: titleizeLane(id),
+        label: timelineLaneDisplayLabel(id, laneContext),
         events: laneEvents,
         latestStatus: String(latest.status || latest.decision || latest.event_kind || "unknown"),
-        latestActor: latest.actor || "",
+        latestActor: displayActorForEvent(latest),
+        latestActorRaw: latest.actor || "",
         latestCommit: latest.commit_sha || "",
         blockers: laneEvents.flatMap((event) => eventBlockers(event)).filter(Boolean),
         deemphasized: hasImplementation && id === "observer",
@@ -1661,8 +1799,8 @@ function buildTimelineLanes(events: TaskTimelineEvent[]): TimelineLane[] {
 
 function timelineLaneOrder(events: TaskTimelineEvent[]): string[] {
   const hasImplementation = events.some(isImplementationEvidenceEvent);
-  if (!hasImplementation) return ["observer", "worker", "frontend", "backend", "verification", "browser_audit", "gate", "merge", "retry"];
-  return ["worker", "implementation", "frontend", "backend", "verification", "browser_audit", "merge", "gate", "retry", "observer"];
+  if (!hasImplementation) return ["observer", "worker"];
+  return ["observer", "worker"];
 }
 
 function buildImplementationSteps(events: TaskTimelineEvent[]): ImplementationStep[] {
@@ -1892,31 +2030,25 @@ function eventSearchText(event: TaskTimelineEvent): string {
 }
 
 function laneLabelForEvent(event: TaskTimelineEvent): string {
-  const payload = asRecord(event.payload);
-  const verification = asRecord(event.verification);
-  const raw =
-    stringField(payload, "lane") ||
-    stringField(payload, "agent_lane") ||
-    stringField(payload, "worker_lane") ||
-    stringField(payload, "agent_id") ||
-    stringField(payload, "parallel_agent_id") ||
-    stringField(verification, "lane") ||
-    event.actor ||
-    event.phase ||
-    event.event_kind ||
-    event.event_type;
+  const raw = rawLaneKeyForEvent(event);
   const normalized = raw.toLowerCase();
-  if (normalized.includes("browser") || normalized.includes("playwright") || normalized.includes("screenshot")) return "browser_audit";
-  if (normalized.includes("retry") || normalized.includes("attempt_")) return "retry";
-  if (normalized.includes("subagent") || normalized.includes("worker") || normalized.includes("mf_sub")) return "worker";
   if (normalized.includes("front")) return "frontend";
   if (normalized.includes("back")) return "backend";
+  if (normalized.includes("subagent") || normalized.includes("worker") || normalized.includes("mf_sub") || event.event_kind === "implementation") return "worker";
   if (normalized.includes("observer")) return "observer";
-  if (normalized.includes("gate") || normalized.includes("close_ready")) return "gate";
-  if (normalized.includes("merge")) return "merge";
-  if (normalized.includes("verify") || normalized.includes("test")) return "verification";
-  if (normalized.includes("implement")) return "implementation";
-  return normalized.replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "event";
+  if (
+    normalized.includes("gate") ||
+    normalized.includes("close_ready") ||
+    normalized.includes("merge") ||
+    normalized.includes("verify") ||
+    normalized.includes("test") ||
+    normalized.includes("browser") ||
+    normalized.includes("playwright") ||
+    normalized.includes("screenshot")
+  ) {
+    return "observer";
+  }
+  return isWorkerTimelineEvent(event) ? "worker" : "observer";
 }
 
 function eventBlockers(event: TaskTimelineEvent): string[] {
@@ -1945,6 +2077,10 @@ function titleizeLane(value: string): string {
   if (value === "retry") return "Retry";
   if (value === "verification") return "Verification";
   return value.replace(/_/g, " ").replace(/\b\w/g, (ch) => ch.toUpperCase());
+}
+
+function cssToken(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "event";
 }
 
 function timelineEventKey(event: TaskTimelineEvent, index: number): string {

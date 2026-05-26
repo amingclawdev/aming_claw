@@ -259,6 +259,7 @@ export default function App() {
   const [assetStatusFilter, setAssetStatusFilter] = useState<AssetStatusFilter>("all");
   const [assetSearch, setAssetSearch] = useState("");
   const [selectedAssetId, setSelectedAssetId] = useState("");
+  const [assetReturnContext, setAssetReturnContext] = useState<{ assetId: string; fromView: "assets" } | null>(null);
   const [assetImpactEventsByReminder, setAssetImpactEventsByReminder] = useState<
     Record<string, AssetImpactReminderEventsResponse>
   >({});
@@ -996,6 +997,25 @@ export default function App() {
     setView((prev) => (prev === "graph" ? prev : "graph"));
   }, []);
 
+  const handleSelectNodeFromAsset = useCallback(
+    (id: string) => {
+      setAssetReturnContext({ assetId: selectedAssetId, fromView: "assets" });
+      setSelectedNodeId(id);
+      setPinnedEdge(null);
+      setDrawerTab("relations");
+      writeDashboardLocation(currentProjectId, "graph", "push");
+      setView("graph");
+    },
+    [currentProjectId, selectedAssetId],
+  );
+
+  const handleReturnToAssetInbox = useCallback(() => {
+    if (assetReturnContext?.assetId) setSelectedAssetId(assetReturnContext.assetId);
+    setAssetReturnContext(null);
+    writeDashboardLocation(currentProjectId, "assets", "push");
+    setView("assets");
+  }, [assetReturnContext, currentProjectId]);
+
   const handleGraphSelectNode = useCallback(
     (id: string) => {
       if (multiSelectMode) {
@@ -1163,6 +1183,14 @@ export default function App() {
           {view === "graph" && data ? (
             <div className="graph-with-drawer">
               <div className="graph-with-drawer-main">
+                {assetReturnContext ? (
+                  <div className="asset-return-bar">
+                    <button type="button" className="action-btn" onClick={handleReturnToAssetInbox}>
+                      Return to Asset Inbox
+                    </button>
+                    <span className="mono">{assetReturnContext.assetId || "selected asset"}</span>
+                  </div>
+                ) : null}
                 <GraphView
                   nodes={data.nodes}
                   edges={data.edges}
@@ -1241,7 +1269,7 @@ export default function App() {
               search={assetSearch}
               selectedAssetId={selectedAssetId}
               onSelectedAssetIdChange={setSelectedAssetId}
-              onSelectNode={handleSelectNode}
+              onSelectNode={handleSelectNodeFromAsset}
               workspaceRoot={activeWorkspaceRoot}
             />
           ) : null}

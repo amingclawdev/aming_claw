@@ -1,0 +1,57 @@
+# Fear During Work
+
+## Fear
+
+The fear during work is that multiple agents will collide in the same checkout,
+overwrite each other, or produce changes that cannot be reviewed in a sensible
+order. Even a good single-agent patch becomes risky if the system cannot say
+which branch, worktree, fence token, tests, and merge gate it belongs to.
+
+## Demo
+
+Run the HN demo skill and choose the during-work case. The demo should show a
+manual-fix or subagent work item with bounded ownership: branch/worktree
+identity, target commit, owned files, fence token, and review-ready evidence.
+For parallel work, it should also show the merge queue or the decision that a
+branch is waiting on dependency, freshness, or gate evidence.
+
+Expected dashboard pattern:
+
+```text
+http://localhost:40000/dashboard?project_id=<project_id>&view=backlog&backlog=<backlog_id>
+```
+
+Optional screenshot slots:
+
+```text
+docs/hn-demo/screenshots/03-during-work-fences.png
+docs/hn-demo/screenshots/04-during-work-merge-queue.png
+```
+
+## Evidence
+
+The visible evidence is not "the agent said it was careful." It is durable
+coordination state:
+
+- a manual-fix backlog row with target files and acceptance criteria;
+- an isolated branch/worktree assignment for subagent work;
+- a fence token that stale callbacks cannot reuse;
+- review-ready output that names changed files and verification evidence;
+- merge-queue state that keeps dependency order and target freshness explicit.
+
+The demo can use deterministic fixtures or dry-run evidence. It does not require
+live AI execution to show the isolation and gate model.
+
+## Why this works
+
+Manual Fix keeps implementation bounded when the V1 chain is not the right tool
+for the job. The parallel multibranch design extends that discipline to
+multiple workers: branch-local evidence is candidate evidence, target graph truth
+changes only after ordered merge and target reconcile, and stale fences are
+rejected instead of trusted.
+
+Architecture references:
+
+- [Manual Fix SOP](../../governance/manual-fix-sop.md)
+- [Parallel Agent Multibranch Runtime Design](../../dev/parallel-agent-multibranch-design.md)
+- [Parallel Agent Multibranch Test Scenarios](../../dev/parallel-agent-multibranch-test-scenarios.md)
