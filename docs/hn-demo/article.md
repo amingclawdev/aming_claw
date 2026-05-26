@@ -8,19 +8,57 @@ the project already had. You hope it ran the right tests. You hope it did not
 break docs or config you forgot to mention. You hope the diff is actually what
 you asked for.
 
-Hope is not an engineering control.
+Hope is not an engineering control. Aming Claw is my attempt to replace that
+hope with contracts, evidence, and commit-bound project memory for AI coding
+agents.
 
 I have been building Aming Claw around a simple idea: an AI coding agent should
 not just produce a diff. It should work against a contract, leave typed evidence,
 and update the project facts that the next agent will read.
 
+This article almost shipped with a quiet failure of exactly the kind I'm
+describing: the demo screenshots in the README were out of sync with the actual
+case pages. My own system caught it. I document the audit trail below.
+
 The problem is not that agents use grep. Grep is fast, local, inspectable, and
 honest. The problem is using grep, prompts, and chat history as the only memory
 of a project.
 
+Before unpacking those fears, the underlying bet:
+
+> AI agents don't need bigger context windows. They need a persistent
+> structural record of the project that survives across sessions.
+
+I made that argument in an earlier essay. This article is what happened when I
+tried to live with it -- and discovered that "persistent structural record"
+alone doesn't survive contact with real multi-agent work. It splits into three
+concrete fears, each needing its own kind of facts.
+
+## A note on who operates this
+
+Aming Claw is designed to be operated by AI, not by humans. The agent reads the
+SKILL.md files, installs the plugin, runs the demo, writes contracts, queries the
+graph, and produces evidence. The human reviewer reads the dashboard, reviews
+the audit queue, and arbitrates disputes.
+
+This inverts the usual developer-tool model. You don't learn Aming Claw -- your
+agent does. What you learn is how to read what it produces: timelines,
+contracts, evidence, drift state, reconcile status.
+
+The bet underneath this: as agent autonomy increases, the bottleneck shifts from
+"can the human use the tool" to "can the human see what the agent did." Aming
+Claw is built for the second world.
+
+Concretely: the eight or so concepts in this system -- contract, worker fence,
+observer gate, graph projection, reconcile, asset binding, evidence timeline,
+drift state -- are the protocol between you and your agent. The agent already
+knows them from the skill files. You only need to recognize their visual forms on
+the dashboard.
+
 ## The three fears
 
-The way I now think about AI coding work is split across three ordinary fears.
+After six months of shipping with AI coding agents, the work splits cleanly
+across three ordinary fears.
 
 **Before work:** will the agent understand the project before it edits, or will
 it duplicate an existing pattern and touch the wrong owner?
@@ -91,10 +129,11 @@ interesting part is that "I implemented it", "it passed verification", "it is
 ready to merge", and "the backlog is closed" are different facts.
 
 The workflow change I feel most in practice is observer mode. I can stay in
-requirements and review mode, file several contracts, tighten boundaries, and
-then dispatch bounded workers in parallel instead of waiting for one agent to
-finish before I can think about the next task. The agents do execution work. The
-observer keeps merge authority.
+requirements and review mode while the agent turns decisions into contracts,
+tightens boundaries, and dispatches bounded workers in parallel instead of
+waiting for one task to finish before I can think about the next one. The agents
+do execution work. The human reviewer keeps merge authority through the observer
+gate.
 
 The graph policy matters here. A branch graph is not project truth. A worker can
 produce one-hop candidate evidence against the target commit, but it cannot chain
@@ -105,6 +144,11 @@ reconciled and the next graph snapshot becomes current.
 
 Without that rule, parallel AI work creates multiple plausible versions of the
 project in memory, not just multiple diffs in Git.
+
+![Timeline evidence for a during-work backlog row](screenshots/03-during-work-timeline.png)
+
+*A single backlog row shown as a timeline. Each node carries evidence fields
+such as actor, phase, status, commit, and artifacts.*
 
 Case: [Fear During Work](cases/during-work.md)
 
@@ -188,6 +232,47 @@ A better local coding loop looks like this:
 That loop does not require magic. It requires refusing to let the model's
 temporary context be the only memory of the project.
 
+There's a subtler shift inside that loop. Most of those six steps are not done
+by the human. The agent queries the graph. The agent reads the contract. The
+agent records evidence. The agent triggers reconcile. The human enters the loop
+at review boundaries -- accepting bindings, arbitrating drift, closing backlog
+rows.
+
+The loop only works if you accept that division. If you keep trying to be the one
+who reads the graph, writes the contract, and runs the tests, the loop is just
+extra ceremony. If you let the agent operate and you review, the loop is what
+makes agent work auditable instead of speculative.
+
+## How I got here
+
+This framework didn't arrive in one piece. It's the synthesis of three earlier
+attempts, each documented separately:
+
+- I first tried to fix AI collaboration with better markdown notes. That failed,
+  and gave me the backlog database -- a live state layer for what AI promised
+  and what it actually shipped. ([Did it? I had no idea](https://dev.to/amingin_ai/i-told-my-ai-to-build-a-feature-did-it-i-had-no-idea-1f1))
+
+- Then I tried to fix AI architecture decisions with better prompts. That failed
+  too, and gave me the scenario walk -- a method for surfacing what's actually
+  load-bearing before AI invents components that aren't.
+  ([5 components -> 3 real](https://dev.to/amingin_ai/ai-proposed-5-components-for-my-parallel-system-after-walking-one-scenario-only-3-were-real-12nd))
+
+- Then I tried to fix project memory with a mutable graph. That also failed --
+  the graph drifted from code within weeks. The fix was making the graph a
+  deterministic projection of the commit, not something the AI edits.
+  ([AI's tech debt is invisible -- even to AI](https://dev.to/amingin_ai/ais-tech-debt-is-invisible-even-to-ai-i-solved-it-at-the-architecture-layer-1nh1))
+
+Three fears is the version of this thinking that survived contact with real
+multi-agent work. The earlier essays are still useful -- they describe each
+piece in depth -- but this framing is what holds them together.
+
+One thing that survived all three iterations: the human is not the primary
+operator. In the backlog post, the agent writes the backlog through MCP, not the
+human filling forms. In the scenario-walk post, the agent simulates the
+scenarios, the human evaluates outcomes. In the graph-projection post, the agent
+queries the graph, the human triggers reconcile. The role split was always the
+same, even before I had words for it.
+
 ## Boundaries
 
 The claim is easy to overstate, so here are the boundaries.
@@ -206,6 +291,12 @@ And grep remains part of the system. Exact text search is still the fastest way
 to verify many local claims. The failure mode is using grep as a substitute for
 ownership, work scope, and execution history.
 
+This is not a claim that humans should be removed from the loop. The human
+review role is real work: reviewing bindings, arbitrating drift, deciding when
+to reconcile. The shift is that the human's job is to read and decide, not to
+run. If you want to keep running things yourself, this tool will feel like
+overhead.
+
 ## Links for readers
 
 Demo entry point:
@@ -223,7 +314,7 @@ Architecture notes:
 - [During Work Architecture](architecture/during-work-architecture.md)
 - [After Work Architecture](architecture/after-work-architecture.md)
 
-Deeper background stories:
+Earlier writing -- same problem, different angles:
 
 - [Before work: AI proposed 5 components for my parallel system. After walking one scenario, only 3 were real.](https://dev.to/amingin_ai/ai-proposed-5-components-for-my-parallel-system-after-walking-one-scenario-only-3-were-real-12nd)
 - [During work: I told my AI to build a feature. Did it? I had no idea.](https://dev.to/amingin_ai/i-told-my-ai-to-build-a-feature-did-it-i-had-no-idea-1f1)
@@ -233,21 +324,3 @@ Public audit commits:
 
 - [Real audit fix: align HN demo screenshot index](https://github.com/amingclawdev/aming-claw/commit/3ae68da8834cf24404c4d9672b2adaf02c19443e)
 - [Article audit link: add real HN audit trail](https://github.com/amingclawdev/aming-claw/commit/70243f2dffe96c3a1bc5a9d6ed602ae6d236a60d)
-
-Suggested HN comment:
-
-```text
-I wrote this around three concrete fears I kept hitting with AI coding agents:
-
-Before work: will it understand the project or invent a plausible wrong design?
-https://github.com/amingclawdev/aming-claw/blob/main/docs/hn-demo/cases/before-work.md
-
-During work: can I reconstruct what the agent actually did and what evidence it produced?
-https://github.com/amingclawdev/aming-claw/blob/main/docs/hn-demo/cases/during-work.md
-
-After work: do docs, tests, config, and graph memory drift after the patch lands?
-https://github.com/amingclawdev/aming-claw/blob/main/docs/hn-demo/cases/after-work.md
-
-The small audit commit mentioned in the article is here:
-https://github.com/amingclawdev/aming-claw/commit/3ae68da8834cf24404c4d9672b2adaf02c19443e
-```

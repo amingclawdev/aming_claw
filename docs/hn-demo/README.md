@@ -60,7 +60,7 @@ stable screenshot slots below. Article images should be exported under
 | --- | --- | --- |
 | 01 | `docs/hn-demo/screenshots/01-before-work-contract.png` | Backlog contract, target files, docs, tests, and close-gate evidence before editing. |
 | 02 | `docs/hn-demo/screenshots/02-before-work-graph.png` | Project graph, selected node, graph health, and stale/current state before editing. |
-| 03 | `docs/hn-demo/screenshots/03-during-work-timeline.png` | Timeline DAG with observer/subagent lanes and phase checkpoints. |
+| 03 | `docs/hn-demo/screenshots/03-during-work-timeline.png` | Timeline DAG with worker lanes, phase checkpoints, and evidence inspector. |
 | 04 | `docs/hn-demo/screenshots/04-during-work-evidence.png` | Timeline evidence inspector with event details, actor lane, phase, and status. |
 | 05 | `docs/hn-demo/screenshots/05-after-work-asset-inbox.png` | Asset Inbox state for docs, tests, config, bindings, and drift. |
 | 06 | `docs/hn-demo/screenshots/06-after-work-review-queue.png` | Review Queue boundary for reminders, proposals, and impact review. |
