@@ -58,10 +58,12 @@ AI provider for the demo.
   tests/docs, acceptance criteria, and file/worktree fence evidence.
 - During Work acceptance: timeline, lane, dispatch/startup gate, and evidence
   inspector claims come from real `task_timeline_append`, precheck, server-side
-  parallel branch runtime allocation, and `graph_query` results. Local
+  parallel branch runtime allocation, and `graph_query` results. Populate at
+  least two worker contexts with disjoint `owned_files`; a one-worker timeline
+  is not sufficient evidence for the parallel during-work case. Local
   `aming-claw mf dispatch-gate` validates the payload; it does not by itself
   register the worker fence with governance. Before the first `mf_subagent`
-  `graph_query`, create or verify the runtime context through
+  `graph_query`, create or verify each worker runtime context through
   `/api/graph-governance/<pid>/parallel-branches/allocate` with the worker's
   `task_id`, `parent_task_id`, `fence_token`, `base_commit`,
   `target_head_commit`, and `merge_queue_id`. Capture returned ids and trace

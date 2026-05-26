@@ -11,9 +11,10 @@ which branch, worktree, fence token, tests, and merge gate it belongs to.
 
 If you install the aming-claw Claude Code plugin and run the HN demo skill, the
 during-work case opens your local dashboard on the backlog item view and shows a
-manual-fix or subagent work item with bounded ownership, timeline lanes, and
-evidence details: dispatch, implementation, verification, close-ready state,
-actors, target files, and any inferred or blocked checkpoints.
+manual-fix or subagent work item with an observer lane plus at least two bounded
+worker lanes. The dashboard shows disjoint ownership, dispatch, implementation,
+verification, close-ready state, actors, target files, and any inferred or
+blocked checkpoints.
 
 If you don't want to install anything yet, the "What you would see" section
 below describes the flow without setup.
@@ -26,17 +27,20 @@ http://localhost:40000/dashboard?project_id=<project_id>&view=backlog&backlog=<b
 
 ## What you would see
 
-The backlog modal shows a timeline DAG for one work item, grouped by worker
-lanes and phase columns. Timeline cards expose dispatch, implementation, and
-review-ready checkpoints, while the evidence inspector shows actor, phase,
-status, commit, task id, and attempt metadata for the selected node. The point is
-not that the agent wrote a confident final answer; the point is that its work is
+The backlog modal shows a timeline DAG for one work item, grouped by phase
+columns and lanes: observer plus two or more workers. The bundled screenshot
+shows three worker lanes, which is more than the minimum needed to prove the
+control. Timeline cards expose dispatch, implementation, and review-ready
+checkpoints, while the evidence inspector shows actor, phase, status, commit,
+task id, and attempt metadata for the selected node. The point is not that the
+agent wrote a confident final answer; the point is that each worker's work is
 attached to lane structure, phase transitions, and evidence records.
 
 ![During-work timeline](../screenshots/03-during-work-timeline.png)
 
-*The timeline makes worker lanes, phases, and blocked checkpoints visible for
-review.*
+*The timeline makes observer and worker lanes, phases, and blocked checkpoints
+visible for review. This screenshot shows three worker lanes; two is the
+smallest useful parallel demo.*
 
 ![During-work evidence inspector](../screenshots/04-during-work-evidence.png)
 
@@ -56,12 +60,16 @@ The visible evidence is not "the agent said it was careful." It is durable
 coordination state:
 
 - a manual-fix backlog row with target files and acceptance criteria;
-- timeline lanes that separate observer and worker actions;
+- timeline lanes that separate observer and per-worker actions;
+- two or more worker scopes with disjoint `owned_files`;
+- per-worker fence tokens and graph-query trace ids that resolve in the audit
+  ledger;
 - dispatch, implementation, verification, and close-ready checkpoints;
 - evidence inspector details that show actor, phase, status, and artifacts.
 
-The demo can use deterministic fixtures or dry-run evidence. It does not require
-live AI execution to show the isolation and gate model.
+The fixture can bootstrap a small demo project, but the during-work evidence
+should come from real observer-mode MCP/governance calls. Do not present a
+single-worker fixture replay as the parallel demo.
 
 ## Why this works
 
@@ -70,6 +78,12 @@ for the job. The parallel multibranch design extends that discipline to
 multiple workers: branch-local evidence is candidate evidence, target graph truth
 changes only after ordered merge and target reconcile, and stale fences are
 rejected instead of trusted.
+
+Two workers are enough to make the architecture visible: if Worker A and Worker
+B have separate owned files, fence tokens, trace ids, and lane events, the human
+reviewer can audit concurrency without running either implementation manually.
+The current screenshot uses three workers because it was generated from a richer
+demo row; the architectural point is the same.
 
 The important boundary is that the worker does not accept its own work. Dispatch,
 implementation, verification, merge readiness, and backlog close are separate
@@ -93,6 +107,11 @@ grouping, kept raw audit ids available in the evidence inspector, and landed
 with the HN demo evidence work in commit
 `dcb0f1f350218e224222af890ef6e1c1c6300f1d`. Parallel agent work is not
 reviewable unless the lanes and evidence survive the UI.
+
+The screenshot attached to this case shows the resulting shape: one observer
+lane, three worker lanes, five phases, and six timeline nodes. That is stronger
+than the minimum two-worker demo, but it proves the same thing: worker count is
+not hidden in prose; it is visible in the review surface.
 
 This case shares its commit with the before-work case because Aming Claw lands
 concurrent backlog rows atomically. See

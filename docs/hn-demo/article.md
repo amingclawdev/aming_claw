@@ -69,8 +69,9 @@ across three ordinary fears.
 **Before work:** will the agent understand the project before it edits, or will
 it duplicate an existing pattern and touch the wrong owner?
 
-**During work:** can I see what the agent actually did, which files it owned,
-which evidence it produced, and whether the work satisfied the contract?
+**During work:** can I see what the agents actually did, which files each worker
+owned, which evidence each produced, and whether the work satisfied the
+contract?
 
 **After work:** once the patch lands, do I know what changed in docs, tests,
 config, generated assets, graph memory, and semantic memory before the next agent
@@ -115,7 +116,7 @@ Work facts describe what was promised.
 
 What backlog row authorized the change? Which target files are in scope? Which
 paths are forbidden? Which branch, worktree, fence token, source head, and
-precheck belong to this worker? Which acceptance criteria are required before a
+precheck belong to each worker? Which acceptance criteria are required before a
 human can close the task?
 
 Without work facts, an agent can be locally correct and globally destructive. It
@@ -151,10 +152,18 @@ reconciled and the next graph snapshot becomes current.
 Without that rule, parallel AI work creates multiple plausible versions of the
 project in memory, not just multiple diffs in Git.
 
+For the HN demo, the during-work case needs to show more than a single worker
+lane. Two bounded workers are enough to prove the control: separate owned files,
+separate fence tokens, separate trace ids, one observer review boundary. The
+current screenshot uses three worker lanes, but the claim is not "three is
+required." The claim is that parallel agent work becomes reviewable only when each
+worker's evidence stays separated until merge review.
+
 ![Timeline evidence for a during-work backlog row](screenshots/03-during-work-timeline.png)
 
-*A single backlog row shown as a timeline. Each node carries evidence fields
-such as actor, phase, status, commit, and artifacts.*
+*One backlog row shown as an observer lane plus worker lanes. The bundled
+screenshot shows three workers; the minimum useful demo is two. Each node
+carries evidence fields such as actor, phase, status, commit, and artifacts.*
 
 Case: [Fear During Work](cases/during-work.md)
 
@@ -230,6 +239,12 @@ dispatched to bounded workers in parallel, and landed together as a single
 atomic change. Each backlog row keeps its own contract, target files, evidence
 timeline, and close-ready state. The commit is the shared landing point, not the
 unit of work.
+
+There are two levels of parallelism here. Inside one backlog row, multiple
+workers can produce fenced evidence against disjoint owned files. Across backlog
+rows, multiple independent contracts can land in the same atomic commit. Both
+use the same one-hop rule: branch-local evidence is candidate evidence until the
+target ref lands and reconciles.
 
 The HN demo itself is one such commit. `dcb0f1f3` closed multiple backlog rows
 together: the demo's fear surface (`HN-FEAR-DEMO-GOAL-20260526`), the timeline

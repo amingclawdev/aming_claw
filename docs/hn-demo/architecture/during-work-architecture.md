@@ -40,8 +40,10 @@ after ordered merge does the target ref reconcile and advance the active graph.
 
 Observer mode changes the developer's time shape. The human can stay in
 requirements and review mode, file multiple contracts, tighten boundaries, and
-then dispatch bounded workers in parallel. This avoids the slow loop where the
-developer waits for one agent to finish before thinking about the next task.
+then dispatch bounded workers in parallel. Two workers are enough to prove the
+model: separate scopes, separate fences, separate traces, one review boundary.
+This avoids the slow loop where the developer waits for one agent to finish
+before thinking about the next task.
 
 The observer still owns review and merge order. Parallel execution becomes a
 batch of contract-bound candidate changes, not a swarm of autonomous agents with
@@ -50,7 +52,7 @@ write authority.
 ## What The Dashboard Shows
 
 - backlog row or manual-fix contract;
-- timeline lanes for observer and worker actions;
+- timeline lanes for observer and two or more worker actions;
 - dispatch, implementation, verification, and close-ready checkpoints;
 - evidence inspector with actor, phase, status, artifacts, and requirement ids;
 - graph stale/current state after commit and reconcile.

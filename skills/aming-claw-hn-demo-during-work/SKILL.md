@@ -60,7 +60,10 @@ CREATING demo data, not reading existing data. Mandatory rules:
 
 2. Write parallel_contract into backlog.chain_trigger_json via backlog_upsert.
    workers[] is an array; for parallel work include multiple workers with
-   DISJOINT owned_files.
+   DISJOINT owned_files. For the HN during-work case, create at least two
+   worker entries; a single-worker timeline does not demonstrate parallel
+   observability. The bundled screenshot currently shows three worker lanes,
+   which is acceptable but not required.
 
 3. Tie every task_timeline_append to the same mf_id (MF-<BACKLOG-ID>).
    Per-worker events use the worker's task_id; observer events can use
