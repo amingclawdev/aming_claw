@@ -95,6 +95,29 @@ must not be touched. The work fact has to come from the backlog and the parallel
 contract, and the execution fact has to come from timeline evidence and focused
 checks.
 
+## A small real audit trail
+
+This article draft caught one of its own boring failures during launch prep.
+The HN demo browser smoke was passing, but the reader-facing docs still pointed
+at old screenshot filenames. That is exactly the kind of drift that usually
+survives because no source file is "broken."
+
+We filed it as `HN-FEAR-DEMO-SCREENSHOT-INDEX-20260526`, patched the demo
+README and case pages, reran the HN browser smoke, committed the fix, and then
+reconciled the graph before closing the backlog row. The source-visible part is
+the audit commit:
+[3ae68da8834cf24404c4d9672b2adaf02c19443e](https://github.com/amingclawdev/aming-claw/commit/3ae68da8834cf24404c4d9672b2adaf02c19443e).
+The demo entry point is
+[docs/hn-demo/README.md](../hn-demo/README.md), with the three case pages for
+[before work](../hn-demo/cases/before-work.md),
+[during work](../hn-demo/cases/during-work.md), and
+[after work](../hn-demo/cases/after-work.md).
+
+GitHub shows the source diff. The backlog row, timeline events, close gate, and
+graph snapshot are local governance records unless you run the demo yourself.
+That boundary matters: source history is public evidence; governance state is
+the local audit trail that produced and verified it.
+
 ## What this changes for coding agents
 
 The interesting question is not whether agents should stop using grep. They
