@@ -8,7 +8,17 @@ step before sending the next one.
 ```text
 Use this current Claude Code or Codex session as the observer for the Vibe Queue
 demo. If there is no safe project ready, set up the isolated fixture first.
-Show me the project id and the dashboard backlog link before any work starts.
+Show Daily Planner Lite as the target project first. Use Codex's in-app browser
+for the Aming Claw dashboard, and tell me to open the planner preview in my
+normal browser. Show me:
+
+- Open Aming Claw Dashboard — Use in Codex
+- Open Daily Planner Preview — Open in external browser
+- Project id
+- Fixture root
+- Dashboard backlog, timeline, and prompt queue links
+
+Do not imply Codex can keep both pages visible or controllable at once.
 ```
 
 ## 2. Give The First Request

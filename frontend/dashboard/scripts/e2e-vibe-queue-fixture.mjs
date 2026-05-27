@@ -14,6 +14,7 @@ const RUN_ID = clean(FLAGS["run-id"] || new Date().toISOString().replace(/[-:.TZ
 const BACKEND = trim(FLAGS.backend || process.env.VITE_BACKEND_URL || "http://127.0.0.1:40000");
 const PROJECT = clean(FLAGS["project-id"] || `daily-planner-lite-vibe-${RUN_ID}`).toLowerCase();
 const FIXTURE_ROOT = path.resolve(FLAGS["fixture-root"] || path.join(os.tmpdir(), "ac-vibe-queue-demo", RUN_ID));
+const PREVIEW_PORT = Number(FLAGS["preview-port"] || process.env.VIBE_QUEUE_PREVIEW_PORT || 4173);
 const RESET = FLAGS.reset === true || FLAGS["reset-fixture"] === true;
 
 function parseFlags(args) {
@@ -42,6 +43,14 @@ function trim(value) {
 
 function pid(value) {
   return encodeURIComponent(value);
+}
+
+function dashboardUrl(view = "backlog") {
+  return `${BACKEND}/dashboard?project_id=${pid(PROJECT)}&view=${encodeURIComponent(view)}`;
+}
+
+function previewUrl() {
+  return `http://127.0.0.1:${PREVIEW_PORT}/`;
 }
 
 function assert(condition, message) {
@@ -201,7 +210,30 @@ async function main() {
     const timeline = await http("GET", `/api/task/${pid(PROJECT)}/timeline`);
     assert(Number(backlog.count || backlog.bugs?.length || 0) === 0, "vibe fixture must not seed backlog rows");
     assert(Number(timeline.count || 0) === 0, "vibe fixture must not seed timeline events");
-    console.log(JSON.stringify({ ok: true, project_id: PROJECT, fixture_root: FIXTURE_ROOT, baseline_commit: commit, snapshot_id: status.active_snapshot_id, trace_id: query.trace_id || "" }, null, 2));
+    console.log(JSON.stringify({
+      ok: true,
+      project_id: PROJECT,
+      fixture_root: FIXTURE_ROOT,
+      baseline_commit: commit,
+      snapshot_id: status.active_snapshot_id,
+      trace_id: query.trace_id || "",
+      two_window_setup: {
+        default: "Use Codex's in-app browser for the Aming Claw dashboard. Open the planner preview in your normal browser.",
+        codex_page: "Open Aming Claw Dashboard",
+        external_page: "Open Daily Planner Preview",
+      },
+      dashboard_url: dashboardUrl("backlog"),
+      dashboard_links: {
+        backlog: dashboardUrl("backlog"),
+        timeline: dashboardUrl("timeline"),
+        prompt_queue: dashboardUrl("backlog"),
+        graph: dashboardUrl("graph"),
+        operations: dashboardUrl("operations"),
+        review: dashboardUrl("review"),
+      },
+      planner_preview_url: previewUrl(),
+      planner_preview_command: `python3 -m http.server ${PREVIEW_PORT} --directory ${FIXTURE_ROOT}`,
+    }, null, 2));
   } catch (error) {
     console.error(error.message);
     exit(1);

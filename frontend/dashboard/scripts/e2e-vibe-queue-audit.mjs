@@ -14,6 +14,7 @@ const RUN_ID = clean(FLAGS["run-id"] || new Date().toISOString().replace(/[-:.TZ
 const BACKEND = trim(FLAGS.backend || process.env.VITE_BACKEND_URL || "http://127.0.0.1:40000");
 const PROJECT = clean(FLAGS["project-id"] || `daily-planner-lite-vibe-${RUN_ID}`).toLowerCase();
 const FIXTURE_ROOT = path.resolve(FLAGS["fixture-root"] || path.join(os.tmpdir(), "ac-vibe-queue-demo", RUN_ID));
+const PREVIEW_PORT = Number(FLAGS["preview-port"] || process.env.VIBE_QUEUE_PREVIEW_PORT || 4173);
 const REPORT = path.resolve(FLAGS.report || path.join(REPO_ROOT, "docs", "vibe-queue-demo", "audits", `${RUN_ID}.md`));
 const JSON_REPORT = path.resolve(FLAGS["json-report"] || REPORT.replace(/\.md$/i, ".json"));
 
@@ -96,6 +97,7 @@ function runFixture() {
     "--project-id", PROJECT,
     "--fixture-root", FIXTURE_ROOT,
     "--run-id", RUN_ID,
+    "--preview-port", String(PREVIEW_PORT),
     "--reset-fixture",
     "--no-browser",
   ];
@@ -221,6 +223,14 @@ async function runAudit() {
   };
   const fixture = runFixture();
   audit.fixture = fixture;
+  audit.two_window_setup = {
+    codex_page_label: "Open Aming Claw Dashboard",
+    codex_page_url: fixture.dashboard_url,
+    external_page_label: "Open Daily Planner Preview",
+    external_page_url: fixture.planner_preview_url,
+    external_preview_command: fixture.planner_preview_command,
+    note: "Codex controls one in-app browser page; keep the dashboard there and open the planner preview in a normal external browser.",
+  };
   const baselineBacklog = await http("GET", `/api/backlog/${pid(PROJECT)}`);
   const baselineTimeline = await http("GET", `/api/task/${pid(PROJECT)}/timeline`);
   assert(Number(baselineBacklog.count || baselineBacklog.bugs?.length || 0) === 0, "fixture backlog was not empty");
@@ -342,6 +352,16 @@ function markdown(audit) {
 - Project: \`${audit.project_id}\`
 - Fixture: \`${audit.fixture_root}\`
 - Backend: \`${audit.backend}\`
+
+## Two-Window Setup
+
+- Open Aming Claw Dashboard (Use in Codex): ${audit.two_window_setup.codex_page_url}
+- Open Daily Planner Preview (Open in external browser): ${audit.two_window_setup.external_page_url}
+- Prompt queue/backlog link: ${audit.fixture.dashboard_links?.prompt_queue || audit.fixture.dashboard_links?.backlog || audit.two_window_setup.codex_page_url}
+- Preview command: \`${audit.two_window_setup.external_preview_command}\`
+
+Codex controls one in-app browser page. Keep the dashboard visible in Codex and
+open the planner preview in a normal browser.
 
 ## Evidence
 
