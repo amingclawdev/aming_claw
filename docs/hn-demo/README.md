@@ -27,6 +27,31 @@ orchestration, commit-bound)](article.md).
 More cases, audit trails, and the longer design story:
 [Hope is not an engineering control for AI coding agents](design-story.md).
 
+## Install
+
+For Codex, ask for the one-shot path:
+
+```text
+One-shot install and open dashboard for Aming Claw from https://github.com/amingclawdev/aming-claw
+```
+
+For Claude Code, paste this once:
+
+```text
+Install aming-claw end-to-end from https://github.com/amingclawdev/aming-claw:
+1. Run `/plugin marketplace add https://github.com/amingclawdev/aming-claw`
+2. Run `/plugin install aming-claw@aming-claw-local`
+3. pip install -e the marketplace clone at
+   ~/.claude/plugins/marketplaces/aming-claw-local
+   (Windows: %USERPROFILE%\.claude\plugins\marketplaces\aming-claw-local)
+4. Start `aming-claw start` in a background terminal
+5. Run `aming-claw open` to launch the dashboard
+6. Remind me to reload Claude Code so the plugin's MCP tools and skills load
+```
+
+After install, reload Codex or open a new Claude Code session so the Aming Claw
+skills and MCP tools are loaded before running the demo prompt below.
+
 ## Installed-User Prompt
 
 After installing the Aming Claw plugin, ask Codex or Claude:
