@@ -38,6 +38,13 @@ AI provider for the demo.
   and audit evidence. Do not look up or invent `aming-claw://skill-hn-demo`;
   use MCP resources only for the real runtime, graph, backlog, and evidence
   calls listed in REQUIRED FIRST READ.
+- Live AI observer mode (preferred installed-user path): the observer is the
+  current Claude Code or Codex session following this skill step by step. Do not
+  claim that `e2e-hn-demo.mjs --observer claude` or `--observer codex` launches
+  that AI runtime; in the runner, `--observer` is only a report label unless a
+  separate install-audit container invokes the AI CLI and produces its own
+  transcript/report. Use the scripted runner only for fixture setup,
+  deterministic protocol smoke, screenshots, or final machine verification.
 - Fixture mode: `--ensure-fixture --no-browser` provides only a bootstrapped
   `aming-claw-hn-demo` project, an active graph, and an empty backlog. It must
   not seed demo backlog rows, timeline rows, contracts, or fabricated
@@ -45,21 +52,15 @@ AI provider for the demo.
 - Sandbox audit mode: `--sandbox-audit --no-browser` is the repeatable launch
   gate. It creates a run-specific isolated fixture, runs install/package smoke
   checks, drives the multi-agent challenge through real governance calls, and
-  writes `docs/hn-demo/audits/latest.md` plus `latest.json`. Add `--browser`
-  only when screenshots are part of the review.
+  writes `docs/hn-demo/audits/latest.md` plus `latest.json`. This is
+  release/CI machine verification, not the preferred installed-user path. Add
+  `--browser` only when screenshots are part of the review.
 - Docker install audit mode: for true one-click install E2E, first run
   `docker/hn-install-audit/run-install-audit.sh --host both`. That produces
   separate Codex and Claude Code install reports from fresh container HOME
   directories with host auth mounted read-only. Pass those reports back to
   `--sandbox-audit --require-install-gates`; local package smoke alone is only
   preflight evidence, not an install PASS.
-- Live AI observer mode: if the user asks for a real Claude or Codex observer,
-  the observer is the current AI session following this skill step by step.
-  Do not claim that `e2e-hn-demo.mjs --observer claude` or `--observer codex`
-  launches that AI runtime; in the runner, `--observer` is only a report label
-  unless a separate install-audit container invokes the AI CLI and produces its
-  own transcript/report. Use the scripted runner only for fixture setup,
-  deterministic protocol smoke, screenshots, or final machine verification.
 - Evidence mode: the AI observer-mode operator produces the demo contract,
   backlog rows, timeline events, graph-query trace evidence, and evidence
   summaries through real MCP calls against governance. Screenshots and
@@ -91,8 +92,9 @@ AI provider for the demo.
   `target_head_commit`, and `merge_queue_id`. Capture returned ids and trace
   ids exactly; never fabricate `graph_query_trace_ids`. Worker runtime is
   generic: Claude, Codex, scripted workers, or any compatible local process can
-  produce the evidence. The default demo uses deterministic scripted workers so
-  users do not need two AI subscriptions. If `mf_timeline_precheck` reports
+  produce the evidence. The current session remains the observer; scripted
+  workers are bounded worker runtimes or machine-verification fallbacks so users
+  do not need two AI subscriptions. If `mf_timeline_precheck` reports
   `mf_type=chain_rescue`, describe it as the MVP MF storage bucket, not a chain
   requirement.
 - Reconcile and review acceptance: accepted work reconciles once against the
@@ -133,14 +135,17 @@ AI provider for the demo.
    - If `/api/projects` is empty, or the user has not selected a real project,
      run `node frontend/dashboard/scripts/e2e-hn-demo.mjs --ensure-fixture --no-browser`
      from the Aming Claw plugin checkout or installed plugin payload. This
-     runner is packaged with the plugin and does not require a dashboard npm
-     install for the `--no-browser` path. Use the returned
+     helper is packaged with the plugin and does not require a dashboard npm
+     install for the `--no-browser` path. It only creates the isolated project;
+     this current session still has to produce the contract, timeline, worker,
+     replay, reconcile, and report evidence. Use the returned
      `project_id="aming-claw-hn-demo"` for dashboard links.
    - If the user asks whether the demo is ready for HN/public launch, run
      `node frontend/dashboard/scripts/e2e-hn-demo.mjs --sandbox-audit --no-browser`
-     instead. Treat the generated Same-Observer Self-Review as the semantic
-     evaluation: the operator that ran the evidence writes why it trusts or
-     hesitates on the result.
+     as release/CI machine verification, not as the preferred installed-user
+     demo. Treat the generated Same-Observer Self-Review as machine-audit
+     evidence only; a live user-facing claim should still come from the current
+     observer session or explicitly say it is scripted.
    - If the user asks whether one-click install works for Codex and Claude,
      run `docker/hn-install-audit/run-install-audit.sh --host both` first, then
      rerun `--sandbox-audit` with the two generated `--codex-install-report`

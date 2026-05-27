@@ -1,6 +1,9 @@
 # HN Demo Audits
 
 This directory stores repeatable launch-rehearsal reports for the HN demo.
+These scripts are release/CI gates. The preferred installed-user path is still
+to ask the current Claude Code or Codex session to run
+`/aming-claw:aming-claw-hn-challenge` as the observer.
 
 Run from the Aming Claw plugin checkout while governance is already running:
 

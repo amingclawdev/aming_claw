@@ -15,10 +15,10 @@ The challenge case is intentionally narrow:
 6. Accepted work lands through an ordered Git merge, then the target graph is
    reconciled once.
 
-Live AI execution is not required to reproduce the protocol. The default path
-uses scripted workers so the observer, contracts, fences, graph traces, failed
-attempt, replay, test evidence, and self-evaluation are generated locally and
-repeatably.
+For an installed user, the default path is not a script: your current Claude
+Code or Codex session is the observer. The packaged scripts are helpers for
+creating an isolated fixture, taking screenshots, and running release/CI
+audits. They are not proof that a live AI observer performed the run.
 
 HN entry article:
 [Show HN: Aming Claw - A new multi-agent coding architecture (zero
@@ -57,11 +57,17 @@ skills and MCP tools are loaded before running the demo prompt below.
 After installing the Aming Claw plugin, ask Codex or Claude:
 
 ```text
+Use this current Claude Code or Codex session as the observer for the Aming
+Claw HN challenge.
+
 /aming-claw:aming-claw-hn-challenge
-Run the Aming Claw HN multi-agent challenge demo. If needed, create an isolated
-fixture project, but produce the backlog rows, timeline events, graph traces,
-worker fences, tests, replay evidence, reconcile evidence, and semantic
-evaluation during this run. Do not treat pre-existing fixture data as proof.
+
+Do not treat any scripted runner or `--observer claude/codex` flag as proof
+that an AI observer ran. Use fixture scripts only to create an isolated project
+if needed. The backlog rows, timeline events, graph traces, worker fences,
+tests, replay evidence, reconcile evidence, and semantic evaluation must be
+produced by this current session during the run.
+
 Show one passing worker, one failed or interrupted worker, and a replay attempt
 that passes from the same contract evidence. Show me the dashboard URLs and the
 generated audit report.
@@ -72,21 +78,25 @@ uses an isolated local fixture instead of asking you for a `project_id`. The
 fixture is created under the OS temp directory, bootstrapped as
 `aming-claw-hn-demo`, and left with an active graph plus empty backlog/timeline
 so the observer has to create evidence for real. Your real app is not touched.
-The first-run runner is packaged with the plugin at
+If the current session needs a safe empty project, the fixture helper is packaged
+with the plugin at
 `frontend/dashboard/scripts/e2e-hn-demo.mjs`, so the `--no-browser` setup path
-does not require a dashboard npm install.
+does not require a dashboard npm install. That helper is setup only; the current
+session still has to create the contract, timeline, graph traces, worker
+evidence, replay, reconcile, and audit report.
 
-For launch rehearsal, use the repeatable sandbox audit runner:
+For release rehearsal or CI, use the repeatable sandbox audit runner:
 
 ```bash
 node frontend/dashboard/scripts/e2e-hn-demo.mjs --sandbox-audit --no-browser
 ```
 
 That path creates an isolated fixture project, runs install/package smoke
-checks, drives the multi-agent challenge through real governance calls, and
-writes `docs/hn-demo/audits/latest.md` plus `latest.json`. Browser capture is
-optional: add `--browser --port <port> --project-id <isolated-id>` to record
-screenshots against a non-conflicting dashboard session.
+checks, drives the protocol through real governance calls, and writes
+`docs/hn-demo/audits/latest.md` plus `latest.json`. Treat it as machine
+verification, not the preferred user demo. Browser capture is optional: add
+`--browser --port <port> --project-id <isolated-id>` to record screenshots
+against a non-conflicting dashboard session.
 
 The challenge sandbox evidence is intentionally replay-shaped: one bounded
 worker passes, another fails or is interrupted, and a replay attempt is recorded

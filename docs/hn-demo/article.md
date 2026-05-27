@@ -12,9 +12,9 @@ function scope.
 
 Each worker runs under its own contract: scoped files, fence token, trace
 ledger, close gate. The full worker path runs each worker in an isolated git
-worktree against a frozen commit hash. The HN demo ships with scripted workers
-for zero-setup reproducibility, but uses the same observer, contracts, fences,
-and replay logic as live worker mode.
+worktree against a frozen commit hash. The HN demo starts from your current
+Claude Code or Codex session as observer; scripted workers are a zero-setup
+fallback that uses the same contracts, fences, and replay logic.
 
 The shared object is not the chat. It is not the workflow state. It is the
 project graph.
@@ -58,9 +58,10 @@ Worker A and Worker B can both be Claude, both Codex, scripted local workers, or
 any compatible agent process. The coordination model is the same regardless of
 runtime.
 
-The default demo uses scripted workers so you can reproduce the full protocol
-without owning two AI subscriptions. Live worker mode plugs in whichever AI
-runtime you have.
+The installed-user demo starts with your current Claude Code or Codex session as
+observer. Scripted workers are available for zero-setup reproducibility and CI,
+so you do not need two AI subscriptions to challenge the protocol. Live worker
+mode plugs in whichever AI runtime you have.
 
 What is not new: supervisors, handoffs, traces, shared workflow state,
 checkpoint replay, parallel branches. LangGraph has strong primitives for

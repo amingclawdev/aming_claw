@@ -168,23 +168,31 @@ After installing the plugin and opening a new AI host session, invoke the HN
 challenge skill:
 
 ```text
+Use this current Claude Code or Codex session as the observer for the Aming
+Claw HN challenge.
+
 /aming-claw:aming-claw-hn-challenge
-Run the Aming Claw HN multi-agent challenge demo.
+
+Do not treat any scripted runner as proof that an AI observer ran. Use fixture
+scripts only to create an isolated project if needed. Produce the backlog rows,
+timeline events, graph traces, worker fences, tests, replay evidence, reconcile
+evidence, and semantic evaluation from this current session.
 ```
 
-The skill should create or reuse an isolated fixture, produce fresh backlog
-rows, timeline events, graph traces, worker fences, tests, replay evidence,
-reconcile evidence, and a generated audit report. It should not treat
-pre-existing fixture data as proof.
+The skill should produce a generated audit report with dashboard URLs and a
+same-observer evaluation. It should not treat pre-existing fixture data or a
+script runner label as proof.
 
-First-run users do not need an existing `project_id`. The HN demo smoke creates
+First-run users do not need an existing `project_id`. The fixture helper creates
 an isolated local fixture under the OS temp directory, bootstraps it as
 `aming-claw-hn-demo`, and leaves the observer to create evidence during the run
-without touching the current app. The runner is packaged with the plugin, so
-this first-run path does not require a dashboard npm install:
+without touching the current app. The helper is packaged with the plugin, so
+this setup helper does not require a dashboard npm install. It is not the
+preferred demo path by itself; the current Claude/Codex session still runs the
+observer flow:
 
 ```bash
-node frontend/dashboard/scripts/e2e-hn-demo.mjs --sandbox-audit --no-browser
+node frontend/dashboard/scripts/e2e-hn-demo.mjs --ensure-fixture --no-browser
 ```
 
 For repository dogfood screenshots, pass the real project explicitly:

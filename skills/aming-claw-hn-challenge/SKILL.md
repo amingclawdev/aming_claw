@@ -55,13 +55,15 @@ The run must show:
    result.
 
 Worker runtime is generic: Claude, Codex, scripted workers, or any compatible
-local process can produce the evidence. The default demo uses deterministic
-scripted workers so users do not need two AI subscriptions.
+local process can produce the evidence. For installed users, the default
+observer is the current Claude Code or Codex session reading this skill.
+Scripted workers are allowed as bounded worker runtimes or machine-verification
+fallbacks so users do not need two AI subscriptions.
 
 ## Live AI Observer Prompt
 
-If the user asks for a real Claude or Codex observer run, the observer is the
-current AI session reading this skill. Do not claim that
+For the public HN demo, the observer is the current AI session reading this
+skill. Do not claim that
 `node frontend/dashboard/scripts/e2e-hn-demo.mjs --sandbox-audit --observer claude`
 or `--observer codex` launches that AI runtime. In the runner, `--observer` is
 only a report label unless a separate install-audit container invokes the AI
@@ -89,7 +91,10 @@ Steps:
 
 Allowed helper: use e2e-hn-demo.mjs for fixture setup, deterministic protocol
 smoke, dashboard screenshots, or final machine verification. Do not use its
---observer flag as evidence that a live AI observer ran.
+--observer flag as evidence that a live AI observer ran. The current session
+must create or verify the backlog contract, timeline events, graph traces,
+worker fences, test evidence, replay evidence, reconcile evidence, and audit
+evaluation.
 ```
 
 ## Operator Flow
@@ -102,16 +107,21 @@ smoke, dashboard screenshots, or final machine verification. Do not use its
    - If no target project exists, use the isolated fixture path instead of
      asking the user to invent a project id.
 
-2. Preferred repeatable run:
+2. Preferred installed-user run:
 
-   ```bash
-   node frontend/dashboard/scripts/e2e-hn-demo.mjs --sandbox-audit --no-browser
-   ```
+   - Treat this current Claude Code or Codex session as the observer.
+   - If no safe project is selected, use the fixture helper only to create an
+     isolated project with an active graph and empty backlog/timeline:
 
-   This creates a run-specific fixture, proves the graph exists, starts from
-   empty backlog/timeline evidence, drives the multi-agent challenge through
-   governance calls, and writes `docs/hn-demo/audits/latest.md` plus
-   `latest.json`.
+     ```bash
+     node frontend/dashboard/scripts/e2e-hn-demo.mjs --ensure-fixture --no-browser
+     ```
+
+   - Then this session must create or verify the contract, worker fences,
+     graph traces, timeline events, tests, replay, reconcile, and audit report.
+   - Use `--sandbox-audit --no-browser` only when the user explicitly asks for
+     a release/CI machine-verification run, or after the live observer run as a
+     cross-check.
 
 3. Evidence requirements:
    - At least two worker contexts with disjoint `owned_files`.
