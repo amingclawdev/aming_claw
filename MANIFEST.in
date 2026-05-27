@@ -7,9 +7,13 @@ recursive-include skills/aming-claw-hn-demo-after-work *
 recursive-include skills/aming-claw-hn-demo-before-work *
 recursive-include skills/aming-claw-hn-demo-during-work *
 recursive-include skills/aming-claw-launcher *
+recursive-include skills/aming-claw-vibe-queue-demo *
+recursive-include docs/vibe-queue-demo *
 recursive-include docs/assets *.png
 include LICENSE
 include frontend/dashboard/scripts/e2e-hn-demo.mjs
+include frontend/dashboard/scripts/e2e-vibe-queue-fixture.mjs
+include frontend/dashboard/scripts/e2e-vibe-queue-audit.mjs
 recursive-include docker/hn-install-audit *
 include .codex-plugin/plugin.json
 include .claude-plugin/plugin.json

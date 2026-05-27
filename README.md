@@ -198,6 +198,21 @@ node frontend/dashboard/scripts/e2e-hn-demo.mjs --ensure-fixture --no-browser
 For repository dogfood screenshots, pass the real project explicitly:
 `cd frontend/dashboard && npm run e2e:hn-demo -- --project aming-claw`.
 
+## Everyday AI Coding Demos
+
+These demos are for ordinary vibe-coding users. They avoid audit-heavy language
+and show the day-to-day problems people hit while working with AI agents:
+
+- **Keep talking while agents work**:
+  [Vibe Queue Demo](docs/vibe-queue-demo/README.md). You keep describing
+  requirements while the observer turns confirmed items into backlog rows,
+  dispatches compatible work in parallel, and lands commits serially.
+
+The preferred path: install Aming Claw, open a fresh Claude Code or Codex
+session, and let that current session act as the observer. The packaged
+fixture/audit scripts are for setup and Docker release checks; they are not a
+substitute for the live observer path.
+
 ## Review-Scope Challenge
 
 This regression case is a small local E2E. The fixture creates a temporary
@@ -750,6 +765,8 @@ Aming Claw ships these assets in the repo:
 - `skills/aming-claw-launcher/` — onboarding/launcher skill
 - `skills/aming-claw-hn-challenge/` — public HN multi-agent challenge skill
 - `skills/aming-claw-hn-demo*/` — compatibility and supporting case walkthrough skills
+- `skills/aming-claw-vibe-queue-demo/` — everyday demo for keeping requirement
+  conversation flowing while agents work
 - `agent/mcp/resources/seed-graph-summary.json` — lightweight packaged context
   for fresh sessions
 - `agent/mcp/resources/self-graph-bundle-manifest.json` — read-only compatibility
@@ -757,7 +774,7 @@ Aming Claw ships these assets in the repo:
 - `agent/mcp/resources/self-graph-bundle/` — sealed structure and semantic
   projection resources for fresh-session orientation and smoke checks
 
-After install, the plugin exposes seven skills (Claude Code namespacing shown):
+After install, the plugin exposes these skills (Claude Code namespacing shown):
 
 - `/aming-claw:aming-claw`
 - `/aming-claw:aming-claw-launcher`
@@ -766,6 +783,7 @@ After install, the plugin exposes seven skills (Claude Code namespacing shown):
 - `/aming-claw:aming-claw-hn-demo-before-work`
 - `/aming-claw:aming-claw-hn-demo-during-work`
 - `/aming-claw:aming-claw-hn-demo-after-work`
+- `/aming-claw:aming-claw-vibe-queue-demo`
 
 ### What `aming-claw plugin install` writes
 

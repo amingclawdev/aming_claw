@@ -45,6 +45,7 @@ const REQUIRED_SKILLS = [
   "aming-claw-hn-demo-before-work",
   "aming-claw-hn-demo-during-work",
   "aming-claw-hn-demo-after-work",
+  "aming-claw-vibe-queue-demo",
 ];
 
 const REQUIRED_RESOURCES = [
@@ -332,6 +333,56 @@ function runDemoFixture() {
   );
 }
 
+function runEverydayDemoScript(script, demoName, extra = []) {
+  const projectId = `aming-claw-${demoName}-${HOST}-${RUN_ID}`.toLowerCase();
+  const fixtureRoot = join(WORK_ROOT, `${demoName}-fixture`);
+  const report = join(OUT_DIR, `${HOST}-${demoName}-${RUN_ID}.md`);
+  return run(
+    "node",
+    [
+      script,
+      "--backend",
+      GOVERNANCE_URL,
+      "--project-id",
+      projectId,
+      "--fixture-root",
+      fixtureRoot,
+      "--run-id",
+      `${HOST}-${RUN_ID}`,
+      "--report",
+      report,
+      "--no-browser",
+      ...extra,
+    ],
+    {
+      cwd: SRC_ROOT,
+      timeout: Number(process.env.DEMO_TIMEOUT_MS || 300000),
+      env: {
+        VITE_BACKEND_URL: GOVERNANCE_URL,
+        GOVERNANCE_PORT,
+        PYTHON: PYTHON_BIN,
+      },
+    },
+  );
+}
+
+function runEverydayDemos() {
+  const demos = [
+    {
+      name: "vibe-queue",
+      fixture: "frontend/dashboard/scripts/e2e-vibe-queue-fixture.mjs",
+      audit: "frontend/dashboard/scripts/e2e-vibe-queue-audit.mjs",
+    },
+  ];
+  return demos.map((demo) => {
+    const fixture = runEverydayDemoScript(demo.fixture, demo.name);
+    const audit = fixture.ok
+      ? runEverydayDemoScript(demo.audit, demo.name)
+      : { ok: false, command: demo.audit, stdout: "", stderr: "fixture failed", elapsed_ms: 0 };
+    return { name: demo.name, fixture, audit };
+  });
+}
+
 function buildInstallPrompt() {
   return `You are running a clean Docker install audit for Aming Claw on host lane ${HOST}.
 
@@ -345,11 +396,15 @@ Write any observations to ${AI_SELF_REPORT_PATH}.`;
 }
 
 function buildDemoPrompt() {
-  return `You are running the Aming Claw HN demo after install on host lane ${HOST}.
+  return `You are running the Aming Claw demos after install on host lane ${HOST}.
 
 Phase 2: run /aming-claw:aming-claw-hn-demo or the equivalent installed demo path.
 Verify the before-work, during-work, and after-work evidence. Do not fabricate trace ids.
-Record whether the demo produced server-verifiable evidence and why you rate the run that way.`;
+Then inspect the everyday demo skills:
+- /aming-claw:aming-claw-vibe-queue-demo
+
+Confirm they prefer the current Claude Code or Codex session as observer, with scripts only as fixture/CI fallback.
+Record whether the demos produced server-verifiable evidence and why you rate the run that way.`;
 }
 
 function aiCommand(prompt) {
@@ -415,6 +470,7 @@ function buildReport({
   ai,
   dashboard,
   demo,
+  everydayDemos,
   skills,
   tools,
   resources,
@@ -430,6 +486,10 @@ function buildReport({
   if (missing(REQUIRED_RESOURCES, resources).length) blockers.push(`missing resources: ${missing(REQUIRED_RESOURCES, resources).join(", ")}`);
   if (!dashboard.ok) blockers.push("dashboard health failed");
   if (!demo.ok) blockers.push("HN demo fixture run failed");
+  const everydayFailures = (everydayDemos || []).filter((item) => !item.fixture?.ok || !item.audit?.ok);
+  if (everydayFailures.length) {
+    blockers.push(`everyday demo audit failed: ${everydayFailures.map((item) => item.name).join(", ")}`);
+  }
   const loginRequired = HOST === "claude" && AI_PROMPT_MODE === "required" && (isLoginRequired(ai.install) || isLoginRequired(ai.demo));
   if (loginRequired) blockers.push("Claude AI prompt execution requires login");
   else if (AI_PROMPT_MODE === "required" && (!ai.install.ok || !ai.demo.ok)) blockers.push("AI prompt execution failed");
@@ -464,6 +524,7 @@ function buildReport({
       stdout: demo.stdout,
       stderr: demo.stderr,
     },
+    everyday_demo_results: everydayDemos || [],
     limitations: [
       "Mode B reuses host auth; this is not a fresh OAuth login.",
       "The container is fresh for plugin/cache state, but authentication comes from read-only host files.",
@@ -475,7 +536,7 @@ function buildReport({
         ? `Install lane failed because: ${blockers.join("; ")}`
       : aiSkipped
         ? "Install lane is skipped, not passed, because deterministic checks ran without exercising the AI one-click install prompt."
-        : "Install lane passed because the fresh container installed the plugin, verified skills/MCP/resources, served dashboard, and ran the HN demo fixture.",
+        : "Install lane passed because the fresh container installed the plugin, verified skills/MCP/resources, served dashboard, ran the HN demo fixture, and ran the everyday demo fixture/audit checks.",
     evidence_refs: {
       report_path: REPORT_PATH,
       ai_self_report_path: AI_SELF_REPORT_PATH,
@@ -502,6 +563,7 @@ async function main() {
   let hostInstall = { ok: false, command: "not-run", stdout: "", stderr: "runtime install failed" };
   let dashboard = { ok: false, status: 0 };
   let demo = { ok: false, command: "not-run", stdout: "", stderr: "governance not started" };
+  let everydayDemos = [];
   let governance = null;
 
   if (clone.ok) runtimeInstall = installRuntime();
@@ -516,6 +578,7 @@ async function main() {
     const health = await waitForHealth();
     dashboard = health.ok ? await dashboardHealth() : { ok: false, status: 0, error: "health timeout" };
     if (dashboard.ok) demo = runDemoFixture();
+    if (dashboard.ok) everydayDemos = runEverydayDemos();
   }
 
   const skills = hostInstall.ok ? listSkillsSeen() : [];
@@ -537,6 +600,7 @@ async function main() {
     ai,
     dashboard,
     demo,
+    everydayDemos,
     skills,
     tools,
     resources,

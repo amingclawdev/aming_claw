@@ -10,6 +10,7 @@ const REQUIRED_SKILLS = [
   "aming-claw-hn-demo-before-work",
   "aming-claw-hn-demo-during-work",
   "aming-claw-hn-demo-after-work",
+  "aming-claw-vibe-queue-demo",
 ];
 
 const REQUIRED_RESOURCES = [
@@ -34,6 +35,7 @@ const REQUIRED_FIELDS = [
   "resources_read",
   "dashboard_health",
   "demo_fixture_result",
+  "everyday_demo_results",
   "limitations",
   "auth_mode",
   "self_rating",
@@ -115,6 +117,14 @@ function validate(report) {
     }
     if (!report.demo_fixture_result || report.demo_fixture_result.ok !== true) {
       errors.push("PASS report must include demo_fixture_result.ok=true");
+    }
+    if (!Array.isArray(report.everyday_demo_results) || report.everyday_demo_results.length < 1) {
+      errors.push("PASS report must include at least one everyday_demo_result");
+    } else {
+      for (const item of report.everyday_demo_results) {
+        if (!item.fixture || item.fixture.ok !== true) errors.push(`PASS report everyday fixture failed: ${item.name || "unknown"}`);
+        if (!item.audit || item.audit.ok !== true) errors.push(`PASS report everyday audit failed: ${item.name || "unknown"}`);
+      }
     }
     if (!String(report.fresh_session_id || "").trim()) {
       errors.push("PASS report requires a non-empty fresh_session_id");
