@@ -11,6 +11,7 @@ const REQUIRED_SKILLS = [
   "aming-claw-hn-demo-during-work",
   "aming-claw-hn-demo-after-work",
   "aming-claw-vibe-queue-demo",
+  "aming-claw-drift-demo",
 ];
 
 const REQUIRED_RESOURCES = [
@@ -118,8 +119,8 @@ function validate(report) {
     if (!report.demo_fixture_result || report.demo_fixture_result.ok !== true) {
       errors.push("PASS report must include demo_fixture_result.ok=true");
     }
-    if (!Array.isArray(report.everyday_demo_results) || report.everyday_demo_results.length < 1) {
-      errors.push("PASS report must include at least one everyday_demo_result");
+    if (!Array.isArray(report.everyday_demo_results) || report.everyday_demo_results.length < 2) {
+      errors.push("PASS report must include at least two everyday_demo_results");
     } else {
       for (const item of report.everyday_demo_results) {
         if (!item.fixture || item.fixture.ok !== true) errors.push(`PASS report everyday fixture failed: ${item.name || "unknown"}`);

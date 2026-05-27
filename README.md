@@ -207,6 +207,10 @@ and show the day-to-day problems people hit while working with AI agents:
   [Vibe Queue Demo](docs/vibe-queue-demo/README.md). You keep describing
   requirements while the observer turns confirmed items into backlog rows,
   dispatches compatible work in parallel, and lands commits serially.
+- **Catch stale docs after code changes**:
+  [Docs Drift Demo](docs/drift-demo/README.md). A feature changes while its
+  source-controlled doc stays stale; the demo shows where drift appears and
+  how the observer resolves it.
 
 The preferred path: install Aming Claw, open a fresh Claude Code or Codex
 session, and let that current session act as the observer. The packaged
@@ -767,6 +771,8 @@ Aming Claw ships these assets in the repo:
 - `skills/aming-claw-hn-demo*/` — compatibility and supporting case walkthrough skills
 - `skills/aming-claw-vibe-queue-demo/` — everyday demo for keeping requirement
   conversation flowing while agents work
+- `skills/aming-claw-drift-demo/` — everyday demo for stale-doc drift after
+  feature changes
 - `agent/mcp/resources/seed-graph-summary.json` — lightweight packaged context
   for fresh sessions
 - `agent/mcp/resources/self-graph-bundle-manifest.json` — read-only compatibility
@@ -784,6 +790,7 @@ After install, the plugin exposes these skills (Claude Code namespacing shown):
 - `/aming-claw:aming-claw-hn-demo-during-work`
 - `/aming-claw:aming-claw-hn-demo-after-work`
 - `/aming-claw:aming-claw-vibe-queue-demo`
+- `/aming-claw:aming-claw-drift-demo`
 
 ### What `aming-claw plugin install` writes
 

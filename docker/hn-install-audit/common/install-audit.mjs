@@ -46,6 +46,7 @@ const REQUIRED_SKILLS = [
   "aming-claw-hn-demo-during-work",
   "aming-claw-hn-demo-after-work",
   "aming-claw-vibe-queue-demo",
+  "aming-claw-drift-demo",
 ];
 
 const REQUIRED_RESOURCES = [
@@ -373,6 +374,11 @@ function runEverydayDemos() {
       fixture: "frontend/dashboard/scripts/e2e-vibe-queue-fixture.mjs",
       audit: "frontend/dashboard/scripts/e2e-vibe-queue-audit.mjs",
     },
+    {
+      name: "drift-demo",
+      fixture: "frontend/dashboard/scripts/e2e-drift-demo-fixture.mjs",
+      audit: "frontend/dashboard/scripts/e2e-drift-demo-audit.mjs",
+    },
   ];
   return demos.map((demo) => {
     const fixture = runEverydayDemoScript(demo.fixture, demo.name);
@@ -402,6 +408,7 @@ Phase 2: run /aming-claw:aming-claw-hn-demo or the equivalent installed demo pat
 Verify the before-work, during-work, and after-work evidence. Do not fabricate trace ids.
 Then inspect the everyday demo skills:
 - /aming-claw:aming-claw-vibe-queue-demo
+- /aming-claw:aming-claw-drift-demo
 
 Confirm they prefer the current Claude Code or Codex session as observer, with scripts only as fixture/CI fallback.
 Record whether the demos produced server-verifiable evidence and why you rate the run that way.`;
