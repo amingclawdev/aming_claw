@@ -9,10 +9,12 @@ the prompt.
 
 ## Demo
 
-If you install the aming-claw Claude Code plugin and run the HN demo skill, the
-before-work case opens your local dashboard on the graph view, selects the
-target area, and shows the backlog row, target files, and acceptance criteria
-before any implementation work starts.
+If you install the Aming Claw plugin, your current Claude Code or Codex session
+is the observer. Ask it to run `/aming-claw:aming-claw-hn-challenge`; this
+before-work case is the graph/contract slice of that same control model. The
+demo opens your local dashboard on the graph view, selects the target area, and
+shows the backlog row, target files, and acceptance criteria before any
+implementation work starts.
 
 If you don't want to install anything yet, the "What you would see" section
 below describes the flow without setup.

@@ -9,8 +9,10 @@ which branch, worktree, fence token, tests, and merge gate it belongs to.
 
 ## Demo
 
-If you install the aming-claw Claude Code plugin and run the HN demo skill, the
-during-work case opens your local dashboard on the backlog item view and shows a
+If you install the Aming Claw plugin, your current Claude Code or Codex session
+is the observer. Ask it to run `/aming-claw:aming-claw-hn-challenge`; this
+during-work case is the worker-lane/replay slice of that same control model.
+The demo opens your local dashboard on the backlog item view and shows a
 manual-fix or subagent work item with an observer lane plus at least two bounded
 worker lanes. The dashboard shows disjoint ownership, dispatch, implementation,
 verification, close-ready state, actors, target files, and any inferred or

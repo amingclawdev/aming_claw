@@ -8,11 +8,13 @@ may look like source, and the next agent may reason from old graph memory.
 
 ## Demo
 
-If you install the aming-claw Claude Code plugin and run the HN demo skill, the
-after-work case opens your local dashboard on the assets view and shows the
-post-change hygiene path: Asset Inbox or file state for changed docs/tests/config
-assets and Review Queue boundaries for reminders, proposals, and impact review
-before weak evidence becomes trusted memory.
+If you install the Aming Claw plugin, your current Claude Code or Codex session
+is the observer. Ask it to run `/aming-claw:aming-claw-hn-challenge`; this
+after-work case is the reconcile/review slice of that same control model. The
+demo opens your local dashboard on the assets view and shows the post-change
+hygiene path: Asset Inbox or file state for changed docs/tests/config assets and
+Review Queue boundaries for reminders, proposals, and impact review before weak
+evidence becomes trusted memory.
 
 If you don't want to install anything yet, the "What you would see" section
 below describes the flow without setup.
