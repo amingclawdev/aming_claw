@@ -3,6 +3,8 @@
 If you've used LangGraph supervisor, AutoGen GroupChat, or CrewAI for coding
 work, you've written the orchestration. Aming Claw asks for zero.
 
+The observer is your current Claude Code or Codex session, not a new daemon.
+
 The observer holds the project's commit-bound code graph. It decides which
 worker gets which files using two signals together: the requirement itself
 (LLM-side) and the code graph's structural boundaries: dependency, module, and
