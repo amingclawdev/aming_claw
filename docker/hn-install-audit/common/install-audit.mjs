@@ -21,6 +21,8 @@ const REPO_URL = process.env.PLUGIN_REPO_URL || "https://github.com/amingclawdev
 const REPO_REF = process.env.PLUGIN_REF || "";
 const WORK_ROOT = process.env.AUDIT_WORK_ROOT || "/workspace/install-audit";
 const SRC_ROOT = join(WORK_ROOT, "source");
+const VENV_DIR = join(WORK_ROOT, ".venv");
+const PYTHON_BIN = join(VENV_DIR, "bin", "python");
 const INSTALL_ROOT = join(HOME, ".aming-claw", "plugins");
 const CODEX_HOME = process.env.CODEX_HOME || join(HOME, ".codex");
 const CODEX_CONFIG = join(CODEX_HOME, "config.toml");
@@ -133,7 +135,19 @@ function gitCloneSource() {
 }
 
 function installRuntime() {
-  return run("python3", ["-m", "pip", "install", "-e", SRC_ROOT], { cwd: SRC_ROOT, timeout: 300000 });
+  const venv = run("python3", ["-m", "venv", VENV_DIR], { cwd: WORK_ROOT, timeout: 120000 });
+  if (!venv.ok) return venv;
+  const install = run(PYTHON_BIN, ["-m", "pip", "install", "-e", SRC_ROOT], { cwd: SRC_ROOT, timeout: 300000 });
+  return {
+    ...install,
+    venv: {
+      ok: venv.ok,
+      command: venv.command,
+      stdout: venv.stdout,
+      stderr: venv.stderr,
+      elapsed_ms: venv.elapsed_ms,
+    },
+  };
 }
 
 function installCodexPlugin() {
@@ -148,7 +162,7 @@ function installCodexPlugin() {
       "--install-root",
       INSTALL_ROOT,
       "--python",
-      "python3",
+      PYTHON_BIN,
       "--codex-home",
       CODEX_HOME,
       "--codex-config",
@@ -235,7 +249,7 @@ function resourcesRead() {
 
 function mcpToolsSeen() {
   const result = run(
-    "python3",
+    PYTHON_BIN,
     [
       "-c",
       "import json; from agent.mcp.tools import TOOLS; print(json.dumps([t.get('name') for t in TOOLS]))",
@@ -256,7 +270,7 @@ function cliVersion() {
 }
 
 function startGovernance() {
-  const child = spawn("python3", ["-m", "agent.cli", "start", "--port", GOVERNANCE_PORT, "--workspace", SRC_ROOT], {
+  const child = spawn(PYTHON_BIN, ["-m", "agent.cli", "start", "--port", GOVERNANCE_PORT, "--workspace", SRC_ROOT], {
     cwd: SRC_ROOT,
     env: { ...process.env, PYTHONUNBUFFERED: "1" },
     stdio: ["ignore", "pipe", "pipe"],
