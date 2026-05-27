@@ -5,11 +5,12 @@ This repo is treated as the plugin root for the initial Aming Claw plugin packag
 ## MVP Status
 
 - Codex local plugin shape is present: `.codex-plugin/plugin.json`,
-  `skills/`, and `.mcp.json`.
+  `skills/`, demo docs/scripts, and `.mcp.json`.
 - Claude Code local plugin shape is present: `.claude-plugin/plugin.json`
   and `.claude-plugin/marketplace.json` at the repo root; `skills/` and
   `.mcp.json` are auto-discovered. Skills are namespaced
-  `/aming-claw:<skill-name>`.
+  `/aming-claw:<skill-name>`. After plugin updates, restart or reload the
+  AI host so the slash-command index re-reads newly added skills.
 - MCP runs through the stdio module entrypoint:
   `python -m agent.mcp.server --project aming-claw --workers 0`.
 - Governance stays host-owned. Plugin MCP sessions should query/control
@@ -72,6 +73,10 @@ This repo is treated as the plugin root for the initial Aming Claw plugin packag
 - `skills/aming-claw-hn-challenge/`: public HN multi-agent challenge skill.
 - `skills/aming-claw-hn-demo*/`: compatibility and supporting case walkthrough
   skills for the older before/during/after-work narrative.
+- `skills/aming-claw-vibe-queue-demo/`,
+  `skills/aming-claw-drift-demo/`, and
+  `skills/aming-claw-backlog-dupe-demo/`: everyday AI coding demos for
+  requirement queueing, stale-doc drift, and duplicate backlog detection.
 - `frontend/dashboard/scripts/e2e-hn-demo.mjs`: packaged first-run HN demo
   runner. It can create the isolated fixture with `--ensure-fixture
   --no-browser` without requiring the full dashboard source tree or npm install.

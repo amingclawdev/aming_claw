@@ -1,7 +1,7 @@
 {
   "name": "aming-claw",
   "version": "0.1.0",
-  "description": "Codex plugin packaging for Aming Claw governance, launcher, HN challenge/demo skills, and MCP tools.",
+  "description": "Codex plugin packaging for Aming Claw governance, launcher, HN challenge/demo skills, everyday AI coding demo skills, and MCP tools.",
   "license": "FSL-1.1-MIT",
   "keywords": [
     "governance",
@@ -15,7 +15,7 @@
   "interface": {
     "displayName": "Aming Claw",
     "shortDescription": "Graph-first governance workflow guard",
-    "longDescription": "Provides the Aming Claw governance, launcher, and HN challenge/demo skills plus MCP resources and configuration so agents start with graph-first discovery, backlog/MF discipline, core runtime checks, and dashboard governance context.",
+    "longDescription": "Provides the Aming Claw governance, launcher, HN challenge/demo skills, and everyday AI coding demo skills plus MCP resources and configuration so agents start with graph-first discovery, backlog/MF discipline, core runtime checks, and dashboard governance context.",
     "developerName": "Aming Claw",
     "category": "Productivity",
     "capabilities": [

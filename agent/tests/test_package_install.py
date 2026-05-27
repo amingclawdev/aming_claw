@@ -96,10 +96,22 @@ class TestPackagedDashboardAssets:
         assert "recursive-include skills/aming-claw-hn-demo-before-work *" in manifest
         assert "recursive-include skills/aming-claw-hn-demo-during-work *" in manifest
         assert "recursive-include skills/aming-claw-hn-demo-after-work *" in manifest
+        assert "recursive-include skills/aming-claw-vibe-queue-demo *" in manifest
+        assert "recursive-include skills/aming-claw-drift-demo *" in manifest
+        assert "recursive-include skills/aming-claw-backlog-dupe-demo *" in manifest
+        assert "recursive-include docs/vibe-queue-demo *" in manifest
+        assert "recursive-include docs/drift-demo *" in manifest
+        assert "recursive-include docs/backlog-dupe-demo *" in manifest
         assert "recursive-include skills/aming-claw-launcher *" in manifest
         assert "recursive-include docs/assets *.png" in manifest
         assert "include LICENSE" in manifest
         assert "include frontend/dashboard/scripts/e2e-hn-demo.mjs" in manifest
+        assert "include frontend/dashboard/scripts/e2e-vibe-queue-fixture.mjs" in manifest
+        assert "include frontend/dashboard/scripts/e2e-vibe-queue-audit.mjs" in manifest
+        assert "include frontend/dashboard/scripts/e2e-drift-demo-fixture.mjs" in manifest
+        assert "include frontend/dashboard/scripts/e2e-drift-demo-audit.mjs" in manifest
+        assert "include frontend/dashboard/scripts/e2e-backlog-dupe-fixture.mjs" in manifest
+        assert "include frontend/dashboard/scripts/e2e-backlog-dupe-audit.mjs" in manifest
         assert "include .codex-plugin/plugin.json" in manifest
         assert "include .claude-plugin/plugin.json" in manifest
         assert "include .claude-plugin/marketplace.json" in manifest
@@ -206,7 +218,16 @@ class TestLocalPluginPackaging:
         assert "skills/aming-claw-hn-demo-before-work/SKILL.md" in REQUIRED_PLUGIN_FILES
         assert "skills/aming-claw-hn-demo-during-work/SKILL.md" in REQUIRED_PLUGIN_FILES
         assert "skills/aming-claw-hn-demo-after-work/SKILL.md" in REQUIRED_PLUGIN_FILES
+        assert "skills/aming-claw-vibe-queue-demo/SKILL.md" in REQUIRED_PLUGIN_FILES
+        assert "skills/aming-claw-drift-demo/SKILL.md" in REQUIRED_PLUGIN_FILES
+        assert "skills/aming-claw-backlog-dupe-demo/SKILL.md" in REQUIRED_PLUGIN_FILES
         assert "frontend/dashboard/scripts/e2e-hn-demo.mjs" in REQUIRED_PLUGIN_FILES
+        assert "frontend/dashboard/scripts/e2e-vibe-queue-fixture.mjs" in REQUIRED_PLUGIN_FILES
+        assert "frontend/dashboard/scripts/e2e-drift-demo-fixture.mjs" in REQUIRED_PLUGIN_FILES
+        assert "frontend/dashboard/scripts/e2e-backlog-dupe-fixture.mjs" in REQUIRED_PLUGIN_FILES
+        assert "docs/vibe-queue-demo/README.md" in REQUIRED_PLUGIN_FILES
+        assert "docs/drift-demo/README.md" in REQUIRED_PLUGIN_FILES
+        assert "docs/backlog-dupe-demo/README.md" in REQUIRED_PLUGIN_FILES
         assert "docker/hn-install-audit/run-install-audit.sh" in REQUIRED_PLUGIN_FILES
         assert "docker/hn-install-audit/codex/Dockerfile" in REQUIRED_PLUGIN_FILES
         assert "docker/hn-install-audit/claude/Dockerfile" in REQUIRED_PLUGIN_FILES
@@ -270,6 +291,9 @@ class TestClaudePluginPackaging:
         assert (ROOT / "skills" / "aming-claw-hn-demo-before-work" / "SKILL.md").is_file()
         assert (ROOT / "skills" / "aming-claw-hn-demo-during-work" / "SKILL.md").is_file()
         assert (ROOT / "skills" / "aming-claw-hn-demo-after-work" / "SKILL.md").is_file()
+        assert (ROOT / "skills" / "aming-claw-vibe-queue-demo" / "SKILL.md").is_file()
+        assert (ROOT / "skills" / "aming-claw-drift-demo" / "SKILL.md").is_file()
+        assert (ROOT / "skills" / "aming-claw-backlog-dupe-demo" / "SKILL.md").is_file()
         assert (ROOT / "skills" / "aming-claw-launcher" / "SKILL.md").is_file()
         assert (ROOT / ".mcp.json").is_file()
         assert (ROOT / "CLAUDE.md").is_file()

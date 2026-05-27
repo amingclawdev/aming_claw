@@ -117,17 +117,45 @@ def _write_plugin_fixture(root: Path) -> None:
 
     for rel in (
         "skills/aming-claw/SKILL.md",
+        "skills/aming-claw-hn-challenge/SKILL.md",
         "skills/aming-claw-hn-demo/SKILL.md",
         "skills/aming-claw-hn-demo-after-work/SKILL.md",
         "skills/aming-claw-hn-demo-before-work/SKILL.md",
         "skills/aming-claw-hn-demo-during-work/SKILL.md",
+        "skills/aming-claw-vibe-queue-demo/SKILL.md",
+        "skills/aming-claw-drift-demo/SKILL.md",
+        "skills/aming-claw-backlog-dupe-demo/SKILL.md",
         "skills/aming-claw-launcher/SKILL.md",
         "frontend/dashboard/scripts/e2e-hn-demo.mjs",
+        "frontend/dashboard/scripts/e2e-vibe-queue-fixture.mjs",
+        "frontend/dashboard/scripts/e2e-vibe-queue-audit.mjs",
+        "frontend/dashboard/scripts/e2e-drift-demo-fixture.mjs",
+        "frontend/dashboard/scripts/e2e-drift-demo-audit.mjs",
+        "frontend/dashboard/scripts/e2e-backlog-dupe-fixture.mjs",
+        "frontend/dashboard/scripts/e2e-backlog-dupe-audit.mjs",
+        "docs/vibe-queue-demo/README.md",
+        "docs/vibe-queue-demo/prompts.md",
+        "docs/drift-demo/README.md",
+        "docs/drift-demo/prompts.md",
+        "docs/backlog-dupe-demo/README.md",
+        "docs/backlog-dupe-demo/prompts.md",
+        "docker/hn-install-audit/run-install-audit.sh",
+        "docker/hn-install-audit/validate-report.mjs",
+        "docker/hn-install-audit/codex/Dockerfile",
+        "docker/hn-install-audit/claude/Dockerfile",
     ):
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         if rel.endswith(".mjs"):
             path.write_text("#!/usr/bin/env node\nconsole.log('hn demo fixture ok');\n", encoding="utf-8")
+        elif rel.endswith(".sh"):
+            path.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        elif rel.endswith("Dockerfile"):
+            path.write_text("FROM scratch\n", encoding="utf-8")
+        elif rel.endswith(".md") and rel.startswith("docs/"):
+            path.write_text(f"# {Path(rel).parent.name}\n", encoding="utf-8")
+        elif rel.endswith(".json"):
+            path.write_text("{}\n", encoding="utf-8")
         else:
             path.write_text("---\nname: test\n---\n", encoding="utf-8")
     server_path = root / "agent" / "mcp" / "server.py"
@@ -572,7 +600,16 @@ def test_install_codex_plugin_cache_uses_versioned_codex_loader_layout(tmp_path)
     assert (target / "skills" / "aming-claw-hn-demo-before-work" / "SKILL.md").is_file()
     assert (target / "skills" / "aming-claw-hn-demo-during-work" / "SKILL.md").is_file()
     assert (target / "skills" / "aming-claw-hn-demo-after-work" / "SKILL.md").is_file()
+    assert (target / "skills" / "aming-claw-vibe-queue-demo" / "SKILL.md").is_file()
+    assert (target / "skills" / "aming-claw-drift-demo" / "SKILL.md").is_file()
+    assert (target / "skills" / "aming-claw-backlog-dupe-demo" / "SKILL.md").is_file()
     assert (target / "frontend" / "dashboard" / "scripts" / "e2e-hn-demo.mjs").is_file()
+    assert (target / "frontend" / "dashboard" / "scripts" / "e2e-vibe-queue-fixture.mjs").is_file()
+    assert (target / "frontend" / "dashboard" / "scripts" / "e2e-drift-demo-fixture.mjs").is_file()
+    assert (target / "frontend" / "dashboard" / "scripts" / "e2e-backlog-dupe-fixture.mjs").is_file()
+    assert (target / "docs" / "vibe-queue-demo" / "README.md").is_file()
+    assert (target / "docs" / "drift-demo" / "README.md").is_file()
+    assert (target / "docs" / "backlog-dupe-demo" / "README.md").is_file()
     assert not (target / "agent" / "mcp" / "server.py").exists()
 
     mcp = json.loads((target / ".mcp.json").read_text(encoding="utf-8"))

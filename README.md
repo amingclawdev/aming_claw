@@ -121,11 +121,12 @@ aming-claw" or "one-shot install" trigger the launcher skill's one-shot
 mode for re-bootstrap in future sessions. First-run troubleshooting and
 raw installer scripts are in [Install Details](#install-details).
 
-### After installation: open a new Claude Code session
+### After installation: restart or open a new host session
 
-The Claude Code session you installed Aming Claw in **won't** load the plugin's
-skills or MCP tools — Claude Code reads plugin paths at session start, so
-changes apply only to **new** sessions.
+The Claude Code or Codex session you installed or updated Aming Claw in
+**won't** load newly added plugin skills or MCP tools. The host reads plugin
+paths at startup, so changes apply only after a real host reload/restart or a
+fresh session that reindexes plugins.
 
 **Works immediately (no new session needed):**
 
@@ -133,17 +134,21 @@ changes apply only to **new** sessions.
 - `aming-claw start` brings up local governance
 - `aming-claw open` launches the dashboard
 
-**Requires a new session:**
+**Requires a host reload/restart or fresh reindexed session:**
 
-- The `/aming-claw:aming-claw`, `/aming-claw:aming-claw-launcher`, and
-  `/aming-claw:aming-claw-hn-challenge` / `/aming-claw:aming-claw-hn-demo*`
-  skills
+- The `/aming-claw:aming-claw`, `/aming-claw:aming-claw-launcher`,
+  `/aming-claw:aming-claw-hn-challenge`, `/aming-claw:aming-claw-hn-demo*`,
+  `/aming-claw:aming-claw-vibe-queue-demo`,
+  `/aming-claw:aming-claw-drift-demo`, and
+  `/aming-claw:aming-claw-backlog-dupe-demo` skills
 - The `mcp__plugin_aming-claw_aming-claw__*` MCP tools (`health`,
   `runtime_status`, `task_*`, `backlog_*`, `graph_*`, etc.)
 
-> **TL;DR**: After install, open a new Claude Code session to use Aming Claw
-> *inside* your Claude Code conversations. The dashboard works in the current
-> session.
+> **TL;DR**: After install or plugin update, restart/reload the AI host and
+> open a new session to use Aming Claw *inside* the conversation. If the slash
+> picker still shows only the old HN demo skills, run the plugin update/install
+> command again and restart the host once more. The dashboard works in the
+> current session.
 
 This is a Claude Code framework behavior, not specific to Aming Claw — but it
 surprises users often enough that we call it out.
