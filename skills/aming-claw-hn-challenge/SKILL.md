@@ -1,6 +1,11 @@
 ---
 name: aming-claw-hn-challenge
-description: Public HN challenge entrypoint for Aming Claw. Use when a user asks to run, preview, present, or collect evidence for the multi-agent challenge: one observer coordinates multiple commit-bound workers, records a failed/interrupted worker, replays it from the same contract lineage, reconciles the target graph, and writes an audit self-review.
+description: >-
+  Public HN challenge entrypoint for Aming Claw. Use when a user asks to run,
+  preview, present, or collect evidence for the multi-agent challenge: one
+  observer coordinates multiple commit-bound workers, records a failed or
+  interrupted worker, replays it from the same contract lineage, reconciles the
+  target graph, and writes an audit self-review.
 ---
 
 ## REQUIRED FIRST READ
