@@ -53,6 +53,13 @@ AI provider for the demo.
   directories with host auth mounted read-only. Pass those reports back to
   `--sandbox-audit --require-install-gates`; local package smoke alone is only
   preflight evidence, not an install PASS.
+- Live AI observer mode: if the user asks for a real Claude or Codex observer,
+  the observer is the current AI session following this skill step by step.
+  Do not claim that `e2e-hn-demo.mjs --observer claude` or `--observer codex`
+  launches that AI runtime; in the runner, `--observer` is only a report label
+  unless a separate install-audit container invokes the AI CLI and produces its
+  own transcript/report. Use the scripted runner only for fixture setup,
+  deterministic protocol smoke, screenshots, or final machine verification.
 - Evidence mode: the AI observer-mode operator produces the demo contract,
   backlog rows, timeline events, graph-query trace evidence, and evidence
   summaries through real MCP calls against governance. Screenshots and

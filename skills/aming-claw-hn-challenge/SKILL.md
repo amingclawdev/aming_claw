@@ -53,6 +53,40 @@ Worker runtime is generic: Claude, Codex, scripted workers, or any compatible
 local process can produce the evidence. The default demo uses deterministic
 scripted workers so users do not need two AI subscriptions.
 
+## Live AI Observer Prompt
+
+If the user asks for a real Claude or Codex observer run, the observer is the
+current AI session reading this skill. Do not claim that
+`node frontend/dashboard/scripts/e2e-hn-demo.mjs --sandbox-audit --observer claude`
+or `--observer codex` launches that AI runtime. In the runner, `--observer` is
+only a report label unless a separate install-audit container invokes the AI
+CLI and produces its own transcript/report.
+
+Use this prompt contract for a live AI observer run:
+
+```text
+I am the live AI observer for the Aming Claw HN challenge. I will not treat a
+scripted runner label as proof that Claude or Codex executed the observer role.
+
+Steps:
+1. Read the required Aming Claw MCP resources.
+2. Verify governance, dashboard, graph, backlog, and operations status.
+3. Create or bootstrap an isolated fixture only if no safe project is selected.
+4. Prove the fixture starts with an active graph and empty backlog/timeline.
+5. Create the mf_parallel.v1 backlog contract myself.
+6. Allocate or verify two disjoint worker contexts and fence tokens.
+7. Run real graph_query calls and record returned trace_ids.
+8. Record Worker A pass, Worker B failed/interrupted, and Worker B replay pass.
+9. Run real tests and capture exit code/output.
+10. Reconcile the target graph once after accepted work lands.
+11. Write the audit report myself, including why I trust or hesitate on the
+    result.
+
+Allowed helper: use e2e-hn-demo.mjs for fixture setup, deterministic protocol
+smoke, dashboard screenshots, or final machine verification. Do not use its
+--observer flag as evidence that a live AI observer ran.
+```
+
 ## Operator Flow
 
 1. Baseline runtime:
