@@ -307,7 +307,7 @@ to the user:
    a. `git clone --depth=1 <git-url> ~/.claude/plugins/marketplaces/<marketplace-id>/`
       (Windows path: `%USERPROFILE%\.claude\plugins\marketplaces\<marketplace-id>\`).
    b. Read `.claude-plugin/marketplace.json` from the clone to get the plugin
-      name and version (currently `aming-claw` / `0.1.0`).
+      name and version (currently `aming-claw` / `0.1.1`).
    c. Copy the marketplace clone into the plugin cache and drop `.git`:
       `mkdir -p ~/.claude/plugins/cache/<marketplace-id>/<plugin>/ &&`
       `cp -R ~/.claude/plugins/marketplaces/<marketplace-id> ~/.claude/plugins/cache/<marketplace-id>/<plugin>/<version> &&`

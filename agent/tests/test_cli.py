@@ -42,7 +42,7 @@ def _write_cli_plugin_fixture(root):
     seed_text = json.dumps(seed_payload)
     seed_hash = hashlib.sha256(seed_text.encode("utf-8")).hexdigest()
     for rel, text in {
-        ".codex-plugin/plugin.json": {"name": "aming-claw"},
+        ".codex-plugin/plugin.json": {"name": "aming-claw", "version": "0.1.1"},
         ".agents/plugins/marketplace.json": {
             "name": "aming-claw-local",
             "plugins": [
@@ -51,7 +51,7 @@ def _write_cli_plugin_fixture(root):
         },
         ".claude-plugin/plugin.json": {
             "name": "aming-claw",
-            "version": "0.1.0",
+            "version": "0.1.1",
             "description": "Test plugin.",
             "mcpServers": {"aming-claw": {"command": "python", "args": ["-m", "agent.mcp.server"]}},
         },
@@ -59,7 +59,7 @@ def _write_cli_plugin_fixture(root):
             "name": "aming-claw-local",
             "metadata": {"description": "Test marketplace."},
             "owner": {"name": "Aming Claw"},
-            "plugins": [{"name": "aming-claw", "source": "./", "version": "0.1.0"}],
+            "plugins": [{"name": "aming-claw", "source": "./", "version": "0.1.1"}],
         },
         ".mcp.json": {"mcpServers": {"aming-claw": {"command": "python"}}},
         "agent/mcp/resources/seed-graph-summary.json": seed_payload,
@@ -93,8 +93,23 @@ def _write_cli_plugin_fixture(root):
         "skills/aming-claw-hn-demo-after-work/SKILL.md",
         "skills/aming-claw-hn-demo-before-work/SKILL.md",
         "skills/aming-claw-hn-demo-during-work/SKILL.md",
+        "skills/aming-claw-vibe-queue-demo/SKILL.md",
+        "skills/aming-claw-drift-demo/SKILL.md",
+        "skills/aming-claw-backlog-dupe-demo/SKILL.md",
         "skills/aming-claw-launcher/SKILL.md",
         "frontend/dashboard/scripts/e2e-hn-demo.mjs",
+        "frontend/dashboard/scripts/e2e-vibe-queue-fixture.mjs",
+        "frontend/dashboard/scripts/e2e-vibe-queue-audit.mjs",
+        "frontend/dashboard/scripts/e2e-drift-demo-fixture.mjs",
+        "frontend/dashboard/scripts/e2e-drift-demo-audit.mjs",
+        "frontend/dashboard/scripts/e2e-backlog-dupe-fixture.mjs",
+        "frontend/dashboard/scripts/e2e-backlog-dupe-audit.mjs",
+        "docs/vibe-queue-demo/README.md",
+        "docs/vibe-queue-demo/prompts.md",
+        "docs/drift-demo/README.md",
+        "docs/drift-demo/prompts.md",
+        "docs/backlog-dupe-demo/README.md",
+        "docs/backlog-dupe-demo/prompts.md",
         "docker/hn-install-audit/run-install-audit.sh",
         "docker/hn-install-audit/validate-report.mjs",
         "docker/hn-install-audit/codex/Dockerfile",

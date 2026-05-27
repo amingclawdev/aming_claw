@@ -11,7 +11,7 @@
       "name": "aming-claw",
       "source": "./",
       "description": "Graph-first governance workflow guard: core governance, launcher, HN challenge/demo skills, everyday AI coding demo skills, and the project MCP server.",
-      "version": "0.1.0"
+      "version": "0.1.1"
     }
   ]
 }

@@ -56,7 +56,7 @@ def _write_plugin_fixture(root: Path) -> None:
         },
         ".claude-plugin/plugin.json": {
             "name": "aming-claw",
-            "version": "0.1.0",
+            "version": "0.1.1",
             "description": "Test plugin.",
             "mcpServers": {
                 "aming-claw": {
@@ -70,7 +70,7 @@ def _write_plugin_fixture(root: Path) -> None:
             "metadata": {"description": "Test marketplace."},
             "owner": {"name": "Aming Claw"},
             "plugins": [
-                {"name": "aming-claw", "source": "./", "version": "0.1.0"}
+                {"name": "aming-claw", "source": "./", "version": "0.1.1"}
             ],
         },
         ".mcp.json": {
@@ -285,7 +285,7 @@ def test_write_plugin_update_state_records_current_install(tmp_path):
 
     assert result["ok"] is True
     assert result["status"] == "pass"
-    assert result["state"]["installed_version"] == "0.1.0"
+    assert result["state"]["installed_version"] == "0.1.1"
     assert result["state"]["plugin_root"] == str(tmp_path.resolve())
     assert result["self_graph_bundle"]["status"] == "pass"
 
@@ -593,7 +593,7 @@ def test_install_codex_plugin_cache_uses_versioned_codex_loader_layout(tmp_path)
 
     target = install_codex_plugin_cache(tmp_path, codex_home=codex_home, python_executable="python3.12")
 
-    assert target == codex_home / "plugins" / "cache" / "aming-claw-local" / "aming-claw" / "0.1.0"
+    assert target == codex_home / "plugins" / "cache" / "aming-claw-local" / "aming-claw" / "0.1.1"
     assert (target / ".codex-plugin" / "plugin.json").is_file()
     assert (target / "skills" / "aming-claw" / "SKILL.md").is_file()
     assert (target / "skills" / "aming-claw-hn-demo" / "SKILL.md").is_file()
@@ -849,7 +849,7 @@ def test_check_claude_marketplace_passes_on_valid_manifest(tmp_path):
             "metadata": {"description": "Test marketplace."},
             "owner": {"name": "Aming Claw"},
             "plugins": [
-                {"name": "aming-claw", "source": "./", "version": "0.1.0"}
+                {"name": "aming-claw", "source": "./", "version": "0.1.1"}
             ],
         }),
         encoding="utf-8",
@@ -868,7 +868,7 @@ def test_check_claude_marketplace_fails_on_bare_dot_source(tmp_path):
             "metadata": {"description": "Test."},
             "owner": {"name": "Aming Claw"},
             "plugins": [
-                {"name": "aming-claw", "source": ".", "version": "0.1.0"}
+                {"name": "aming-claw", "source": ".", "version": "0.1.1"}
             ],
         }),
         encoding="utf-8",
@@ -887,7 +887,7 @@ def test_check_claude_marketplace_warns_on_missing_metadata_description(tmp_path
             "name": "aming-claw-local",
             "owner": {"name": "Aming Claw"},
             "plugins": [
-                {"name": "aming-claw", "source": "./", "version": "0.1.0"}
+                {"name": "aming-claw", "source": "./", "version": "0.1.1"}
             ],
         }),
         encoding="utf-8",
@@ -904,7 +904,7 @@ def test_check_claude_manifest_passes_when_mcpservers_declared(tmp_path):
     (claude_dir / "plugin.json").write_text(
         json.dumps({
             "name": "aming-claw",
-            "version": "0.1.0",
+            "version": "0.1.1",
             "description": "Test plugin.",
             "mcpServers": {
                 "aming-claw": {
@@ -926,7 +926,7 @@ def test_check_claude_manifest_warns_when_no_mcpservers(tmp_path):
     (claude_dir / "plugin.json").write_text(
         json.dumps({
             "name": "aming-claw",
-            "version": "0.1.0",
+            "version": "0.1.1",
             "description": "Test plugin.",
         }),
         encoding="utf-8",
@@ -942,7 +942,7 @@ def test_check_claude_manifest_fails_when_required_field_missing(tmp_path):
     (claude_dir / "plugin.json").write_text(
         json.dumps({
             "name": "aming-claw",
-            "version": "0.1.0",
+            "version": "0.1.1",
             # description intentionally missing
         }),
         encoding="utf-8",

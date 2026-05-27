@@ -23,6 +23,7 @@ MIN_PYTHON_VERSION = (3, 9)
 CODEX_MARKETPLACE_NAME = "aming-claw-local"
 CODEX_PLUGIN_NAME = "aming-claw"
 CODEX_PLUGIN_ID = f"{CODEX_PLUGIN_NAME}@{CODEX_MARKETPLACE_NAME}"
+DEFAULT_PLUGIN_VERSION = "0.1.1"
 REQUIRED_PLUGIN_FILES = (
     ".codex-plugin/plugin.json",
     ".agents/plugins/marketplace.json",
@@ -457,10 +458,10 @@ def default_codex_marketplace_root() -> Path:
 def _read_codex_manifest_version(plugin_root: Path) -> str:
     manifest_path = plugin_root / ".codex-plugin" / "plugin.json"
     if not manifest_path.is_file():
-        return "0.1.0"
+        return DEFAULT_PLUGIN_VERSION
     manifest = _read_json_file(manifest_path)
     version = str(manifest.get("version") or "").strip()
-    return version or "0.1.0"
+    return version or DEFAULT_PLUGIN_VERSION
 
 
 def codex_cache_plugin_root(

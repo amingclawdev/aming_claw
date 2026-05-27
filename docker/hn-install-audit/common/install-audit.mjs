@@ -29,7 +29,6 @@ const CODEX_CONFIG = join(CODEX_HOME, "config.toml");
 const CODEX_MARKETPLACE = join(HOME, ".aming-claw", "codex-marketplaces", "aming-claw-local");
 const CLAUDE_HOME = join(HOME, ".claude");
 const CLAUDE_MARKETPLACE = join(CLAUDE_HOME, "plugins", "marketplaces", "aming-claw-local");
-const CLAUDE_CACHE = join(CLAUDE_HOME, "plugins", "cache", "aming-claw-local", "aming-claw", "0.1.0");
 const REPORT_PATH = join(OUT_DIR, `${HOST}-install-audit-${RUN_ID}.json`);
 const AI_SELF_REPORT_PATH = join(OUT_DIR, `${HOST}-ai-self-report-${RUN_ID}.json`);
 const AI_PROMPT_MODE = process.env.AI_PROMPT_MODE || "required"; // required | optional | skip
@@ -57,6 +56,8 @@ const REQUIRED_RESOURCES = [
   "aming-claw://mf-sop",
 ];
 
+const DEFAULT_PLUGIN_VERSION = "0.1.1";
+
 function sha256(text) {
   return crypto.createHash("sha256").update(String(text)).digest("hex");
 }
@@ -73,6 +74,24 @@ function redact(text) {
 
 function sample(text, max = 3000) {
   return redact(String(text || "")).slice(0, max);
+}
+
+function pluginVersion() {
+  try {
+    const raw = readFileSync(join(SRC_ROOT, ".codex-plugin", "plugin.json"), "utf8");
+    const parsed = JSON.parse(raw);
+    return String(parsed.version || "").trim() || DEFAULT_PLUGIN_VERSION;
+  } catch {
+    return DEFAULT_PLUGIN_VERSION;
+  }
+}
+
+function claudeCacheRoot() {
+  return join(CLAUDE_HOME, "plugins", "cache", "aming-claw-local", "aming-claw", pluginVersion());
+}
+
+function codexCacheRoot() {
+  return join(CODEX_HOME, "plugins", "cache", "aming-claw-local", "aming-claw", pluginVersion());
 }
 
 function run(command, args = [], options = {}) {
@@ -180,23 +199,24 @@ function installCodexPlugin() {
 }
 
 function installClaudePlugin() {
+  const claudeCache = claudeCacheRoot();
   rmSync(CLAUDE_MARKETPLACE, { recursive: true, force: true });
-  rmSync(CLAUDE_CACHE, { recursive: true, force: true });
+  rmSync(claudeCache, { recursive: true, force: true });
   ensureDir(dirname(CLAUDE_MARKETPLACE));
-  ensureDir(dirname(CLAUDE_CACHE));
+  ensureDir(dirname(claudeCache));
   cpSync(SRC_ROOT, CLAUDE_MARKETPLACE, {
     recursive: true,
     filter: (source) => !source.includes(`${SRC_ROOT}/.git`),
   });
-  cpSync(SRC_ROOT, CLAUDE_CACHE, {
+  cpSync(SRC_ROOT, claudeCache, {
     recursive: true,
     filter: (source) => !source.includes(`${SRC_ROOT}/.git`),
   });
   writeJson(join(CLAUDE_HOME, "plugins", "installed_plugins.json"), {
     "aming-claw@aming-claw-local": {
       scope: "user",
-      installPath: CLAUDE_CACHE,
-      version: "0.1.0",
+      installPath: claudeCache,
+      version: pluginVersion(),
       installedAt: new Date().toISOString(),
       lastUpdated: new Date().toISOString(),
       gitCommitSha: gitHead(SRC_ROOT),
@@ -229,8 +249,8 @@ function gitHead(root) {
 }
 
 function installedSkillRoot() {
-  if (HOST === "codex") return join(CODEX_HOME, "plugins", "cache", "aming-claw-local", "aming-claw", "0.1.0", "skills");
-  return join(CLAUDE_CACHE, "skills");
+  if (HOST === "codex") return join(codexCacheRoot(), "skills");
+  return join(claudeCacheRoot(), "skills");
 }
 
 function listSkillsSeen() {
@@ -240,8 +260,8 @@ function listSkillsSeen() {
 
 function resourcesRead() {
   const root = HOST === "codex"
-    ? join(CODEX_HOME, "plugins", "cache", "aming-claw-local", "aming-claw", "0.1.0")
-    : CLAUDE_CACHE;
+    ? codexCacheRoot()
+    : claudeCacheRoot();
   const paths = {
     "aming-claw://current-context": ".mcp.json",
     "aming-claw://skill": "skills/aming-claw/SKILL.md",
@@ -526,7 +546,7 @@ function buildReport({
     demo_prompt_sha256: sha256(demoPrompt),
     install_command: hostInstall.command || "",
     plugin_root: SRC_ROOT,
-    cache_path: HOST === "codex" ? join(CODEX_HOME, "plugins", "cache", "aming-claw-local", "aming-claw", "0.1.0") : CLAUDE_CACHE,
+    cache_path: HOST === "codex" ? codexCacheRoot() : claudeCacheRoot(),
     fresh_session_id: `${HOST}-docker-${RUN_ID}`,
     skills_seen: skills,
     mcp_tools_seen: tools,

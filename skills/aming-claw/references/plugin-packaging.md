@@ -100,7 +100,7 @@ server as `.mcp.json`. Sample shape:
 ```json
 {
   "name": "aming-claw",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Graph-first governance workflow guard ...",
   "author": { "name": "Aming Claw" },
   "keywords": ["governance", "graph", "mcp"],
