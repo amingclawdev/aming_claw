@@ -23,6 +23,17 @@ docker/hn-install-audit/run-install-audit.sh \
   --ai-prompt-mode required
 ```
 
+When testing a Claude login captured in a dedicated container-auth home, pass it
+explicitly instead of overriding `HOME`:
+
+```bash
+docker/hn-install-audit/run-install-audit.sh \
+  --host claude \
+  --run-id claude-auth-smoke \
+  --claude-auth-home ~/.aming-claw/docker-auth/claude-home \
+  --ai-prompt-mode required
+```
+
 By default the runner mounts the current checkout into the container and uses
 `file:///plugin-source` as the install source. To test the public README path
 against GitHub instead:
@@ -35,10 +46,11 @@ docker/hn-install-audit/run-install-audit.sh --host both
 ## Lanes
 
 - `aming-claw-install-audit-codex`: installs Codex CLI in the image, uses a
-  fresh `$CODEX_HOME`, and mounts `~/.codex` read-only when present.
+  fresh `$CODEX_HOME`, and mounts `<codex-auth-home>/.codex` read-only when
+  present.
 - `aming-claw-install-audit-claude`: installs Claude Code CLI in the image,
-  uses a fresh `$HOME`, and mounts `~/.claude` plus `~/.claude.json` read-only
-  when present.
+  uses a fresh `$HOME`, and mounts `<claude-auth-home>/.claude` plus
+  `<claude-auth-home>/.claude.json` read-only when present.
 
 Each lane has two phases:
 
@@ -73,8 +85,9 @@ node docker/hn-install-audit/validate-report.mjs \
 - Tokens are never baked into images.
 - Token-looking values are rejected by `validate-report.mjs`.
 - Reports may mention auth files only as redacted evidence labels.
-- If host auth is absent or unusable, the lane is `FAIL` or `SKIPPED`, not
-  `PASS`.
+- If host auth is absent, unusable, or Claude reports `Not logged in`, the lane
+  is `FAIL`, `SKIPPED`, or `LOGIN_REQUIRED`, not `PASS`.
 
-Interactive OAuth/device-code login is intentionally out of scope for this
-first pass. File a follow-up if Mode B auth reuse is insufficient.
+Interactive OAuth/device-code login is intentionally kept outside the automated
+run. Log in once into a dedicated auth home, then pass that directory with
+`--claude-auth-home` for repeatable release checks.

@@ -86,8 +86,8 @@ function validate(report) {
   if (!["codex", "claude"].includes(String(report.host || ""))) {
     errors.push("host must be codex or claude");
   }
-  if (!["PASS", "FAIL", "SKIPPED"].includes(String(report.status || ""))) {
-    errors.push("status must be PASS, FAIL, or SKIPPED");
+  if (!["PASS", "FAIL", "SKIPPED", "LOGIN_REQUIRED"].includes(String(report.status || ""))) {
+    errors.push("status must be PASS, FAIL, SKIPPED, or LOGIN_REQUIRED");
   }
   if (report.auth_mode !== "AUTH_REUSED_FROM_HOST") {
     errors.push("first Docker implementation must label auth_mode as AUTH_REUSED_FROM_HOST");
@@ -122,6 +122,9 @@ function validate(report) {
 
   if (report.status === "SKIPPED" && !String(report.skip_reason || "").trim()) {
     errors.push("SKIPPED report requires skip_reason");
+  }
+  if (report.status === "LOGIN_REQUIRED" && !String(report.skip_reason || "").trim()) {
+    errors.push("LOGIN_REQUIRED report requires skip_reason");
   }
 
   return errors;

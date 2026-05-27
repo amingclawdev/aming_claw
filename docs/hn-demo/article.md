@@ -228,6 +228,19 @@ graph snapshot are local governance records unless you run the demo yourself.
 That boundary matters: public source history is not the same thing as the local
 audit trail that produced and verified it.
 
+The launch rehearsal failed once more after that, in a more useful way. I ran
+the HN demo as a real fresh-machine operator flow and the AI's evaluation was
+not good enough. It skipped the first-read resources, got confused about project
+identity and fixture scope, and treated pre-seeded backlog/timeline rows as
+evidence instead of producing evidence itself.
+
+That failure changed the demo. The fixture now seeds only a project, a baseline
+commit, and an active graph. Backlog rows, contracts, timeline events, worker
+fences, graph query traces, tests, reconcile evidence, and the final evaluation
+have to be produced by the observer path during the run. I also added a Docker
+release audit for Codex and Claude installs, not as a user requirement, but so
+my already-installed local environment cannot fake a pass.
+
 ## One commit, many backlog rows
 
 You may notice the same commit referenced from multiple case pages. That isn't

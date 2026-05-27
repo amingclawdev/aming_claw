@@ -238,6 +238,9 @@ function getGraphQueryCount(response) {
 }
 
 function firstGraphNodeId(response) {
+  const matches = response?.result?.matches || [];
+  const match = Array.isArray(matches) ? matches[0] : null;
+  if (match?.node?.node_id || match?.node?.id) return match.node.node_id || match.node.id;
   const nodes = response?.result?.nodes || response?.nodes || response?.result?.items || [];
   const first = Array.isArray(nodes) ? nodes[0] : null;
   return first?.id || first?.node_id || response?.result?.node?.id || "";
@@ -723,7 +726,7 @@ async function runBeforeWorkCase(audit) {
       tests_count: getGraphQueryCount(tests),
     },
   });
-  audit.raw_evidence.before_work = { bug_id: bugId, mf_id: mfId, trace_ids: traces, duplicate_probe: duplicateProbe };
+  audit.raw_evidence.before_work = { bug_id: bugId, mf_id: mfId, trace_ids: traces, duplicate_probe: duplicateProbe, target_node_id: firstGraphNodeId(structure) };
   audit.raw_evidence.backlog_ids.push(bugId);
   audit.raw_evidence.trace_ids.push(...traces);
   if (event?.id) audit.raw_evidence.timeline_event_ids.push(event.id);
@@ -1061,8 +1064,9 @@ async function runAfterWorkCase(audit, during, targetNodeId) {
   });
   auditCheck(audit, "after-work full reconcile activated snapshot", Boolean(snapshotId), { snapshot_id: snapshotId });
   auditCheck(audit, "after-work orphan probe uses real trace", Boolean(traceId), { trace_id: traceId, count: getGraphQueryCount(orphanQuery) });
-  auditCheck(audit, "after-work governance hint reached review boundary", Boolean(hint?.ok || hint?.state === "written_uncommitted"), {
-    hint_state: hint?.state || hint?.error || "",
+  const hintState = hint?.state || hint?.result?.state || hint?.hint?.state || hint?.error || "";
+  auditCheck(audit, "after-work governance hint reached review boundary", Boolean(hint?.ok || hintState === "written_uncommitted"), {
+    hint_state: hintState,
   }, "warning");
   ok(`after-work backlog=${bugId} snapshot=${snapshotId || "unknown"}`);
 }
@@ -1102,6 +1106,7 @@ function addSameObserverReview(audit) {
   const installGates = audit.raw_evidence.install_gates || {};
   const installGateStatuses = ["codex", "claude"].map((host) => installGates[host]?.status || "SKIPPED");
   const anyDockerInstallPass = installGateStatuses.includes("PASS");
+  const allRequestedDockerInstallPass = installGateStatuses.every((status) => status === "PASS");
   const bothDockerInstallMissing = installGateStatuses.every((status) => status !== "PASS");
   const installOk = ["plugin package files present", "dashboard packaged assets present", "CLI help is callable from checkout", "dashboard /dashboard route serves"].every(
     (name) => check(name)?.passed,
@@ -1119,10 +1124,14 @@ function addSameObserverReview(audit) {
         ? "The package, CLI, dashboard route, and skill files were all visible from the same checkout."
         : "Install smoke found at least one packaging or dashboard readiness issue.",
       personally_observed_evidence: audit.install_smoke,
-      hesitation: anyDockerInstallPass
+      hesitation: allRequestedDockerInstallPass
+        ? "Both Docker host lanes passed; remaining concern is only whether a live AI-observer transcript should be attached for persuasion."
+        : anyDockerInstallPass
         ? "At least one Docker host lane passed; the remaining concern is cross-host parity."
         : "This is still only a local checkout preflight until a Docker Codex or Claude install gate passes.",
-      suggested_fix: "Run docker/hn-install-audit/run-install-audit.sh and pass the generated host reports into --sandbox-audit.",
+      suggested_fix: allRequestedDockerInstallPass
+        ? "Keep the Codex and Claude install reports attached to the launch checklist."
+        : "Run docker/hn-install-audit/run-install-audit.sh and pass the generated host reports into --sandbox-audit.",
     },
     {
       category: "Evidence Credibility",

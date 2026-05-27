@@ -1,4 +1,6 @@
 *.json
 *.md
+*.html
+install-*/
 !README.md
 !.gitignore

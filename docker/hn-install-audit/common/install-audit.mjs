@@ -387,6 +387,11 @@ function maybeRunAiPrompts(installPrompt, demoPrompt) {
   return { install, demo };
 }
 
+function isLoginRequired(result) {
+  const text = `${result?.stdout || ""}\n${result?.stderr || ""}`;
+  return /not logged in|please run\s+\/login|run\s+claude\s+auth|authentication required|login required/i.test(text);
+}
+
 function missing(required, seen) {
   const set = new Set(seen);
   return required.filter((item) => !set.has(item));
@@ -424,12 +429,16 @@ function buildReport({
   if (missing(REQUIRED_RESOURCES, resources).length) blockers.push(`missing resources: ${missing(REQUIRED_RESOURCES, resources).join(", ")}`);
   if (!dashboard.ok) blockers.push("dashboard health failed");
   if (!demo.ok) blockers.push("HN demo fixture run failed");
-  if (AI_PROMPT_MODE === "required" && (!ai.install.ok || !ai.demo.ok)) blockers.push("AI prompt execution failed");
+  const loginRequired = HOST === "claude" && AI_PROMPT_MODE === "required" && (isLoginRequired(ai.install) || isLoginRequired(ai.demo));
+  if (loginRequired) blockers.push("Claude AI prompt execution requires login");
+  else if (AI_PROMPT_MODE === "required" && (!ai.install.ok || !ai.demo.ok)) blockers.push("AI prompt execution failed");
 
   const aiSkipped = AI_PROMPT_MODE === "skip";
-  const status = blockers.length ? "FAIL" : aiSkipped ? "SKIPPED" : "PASS";
+  const status = loginRequired ? "LOGIN_REQUIRED" : blockers.length ? "FAIL" : aiSkipped ? "SKIPPED" : "PASS";
   const skipReason = aiSkipped
     ? "AI_PROMPT_MODE=skip; deterministic install checks ran, but the one-click AI install and HN demo prompts were not executed."
+    : loginRequired
+      ? "Claude CLI is installed but not authenticated in the mounted auth home. Run `claude /login` or `claude auth login` with the same auth home, then rerun with --claude-auth-home <dir>."
     : "";
   return {
     schema_version: "aming_claw_install_audit.v1",
@@ -459,8 +468,10 @@ function buildReport({
       "The container is fresh for plugin/cache state, but authentication comes from read-only host files.",
     ],
     self_rating: selfRating(status, blockers),
-    why_rating: blockers.length
-      ? `Install lane failed because: ${blockers.join("; ")}`
+    why_rating: loginRequired
+        ? "Claude lane reached the AI prompt phase but the CLI reported that no authenticated Claude session was available in the mounted auth home."
+      : blockers.length
+        ? `Install lane failed because: ${blockers.join("; ")}`
       : aiSkipped
         ? "Install lane is skipped, not passed, because deterministic checks ran without exercising the AI one-click install prompt."
         : "Install lane passed because the fresh container installed the plugin, verified skills/MCP/resources, served dashboard, and ran the HN demo fixture.",

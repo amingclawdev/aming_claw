@@ -23,8 +23,10 @@ After installing the Aming Claw plugin, ask Codex or Claude:
 
 ```text
 Use the Aming Claw HN demo skill to run the three fear cases for this project:
-before work, during work, and after work. Use deterministic demo evidence where
-possible, do not require live AI, and show me the dashboard URLs for each case.
+before work, during work, and after work. If needed, create an isolated fixture
+project, but produce the backlog rows, timeline events, graph traces, worker
+fences, tests, and reconcile evidence during this run. Do not treat pre-existing
+fixture data as proof. Show me the dashboard URLs for each case.
 ```
 
 The skill should leave you with dashboard states that correspond to the three
@@ -59,8 +61,8 @@ docker/hn-install-audit/run-install-audit.sh --host both
 
 Those lanes build separate Codex and Claude Code containers, reuse host auth
 read-only at runtime, feed the README install prompt, then feed the HN demo
-prompt. Their JSON reports can be passed back into `--sandbox-audit` with
-`--require-install-gates`.
+prompt. This is a release gate, not a user install requirement. Their JSON
+reports can be passed back into `--sandbox-audit` with `--require-install-gates`.
 
 | Case | Page | Architecture note | Dashboard URL pattern |
 | --- | --- | --- | --- |

@@ -9,6 +9,8 @@ PLUGIN_REPO_URL="${PLUGIN_REPO_URL:-file:///plugin-source}"
 PLUGIN_REF="${PLUGIN_REF:-}"
 AI_PROMPT_MODE="${AI_PROMPT_MODE:-required}"
 AUTH_MODE="${AUTH_MODE:-AUTH_REUSED_FROM_HOST}"
+CODEX_AUTH_HOME="${CODEX_AUTH_HOME:-}"
+CLAUDE_AUTH_HOME="${CLAUDE_AUTH_HOME:-}"
 
 usage() {
   cat <<'USAGE'
@@ -21,12 +23,15 @@ Options:
   --repo-url URL                Repo URL visible inside container. Default: file:///plugin-source.
   --ref REF                     Optional git ref after clone.
   --ai-prompt-mode MODE         required|optional|skip. Default: required.
+  --codex-auth-home DIR         Read Codex auth from DIR instead of $HOME.
+  --claude-auth-home DIR        Read Claude auth from DIR instead of $HOME.
   --no-build                    Reuse existing Docker images.
   --help                        Show this help.
 
 Mode B auth reuse:
-  Codex lane mounts ~/.codex read-only when it exists.
-  Claude lane mounts ~/.claude read-only and ~/.claude.json read-only when they exist.
+  Codex lane mounts <auth-home>/.codex read-only when it exists.
+  Claude lane mounts <auth-home>/.claude and <auth-home>/.claude.json read-only
+  when they exist.
   Token files are never baked into images; reports label AUTH_REUSED_FROM_HOST.
 USAGE
 }
@@ -40,6 +45,8 @@ while [[ $# -gt 0 ]]; do
     --repo-url) PLUGIN_REPO_URL="$2"; shift 2 ;;
     --ref) PLUGIN_REF="$2"; shift 2 ;;
     --ai-prompt-mode) AI_PROMPT_MODE="$2"; shift 2 ;;
+    --codex-auth-home) CODEX_AUTH_HOME="$2"; shift 2 ;;
+    --claude-auth-home) CLAUDE_AUTH_HOME="$2"; shift 2 ;;
     --no-build) NO_BUILD=1; shift ;;
     --help|-h) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage; exit 2 ;;
@@ -74,14 +81,22 @@ auth_mounts() {
   local host="$1"
   local mounts=()
   if [[ "$host" == "codex" ]]; then
-    if [[ -d "$HOME/.codex" ]]; then
-      mounts+=("-v" "$HOME/.codex:/host-auth/codex:ro")
+    local auth_home="${CODEX_AUTH_HOME:-$HOME}"
+    if [[ -d "$auth_home/.codex" ]]; then
+      mounts+=("-v" "$auth_home/.codex:/host-auth/codex:ro")
+    elif [[ -d "$auth_home" && -f "$auth_home/auth.json" ]]; then
+      mounts+=("-v" "$auth_home:/host-auth/codex:ro")
     fi
   else
-    if [[ -d "$HOME/.claude" ]]; then
-      mounts+=("-v" "$HOME/.claude:/host-auth/claude:ro")
+    local auth_home="${CLAUDE_AUTH_HOME:-$HOME}"
+    if [[ -d "$auth_home/.claude" ]]; then
+      mounts+=("-v" "$auth_home/.claude:/host-auth/claude:ro")
+    elif [[ -d "$auth_home" && ( -f "$auth_home/.credentials.json" || -f "$auth_home/credentials.json" || -f "$auth_home/auth.json" ) ]]; then
+      mounts+=("-v" "$auth_home:/host-auth/claude:ro")
     fi
-    if [[ -f "$HOME/.claude.json" ]]; then
+    if [[ -f "$auth_home/.claude.json" ]]; then
+      mounts+=("-v" "$auth_home/.claude.json:/host-auth/claude-home.json:ro")
+    elif [[ -f "$HOME/.claude.json" && -z "$CLAUDE_AUTH_HOME" ]]; then
       mounts+=("-v" "$HOME/.claude.json:/host-auth/claude-home.json:ro")
     fi
   fi
