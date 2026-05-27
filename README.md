@@ -211,6 +211,10 @@ and show the day-to-day problems people hit while working with AI agents:
   [Docs Drift Demo](docs/drift-demo/README.md). A feature changes while its
   source-controlled doc stays stale; the demo shows where drift appears and
   how the observer resolves it.
+- **Avoid building the same feature twice**:
+  [Backlog Duplicate Demo](docs/backlog-dupe-demo/README.md). The observer
+  detects that a new request overlaps existing backlog work and asks whether to
+  merge, supersede, or create a separate row.
 
 The preferred path: install Aming Claw, open a fresh Claude Code or Codex
 session, and let that current session act as the observer. The packaged
@@ -773,6 +777,8 @@ Aming Claw ships these assets in the repo:
   conversation flowing while agents work
 - `skills/aming-claw-drift-demo/` — everyday demo for stale-doc drift after
   feature changes
+- `skills/aming-claw-backlog-dupe-demo/` — everyday demo for duplicate backlog
+  detection during requirement intake
 - `agent/mcp/resources/seed-graph-summary.json` — lightweight packaged context
   for fresh sessions
 - `agent/mcp/resources/self-graph-bundle-manifest.json` — read-only compatibility
@@ -791,6 +797,7 @@ After install, the plugin exposes these skills (Claude Code namespacing shown):
 - `/aming-claw:aming-claw-hn-demo-after-work`
 - `/aming-claw:aming-claw-vibe-queue-demo`
 - `/aming-claw:aming-claw-drift-demo`
+- `/aming-claw:aming-claw-backlog-dupe-demo`
 
 ### What `aming-claw plugin install` writes
 

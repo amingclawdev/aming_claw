@@ -47,6 +47,7 @@ const REQUIRED_SKILLS = [
   "aming-claw-hn-demo-after-work",
   "aming-claw-vibe-queue-demo",
   "aming-claw-drift-demo",
+  "aming-claw-backlog-dupe-demo",
 ];
 
 const REQUIRED_RESOURCES = [
@@ -379,6 +380,11 @@ function runEverydayDemos() {
       fixture: "frontend/dashboard/scripts/e2e-drift-demo-fixture.mjs",
       audit: "frontend/dashboard/scripts/e2e-drift-demo-audit.mjs",
     },
+    {
+      name: "backlog-dupe",
+      fixture: "frontend/dashboard/scripts/e2e-backlog-dupe-fixture.mjs",
+      audit: "frontend/dashboard/scripts/e2e-backlog-dupe-audit.mjs",
+    },
   ];
   return demos.map((demo) => {
     const fixture = runEverydayDemoScript(demo.fixture, demo.name);
@@ -409,6 +415,7 @@ Verify the before-work, during-work, and after-work evidence. Do not fabricate t
 Then inspect the everyday demo skills:
 - /aming-claw:aming-claw-vibe-queue-demo
 - /aming-claw:aming-claw-drift-demo
+- /aming-claw:aming-claw-backlog-dupe-demo
 
 Confirm they prefer the current Claude Code or Codex session as observer, with scripts only as fixture/CI fallback.
 Record whether the demos produced server-verifiable evidence and why you rate the run that way.`;
