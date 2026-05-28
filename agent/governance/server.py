@@ -30,7 +30,7 @@ import sqlite3
 import time
 
 log = logging.getLogger(__name__)
-from .db import get_connection, DBContext, independent_connection
+from .db import get_connection, DBContext, independent_connection, sqlite_write_lock
 from . import role_service
 from . import state_service
 from . import project_service
@@ -39,6 +39,7 @@ from . import audit_service
 from . import reconcile_session
 from . import backlog_runtime
 from . import raw_requirement
+from . import observer_session
 from .idempotency import check_idempotency, store_idempotency
 from .redis_client import get_redis
 from .models import Evidence, MemoryEntry, NodeDef
@@ -1118,6 +1119,225 @@ def handle_project_raw_requirement_status(ctx: RequestContext):
     return {"ok": True, "project_id": project_id, "raw_requirement": row}
 
 
+def _observer_token(ctx: RequestContext) -> str:
+    return str(ctx.body.get("session_token") or ctx.body.get("token") or "")
+
+
+def _observer_error(exc: Exception):
+    if isinstance(exc, observer_session.ObserverAuthError):
+        return 401, {"ok": False, "error": "observer_auth_failed", "message": str(exc)}
+    if isinstance(exc, observer_session.ObserverPermissionError):
+        return 403, {"ok": False, "error": "observer_permission_denied", "message": str(exc)}
+    if isinstance(exc, observer_session.ObserverCommandConflict):
+        return 409, {"ok": False, "error": "observer_command_conflict", "message": str(exc)}
+    if isinstance(exc, LookupError):
+        return 404, {"ok": False, "error": "observer_command_not_found", "message": str(exc)}
+    if isinstance(exc, ValueError):
+        return 400, {"ok": False, "error": "invalid_observer_request", "message": str(exc)}
+    return 500, {"ok": False, "error": "observer_request_failed", "message": str(exc)}
+
+
+@route("POST", "/api/projects/{project_id}/observer-sessions/register")
+def handle_observer_session_register(ctx: RequestContext):
+    project_id = ctx.get_project_id()
+    conn = get_connection(project_id)
+    try:
+        with sqlite_write_lock():
+            result = observer_session.register_session(
+                conn,
+                project_id=project_id,
+                observer_kind=str(ctx.body.get("observer_kind") or "codex"),
+                session_label=str(ctx.body.get("session_label") or ""),
+                pid=int(ctx.body.get("pid") or 0),
+                cwd=str(ctx.body.get("cwd") or ""),
+                capabilities=ctx.body.get("capabilities")
+                if isinstance(ctx.body.get("capabilities"), (dict, list))
+                else None,
+                session_id=str(ctx.body.get("session_id") or "") or None,
+            )
+    except Exception as exc:
+        return _observer_error(exc)
+    return 201, {"project_id": project_id, **result}
+
+
+@route("GET", "/api/projects/{project_id}/observer-sessions")
+def handle_observer_session_list(ctx: RequestContext):
+    project_id = ctx.get_project_id()
+    conn = get_connection(project_id)
+    return {
+        "ok": True,
+        "project_id": project_id,
+        "observer": observer_session.connection_summary(conn, project_id=project_id),
+    }
+
+
+@route("POST", "/api/projects/{project_id}/observer-sessions/{session_id}/heartbeat")
+def handle_observer_session_heartbeat(ctx: RequestContext):
+    project_id = ctx.get_project_id()
+    session_id = unquote(str(ctx.path_params.get("session_id") or ctx.body.get("session_id") or ""))
+    conn = get_connection(project_id)
+    try:
+        with sqlite_write_lock():
+            return observer_session.heartbeat_session(
+                conn,
+                project_id=project_id,
+                session_id=session_id,
+                session_token=_observer_token(ctx),
+            )
+    except Exception as exc:
+        return _observer_error(exc)
+
+
+@route("POST", "/api/projects/{project_id}/observer-sessions/{session_id}/close")
+def handle_observer_session_close(ctx: RequestContext):
+    project_id = ctx.get_project_id()
+    session_id = unquote(str(ctx.path_params.get("session_id") or ctx.body.get("session_id") or ""))
+    conn = get_connection(project_id)
+    try:
+        with sqlite_write_lock():
+            return observer_session.close_session(
+                conn,
+                project_id=project_id,
+                session_id=session_id,
+                session_token=_observer_token(ctx),
+            )
+    except Exception as exc:
+        return _observer_error(exc)
+
+
+@route("POST", "/api/projects/{project_id}/observer-sessions/{session_id}/revoke")
+def handle_observer_session_revoke(ctx: RequestContext):
+    project_id = ctx.get_project_id()
+    session_id = unquote(str(ctx.path_params.get("session_id") or ctx.body.get("session_id") or ""))
+    conn = get_connection(project_id)
+    try:
+        with sqlite_write_lock():
+            return observer_session.revoke_session(
+                conn,
+                project_id=project_id,
+                session_id=session_id,
+                session_token=_observer_token(ctx),
+            )
+    except Exception as exc:
+        return _observer_error(exc)
+
+
+@route("GET", "/api/projects/{project_id}/observer-commands")
+def handle_observer_command_list(ctx: RequestContext):
+    project_id = ctx.get_project_id()
+    conn = get_connection(project_id)
+    status_query = str(ctx.query.get("status") or "").strip()
+    status = [s.strip() for s in status_query.split(",") if s.strip()] if status_query else None
+    try:
+        limit = int(ctx.query.get("limit", 100) or 100)
+    except (TypeError, ValueError):
+        limit = 100
+    commands = observer_session.list_commands(
+        conn,
+        project_id=project_id,
+        status=status,
+        limit=limit,
+    )
+    return {
+        "ok": True,
+        "project_id": project_id,
+        "observer_commands": commands,
+        "count": len(commands),
+        "summary": observer_session.command_summary(conn, project_id=project_id, limit=limit),
+    }
+
+
+@route("POST", "/api/projects/{project_id}/observer-commands")
+def handle_observer_command_enqueue(ctx: RequestContext):
+    project_id = ctx.get_project_id()
+    conn = get_connection(project_id)
+    try:
+        with sqlite_write_lock():
+            command = observer_session.enqueue_command(
+                conn,
+                project_id=project_id,
+                command_type=str(ctx.body.get("command_type") or ""),
+                payload=ctx.body.get("payload") if isinstance(ctx.body.get("payload"), dict) else {},
+                target_session_id=str(ctx.body.get("target_session_id") or ""),
+                created_by=str(ctx.body.get("created_by") or ctx.body.get("actor") or ""),
+                command_id=str(ctx.body.get("command_id") or "") or None,
+                notify=bool(ctx.body.get("notify") or False),
+            )
+    except Exception as exc:
+        return _observer_error(exc)
+    return 201, {
+        "ok": True,
+        "project_id": project_id,
+        "observer_command": command,
+        "hook_reminder": observer_session.command_pending_reminder(project_id),
+    }
+
+
+def _observer_command_claim(ctx: RequestContext):
+    project_id = ctx.get_project_id()
+    conn = get_connection(project_id)
+    try:
+        with sqlite_write_lock():
+            return observer_session.claim_command(
+                conn,
+                project_id=project_id,
+                session_id=str(ctx.body.get("session_id") or ctx.body.get("observer_session_id") or ""),
+                session_token=_observer_token(ctx),
+                command_id=str(ctx.body.get("command_id") or "") or None,
+            )
+    except Exception as exc:
+        return _observer_error(exc)
+
+
+@route("POST", "/api/projects/{project_id}/observer-commands/next")
+def handle_observer_command_next(ctx: RequestContext):
+    return _observer_command_claim(ctx)
+
+
+@route("POST", "/api/projects/{project_id}/observer-commands/claim")
+def handle_observer_command_claim(ctx: RequestContext):
+    return _observer_command_claim(ctx)
+
+
+@route("POST", "/api/projects/{project_id}/observer-commands/{command_id}/complete")
+def handle_observer_command_complete(ctx: RequestContext):
+    project_id = ctx.get_project_id()
+    command_id = unquote(str(ctx.path_params.get("command_id") or ctx.body.get("command_id") or ""))
+    conn = get_connection(project_id)
+    try:
+        with sqlite_write_lock():
+            return observer_session.complete_command(
+                conn,
+                project_id=project_id,
+                session_id=str(ctx.body.get("session_id") or ctx.body.get("observer_session_id") or ""),
+                session_token=_observer_token(ctx),
+                command_id=command_id,
+                result=ctx.body.get("result") if isinstance(ctx.body.get("result"), dict) else {},
+            )
+    except Exception as exc:
+        return _observer_error(exc)
+
+
+@route("POST", "/api/projects/{project_id}/observer-commands/{command_id}/fail")
+def handle_observer_command_fail(ctx: RequestContext):
+    project_id = ctx.get_project_id()
+    command_id = unquote(str(ctx.path_params.get("command_id") or ctx.body.get("command_id") or ""))
+    conn = get_connection(project_id)
+    try:
+        with sqlite_write_lock():
+            return observer_session.fail_command(
+                conn,
+                project_id=project_id,
+                session_id=str(ctx.body.get("session_id") or ctx.body.get("observer_session_id") or ""),
+                session_token=_observer_token(ctx),
+                command_id=command_id,
+                error=str(ctx.body.get("error") or ""),
+                result=ctx.body.get("result") if isinstance(ctx.body.get("result"), dict) else {},
+            )
+    except Exception as exc:
+        return _observer_error(exc)
+
+
 @route("GET", "/api/projects/{project_id}/project-inbox")
 def handle_project_inbox(ctx: RequestContext):
     project_id = ctx.get_project_id()
@@ -1140,6 +1360,8 @@ def handle_project_inbox(ctx: RequestContext):
         "ok": True,
         "project_id": project_id,
         "homepage_view": "project_inbox",
+        "observer": observer_session.connection_summary(conn, project_id=project_id),
+        "observer_commands": observer_session.command_summary(conn, project_id=project_id),
         "lanes": {
             "raw_inbox": {
                 "count": counts.get(raw_requirement.STATUS_RAW_INBOX, 0),

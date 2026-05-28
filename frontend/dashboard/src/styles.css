@@ -7030,6 +7030,49 @@ svg.graph-svg path.ghit:hover {
   flex-wrap: wrap;
 }
 
+.project-inbox-observer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 10px 12px;
+}
+
+.project-inbox-observer-pill,
+.project-inbox-command-count,
+.project-inbox-command-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.project-inbox-observer-pill.connected {
+  background: var(--green-bg);
+  border-color: #a7f3d0;
+  color: var(--green-fg);
+}
+
+.project-inbox-observer-pill.waiting {
+  background: var(--amber-bg);
+  border-color: #fde68a;
+  color: var(--amber-fg);
+}
+
+.project-inbox-command-count {
+  background: var(--ink-50);
+  color: var(--ink-600);
+}
+
 .project-inbox-lanes {
   display: grid;
   grid-template-columns: repeat(3, minmax(220px, 1fr));
@@ -7099,6 +7142,50 @@ svg.graph-svg path.ghit:hover {
   line-height: 1.4;
   max-height: 54px;
   overflow: hidden;
+}
+
+.project-inbox-command-row,
+.project-inbox-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.project-inbox-command-status.tone-neutral {
+  background: var(--ink-50);
+  color: var(--ink-600);
+}
+
+.project-inbox-command-status.tone-queued {
+  background: var(--amber-bg);
+  border-color: #fde68a;
+  color: var(--amber-fg);
+}
+
+.project-inbox-command-status.tone-running {
+  background: #e0f2fe;
+  border-color: #bae6fd;
+  color: #075985;
+}
+
+.project-inbox-command-status.tone-complete {
+  background: var(--green-bg);
+  border-color: #a7f3d0;
+  color: var(--green-fg);
+}
+
+.project-inbox-command-status.tone-failed {
+  background: var(--red-bg);
+  border-color: #fecaca;
+  color: var(--red-fg);
+}
+
+.project-inbox-command-error {
+  min-width: 0;
+  color: var(--red-fg);
+  font-size: 11px;
+  overflow-wrap: anywhere;
 }
 
 .project-inbox-empty {

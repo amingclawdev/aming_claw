@@ -17,6 +17,7 @@ import type {
   SnapshotFilesResponse,
   HealthResponse,
   NodesResponse,
+  ObserverCommand,
   OperationsQueueResponse,
   ProjectInboxResponse,
   ProjectionResponse,
@@ -215,6 +216,22 @@ export const api = {
   ) {
     return postJSON<{ ok: boolean; project_id: string; raw_requirement: RawRequirement }>(
       `/api/projects/${pidFor(projectId)}/raw-requirements/${encodeURIComponent(rawId)}/status`,
+      payload,
+      signal,
+    );
+  },
+  enqueueObserverCommandFor(
+    projectId: string,
+    payload: {
+      command_type: string;
+      payload?: Record<string, unknown>;
+      target_session_id?: string;
+      created_by?: string;
+    },
+    signal?: AbortSignal,
+  ) {
+    return postJSON<{ ok: boolean; project_id: string; observer_command: ObserverCommand }>(
+      `/api/projects/${pidFor(projectId)}/observer-commands`,
       payload,
       signal,
     );

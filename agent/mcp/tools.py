@@ -168,6 +168,157 @@ TOOLS: list[dict] = [
         },
     },
     {
+        "name": "observer_session_register",
+        "description": "Register this AI observer session and return a one-time session token. The DB stores only a token hash.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "observer_kind": {"type": "string"},
+                "session_label": {"type": "string"},
+                "pid": {"type": "integer"},
+                "cwd": {"type": "string"},
+                "capabilities": {"type": "object"},
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
+        "name": "observer_session_heartbeat",
+        "description": "Heartbeat a registered observer session using its session token.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "session_id": {"type": "string"},
+                "session_token": {"type": "string"},
+            },
+            "required": ["project_id", "session_id", "session_token"],
+        },
+    },
+    {
+        "name": "observer_session_close",
+        "description": "Close a registered observer session using its session token.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "session_id": {"type": "string"},
+                "session_token": {"type": "string"},
+            },
+            "required": ["project_id", "session_id", "session_token"],
+        },
+    },
+    {
+        "name": "observer_session_revoke",
+        "description": "Revoke a registered observer session using its session token.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "session_id": {"type": "string"},
+                "session_token": {"type": "string"},
+            },
+            "required": ["project_id", "session_id", "session_token"],
+        },
+    },
+    {
+        "name": "observer_command_list",
+        "description": "List durable observer command queue rows for a project.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "status": {"type": "string"},
+                "limit": {"type": "integer"},
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
+        "name": "observer_command_enqueue",
+        "description": "Enqueue a dashboard-originated observer command. Hook reminders must not carry the business payload.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "command_type": {
+                    "type": "string",
+                    "enum": [
+                        "analyze_requirements",
+                        "confirm_requirement",
+                        "move_to_execution_queue",
+                        "pause_worker",
+                        "continue_worker",
+                        "cancel_worker",
+                    ],
+                },
+                "payload": {"type": "object"},
+                "target_session_id": {"type": "string"},
+                "created_by": {"type": "string"},
+            },
+            "required": ["project_id", "command_type"],
+        },
+    },
+    {
+        "name": "observer_command_next",
+        "description": "Claim the next allowed observer command using a registered session token.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "session_id": {"type": "string"},
+                "session_token": {"type": "string"},
+            },
+            "required": ["project_id", "session_id", "session_token"],
+        },
+    },
+    {
+        "name": "observer_command_claim",
+        "description": "Claim a specific observer command, or the next allowed command, using a registered session token.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "session_id": {"type": "string"},
+                "session_token": {"type": "string"},
+                "command_id": {"type": "string"},
+            },
+            "required": ["project_id", "session_id", "session_token"],
+        },
+    },
+    {
+        "name": "observer_command_complete",
+        "description": "Complete a claimed observer command. Requires the same claimed session token.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "session_id": {"type": "string"},
+                "session_token": {"type": "string"},
+                "command_id": {"type": "string"},
+                "result": {"type": "object"},
+            },
+            "required": ["project_id", "session_id", "session_token", "command_id"],
+        },
+    },
+    {
+        "name": "observer_command_fail",
+        "description": "Fail a claimed observer command. Requires the same claimed session token.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "session_id": {"type": "string"},
+                "session_token": {"type": "string"},
+                "command_id": {"type": "string"},
+                "error": {"type": "string"},
+                "result": {"type": "object"},
+            },
+            "required": ["project_id", "session_id", "session_token", "command_id"],
+        },
+    },
+    {
         "name": "task_hold",
         "description": "Put a queued task into observer_hold state — pauses executor pickup and auto-chain progression. Use before claiming a task for manual review.",
         "inputSchema": {
@@ -758,6 +909,94 @@ class ToolDispatcher:
         if name == "observer_mode":
             pid = args["project_id"]
             return self._api("POST", f"/api/project/{pid}/observer-mode", {"enabled": args["enabled"]})
+
+        if name == "observer_session_register":
+            pid = args["project_id"]
+            body = {
+                key: args[key]
+                for key in ("observer_kind", "session_label", "pid", "cwd", "capabilities")
+                if key in args and args[key] is not None
+            }
+            return self._api("POST", f"/api/projects/{pid}/observer-sessions/register", body)
+
+        if name == "observer_session_heartbeat":
+            pid = args["project_id"]
+            sid = urllib.parse.quote(str(args["session_id"]), safe="")
+            return self._api(
+                "POST",
+                f"/api/projects/{pid}/observer-sessions/{sid}/heartbeat",
+                {"session_token": args["session_token"]},
+            )
+
+        if name == "observer_session_close":
+            pid = args["project_id"]
+            sid = urllib.parse.quote(str(args["session_id"]), safe="")
+            return self._api(
+                "POST",
+                f"/api/projects/{pid}/observer-sessions/{sid}/close",
+                {"session_token": args["session_token"]},
+            )
+
+        if name == "observer_session_revoke":
+            pid = args["project_id"]
+            sid = urllib.parse.quote(str(args["session_id"]), safe="")
+            return self._api(
+                "POST",
+                f"/api/projects/{pid}/observer-sessions/{sid}/revoke",
+                {"session_token": args["session_token"]},
+            )
+
+        if name == "observer_command_list":
+            pid = args["project_id"]
+            query = {}
+            if args.get("status"):
+                query["status"] = args["status"]
+            if args.get("limit"):
+                query["limit"] = str(_int_arg(args, "limit", 100, minimum=1, maximum=1000))
+            qs = f"?{urllib.parse.urlencode(query)}" if query else ""
+            return self._api("GET", f"/api/projects/{pid}/observer-commands{qs}")
+
+        if name == "observer_command_enqueue":
+            pid = args["project_id"]
+            body = {
+                key: args[key]
+                for key in ("command_type", "payload", "target_session_id", "created_by")
+                if key in args and args[key] is not None
+            }
+            return self._api("POST", f"/api/projects/{pid}/observer-commands", body)
+
+        if name == "observer_command_next":
+            pid = args["project_id"]
+            return self._api(
+                "POST",
+                f"/api/projects/{pid}/observer-commands/next",
+                {"session_id": args["session_id"], "session_token": args["session_token"]},
+            )
+
+        if name == "observer_command_claim":
+            pid = args["project_id"]
+            body = {"session_id": args["session_id"], "session_token": args["session_token"]}
+            if args.get("command_id"):
+                body["command_id"] = args["command_id"]
+            return self._api("POST", f"/api/projects/{pid}/observer-commands/claim", body)
+
+        if name == "observer_command_complete":
+            pid = args["project_id"]
+            cid = urllib.parse.quote(str(args["command_id"]), safe="")
+            body = {"session_id": args["session_id"], "session_token": args["session_token"]}
+            if args.get("result"):
+                body["result"] = args["result"]
+            return self._api("POST", f"/api/projects/{pid}/observer-commands/{cid}/complete", body)
+
+        if name == "observer_command_fail":
+            pid = args["project_id"]
+            cid = urllib.parse.quote(str(args["command_id"]), safe="")
+            body = {"session_id": args["session_id"], "session_token": args["session_token"]}
+            if args.get("error"):
+                body["error"] = args["error"]
+            if args.get("result"):
+                body["result"] = args["result"]
+            return self._api("POST", f"/api/projects/{pid}/observer-commands/{cid}/fail", body)
 
         if name == "task_hold":
             pid = args["project_id"]

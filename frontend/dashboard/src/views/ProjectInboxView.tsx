@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, ApiError } from "../lib/api";
-import type { ProjectInboxItem, ProjectInboxResponse, RawRequirement } from "../types";
+import type { ObserverCommand, ProjectInboxItem, ProjectInboxResponse, RawRequirement } from "../types";
 
 interface Props {
   projectId: string;
@@ -52,6 +52,34 @@ function itemTimestamp(item: ProjectInboxItem): string {
   return new Date(value).toLocaleString();
 }
 
+function commandForRaw(row: RawRequirement, commands: ObserverCommand[]): ObserverCommand | null {
+  return (
+    commands.find(
+      (command) =>
+        command.command_type === "analyze_requirements" &&
+        String(command.payload?.raw_id ?? "") === row.raw_id,
+    ) ?? null
+  );
+}
+
+function commandLabel(command: ObserverCommand | null): string {
+  if (!command) return "Not queued";
+  if (command.status === "queued" || command.status === "notified") return "Queued";
+  if (command.status === "claimed" || command.status === "running") return "Running";
+  if (command.status === "completed") return "Completed";
+  if (command.status === "failed") return "Failed";
+  if (command.status === "cancelled") return "Cancelled";
+  return command.status;
+}
+
+function commandTone(command: ObserverCommand | null): string {
+  if (!command) return "neutral";
+  if (command.status === "completed") return "complete";
+  if (command.status === "failed" || command.status === "cancelled") return "failed";
+  if (command.status === "claimed" || command.status === "running") return "running";
+  return "queued";
+}
+
 export default function ProjectInboxView({ projectId }: Props) {
   const [inbox, setInbox] = useState<ProjectInboxResponse | null>(null);
   const [rawText, setRawText] = useState("");
@@ -75,6 +103,15 @@ export default function ProjectInboxView({ projectId }: Props) {
 
   const rawCount = inbox?.lanes.raw_inbox.count ?? 0;
   const confirmCount = inbox?.lanes.needs_confirmation.count ?? 0;
+  const observerConnected = Boolean(inbox?.observer?.connected);
+  const observerLabel = observerConnected
+    ? `Observer connected (${inbox?.observer?.connected_count ?? 0})`
+    : "Waiting for observer";
+  const commandItems = inbox?.observer_commands?.items ?? [];
+  const runningCommandCount =
+    (inbox?.observer_commands?.counts.claimed ?? 0) + (inbox?.observer_commands?.counts.running ?? 0);
+  const queuedCommandCount =
+    (inbox?.observer_commands?.counts.queued ?? 0) + (inbox?.observer_commands?.counts.notified ?? 0);
   const totalIntent = useMemo(
     () => LANE_ORDER.reduce((sum, lane) => sum + (inbox?.lanes[lane]?.count ?? 0), 0),
     [inbox],
@@ -92,6 +129,26 @@ export default function ProjectInboxView({ projectId }: Props) {
         actor: "dashboard",
       });
       setRawText("");
+      await load();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const analyzeRequirement = async (row: RawRequirement) => {
+    setBusy(true);
+    setError("");
+    try {
+      await api.enqueueObserverCommandFor(projectId, {
+        command_type: "analyze_requirements",
+        payload: {
+          raw_id: row.raw_id,
+          source: "project_inbox",
+        },
+        created_by: "dashboard",
+      });
       await load();
     } catch (err) {
       setError(errorMessage(err));
@@ -151,6 +208,17 @@ export default function ProjectInboxView({ projectId }: Props) {
         </div>
       </section>
 
+      <section className="project-inbox-observer">
+        <span className={`project-inbox-observer-pill ${observerConnected ? "connected" : "waiting"}`}>
+          {observerLabel}
+        </span>
+        <span className="project-inbox-command-count">Queued {queuedCommandCount}</span>
+        <span className="project-inbox-command-count">Running {runningCommandCount}</span>
+        <span className="project-inbox-command-count">
+          Failed {inbox?.observer_commands?.counts.failed ?? 0}
+        </span>
+      </section>
+
       {error ? <div className="notice error">{error}</div> : null}
 
       <div className="project-inbox-lanes">
@@ -166,29 +234,15 @@ export default function ProjectInboxView({ projectId }: Props) {
               {items.length ? (
                 <div className="project-inbox-items">
                   {items.map((item) => (
-                    <article
-                      className={`project-inbox-item ${isRawRequirement(item) ? "raw" : "backlog"}`}
+                    <ProjectInboxCard
                       key={itemKey(item)}
-                    >
-                      <div className="project-inbox-item-text">{itemTitle(item)}</div>
-                      <div className="project-inbox-item-meta">
-                        <span className="mono">{itemMeta(item)}</span>
-                        <span>{itemTimestamp(item)}</span>
-                      </div>
-                      {!isRawRequirement(item) && item.details_preview ? (
-                        <div className="project-inbox-item-preview">{item.details_preview}</div>
-                      ) : null}
-                      {lane === "raw_inbox" && isRawRequirement(item) ? (
-                        <button
-                          type="button"
-                          className="action-btn"
-                          disabled={busy}
-                          onClick={() => moveToConfirmation(item)}
-                        >
-                          Move to confirmation
-                        </button>
-                      ) : null}
-                    </article>
+                      item={item}
+                      lane={lane}
+                      busy={busy}
+                      command={isRawRequirement(item) ? commandForRaw(item, commandItems) : null}
+                      onAnalyze={analyzeRequirement}
+                      onMoveToConfirmation={moveToConfirmation}
+                    />
                   ))}
                 </div>
               ) : (
@@ -205,6 +259,72 @@ export default function ProjectInboxView({ projectId }: Props) {
         })}
       </div>
     </div>
+  );
+}
+
+function ProjectInboxCard({
+  item,
+  lane,
+  busy,
+  command,
+  onAnalyze,
+  onMoveToConfirmation,
+}: {
+  item: ProjectInboxItem;
+  lane: keyof ProjectInboxResponse["lanes"];
+  busy: boolean;
+  command: ObserverCommand | null;
+  onAnalyze: (row: RawRequirement) => void;
+  onMoveToConfirmation: (row: RawRequirement) => void;
+}) {
+  const raw = isRawRequirement(item) ? item : null;
+  const preview = !raw && "details_preview" in item ? item.details_preview : "";
+  const hasActiveCommand =
+    command?.status === "queued" ||
+    command?.status === "notified" ||
+    command?.status === "claimed" ||
+    command?.status === "running";
+  return (
+    <article className={`project-inbox-item ${raw ? "raw" : "backlog"}`}>
+      <div className="project-inbox-item-text">{itemTitle(item)}</div>
+      <div className="project-inbox-item-meta">
+        <span className="mono">{itemMeta(item)}</span>
+        <span>{itemTimestamp(item)}</span>
+      </div>
+      {preview ? (
+        <div className="project-inbox-item-preview">{preview}</div>
+      ) : null}
+      {raw ? (
+        <div className="project-inbox-command-row">
+          <span className={`project-inbox-command-status tone-${commandTone(command)}`}>
+            {commandLabel(command)}
+          </span>
+          {command?.error ? <span className="project-inbox-command-error">{command.error}</span> : null}
+        </div>
+      ) : null}
+      {raw ? (
+        <div className="project-inbox-card-actions">
+          <button
+            type="button"
+            className="action-btn"
+            disabled={busy || hasActiveCommand}
+            onClick={() => onAnalyze(raw)}
+          >
+            {hasActiveCommand ? commandLabel(command) : "AI Analyze"}
+          </button>
+          {lane === "raw_inbox" ? (
+            <button
+              type="button"
+              className="action-btn"
+              disabled={busy}
+              onClick={() => onMoveToConfirmation(raw)}
+            >
+              Move to confirmation
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </article>
   );
 }
 

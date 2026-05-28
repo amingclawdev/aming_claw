@@ -49,6 +49,64 @@ export interface RawRequirement {
   updated_at: string;
 }
 
+export type ObserverCommandStatus =
+  | "queued"
+  | "notified"
+  | "claimed"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | string;
+
+export interface ObserverSessionRecord {
+  session_id: string;
+  project_id: string;
+  observer_kind?: string;
+  session_label?: string;
+  pid?: number;
+  cwd?: string;
+  capabilities?: Record<string, unknown>;
+  status: string;
+  computed_status?: "active" | "idle" | "stale" | "closed" | "revoked" | string;
+  registered_at: string;
+  last_seen_at: string;
+  closed_at?: string;
+  revoked_at?: string;
+}
+
+export interface ObserverConnectionSummary {
+  connected: boolean;
+  connected_count: number;
+  active_count: number;
+  stale_count: number;
+  sessions: ObserverSessionRecord[];
+  heartbeat_interval_sec: number;
+}
+
+export interface ObserverCommand {
+  command_id: string;
+  project_id: string;
+  command_type: string;
+  payload?: Record<string, unknown>;
+  status: ObserverCommandStatus;
+  target_session_id?: string;
+  claimed_by_session_id?: string;
+  created_by?: string;
+  created_at: string;
+  notified_at?: string;
+  claimed_at?: string;
+  completed_at?: string;
+  result?: Record<string, unknown>;
+  error?: string;
+}
+
+export interface ObserverCommandSummary {
+  count: number;
+  counts: Record<string, number>;
+  items: ObserverCommand[];
+}
+
 export type ProjectInboxItem = RawRequirement | (BacklogBug & { kind: "backlog" });
 
 export interface ProjectInboxLane {
@@ -61,6 +119,8 @@ export interface ProjectInboxResponse {
   ok: boolean;
   project_id: string;
   homepage_view: "project_inbox" | string;
+  observer?: ObserverConnectionSummary;
+  observer_commands?: ObserverCommandSummary;
   lanes: {
     raw_inbox: ProjectInboxLane;
     needs_confirmation: ProjectInboxLane;

@@ -113,6 +113,16 @@ def test_active_mcp_exposes_backlog_and_graph_governance_tools():
         "governance_redeploy",
         "executor_respawn",
         "runtime_status",
+        "observer_session_register",
+        "observer_session_heartbeat",
+        "observer_session_close",
+        "observer_session_revoke",
+        "observer_command_list",
+        "observer_command_enqueue",
+        "observer_command_next",
+        "observer_command_claim",
+        "observer_command_complete",
+        "observer_command_fail",
     }.issubset(names)
 
 
@@ -276,6 +286,164 @@ def test_mcp_timeline_tools_route_to_governance_api():
             "GET",
             "/api/backlog/aming-claw/BUG-1/timeline-gate?include_events=true&limit=25",
             None,
+        ),
+    ]
+
+
+def test_mcp_observer_command_tools_route_to_governance_api():
+    recorder = _Recorder()
+    dispatcher = _dispatcher(recorder)
+
+    dispatcher.dispatch(
+        "observer_session_register",
+        {
+            "project_id": "aming-claw",
+            "observer_kind": "codex",
+            "session_label": "local",
+            "pid": 123,
+            "cwd": "/repo",
+            "capabilities": {"actions": ["*"], "command_types": ["*"]},
+        },
+    )
+    dispatcher.dispatch(
+        "observer_session_heartbeat",
+        {
+            "project_id": "aming-claw",
+            "session_id": "obs-1",
+            "session_token": "tok",
+        },
+    )
+    dispatcher.dispatch(
+        "observer_command_enqueue",
+        {
+            "project_id": "aming-claw",
+            "command_type": "analyze_requirements",
+            "payload": {"raw_id": "raw-1"},
+            "created_by": "dashboard",
+        },
+    )
+    dispatcher.dispatch(
+        "observer_command_list",
+        {
+            "project_id": "aming-claw",
+            "status": "queued,claimed",
+            "limit": 2000,
+        },
+    )
+    dispatcher.dispatch(
+        "observer_command_next",
+        {
+            "project_id": "aming-claw",
+            "session_id": "obs-1",
+            "session_token": "tok",
+        },
+    )
+    dispatcher.dispatch(
+        "observer_command_claim",
+        {
+            "project_id": "aming-claw",
+            "session_id": "obs-1",
+            "session_token": "tok",
+            "command_id": "cmd-1",
+        },
+    )
+    dispatcher.dispatch(
+        "observer_command_complete",
+        {
+            "project_id": "aming-claw",
+            "session_id": "obs-1",
+            "session_token": "tok",
+            "command_id": "cmd-1",
+            "result": {"ok": True},
+        },
+    )
+    dispatcher.dispatch(
+        "observer_command_fail",
+        {
+            "project_id": "aming-claw",
+            "session_id": "obs-1",
+            "session_token": "tok",
+            "command_id": "cmd-2",
+            "error": "blocked",
+        },
+    )
+    dispatcher.dispatch(
+        "observer_session_close",
+        {
+            "project_id": "aming-claw",
+            "session_id": "obs-1",
+            "session_token": "tok",
+        },
+    )
+    dispatcher.dispatch(
+        "observer_session_revoke",
+        {
+            "project_id": "aming-claw",
+            "session_id": "obs-1",
+            "session_token": "tok",
+        },
+    )
+
+    assert recorder.calls == [
+        (
+            "POST",
+            "/api/projects/aming-claw/observer-sessions/register",
+            {
+                "observer_kind": "codex",
+                "session_label": "local",
+                "pid": 123,
+                "cwd": "/repo",
+                "capabilities": {"actions": ["*"], "command_types": ["*"]},
+            },
+        ),
+        (
+            "POST",
+            "/api/projects/aming-claw/observer-sessions/obs-1/heartbeat",
+            {"session_token": "tok"},
+        ),
+        (
+            "POST",
+            "/api/projects/aming-claw/observer-commands",
+            {
+                "command_type": "analyze_requirements",
+                "payload": {"raw_id": "raw-1"},
+                "created_by": "dashboard",
+            },
+        ),
+        (
+            "GET",
+            "/api/projects/aming-claw/observer-commands?status=queued%2Cclaimed&limit=1000",
+            None,
+        ),
+        (
+            "POST",
+            "/api/projects/aming-claw/observer-commands/next",
+            {"session_id": "obs-1", "session_token": "tok"},
+        ),
+        (
+            "POST",
+            "/api/projects/aming-claw/observer-commands/claim",
+            {"session_id": "obs-1", "session_token": "tok", "command_id": "cmd-1"},
+        ),
+        (
+            "POST",
+            "/api/projects/aming-claw/observer-commands/cmd-1/complete",
+            {"session_id": "obs-1", "session_token": "tok", "result": {"ok": True}},
+        ),
+        (
+            "POST",
+            "/api/projects/aming-claw/observer-commands/cmd-2/fail",
+            {"session_id": "obs-1", "session_token": "tok", "error": "blocked"},
+        ),
+        (
+            "POST",
+            "/api/projects/aming-claw/observer-sessions/obs-1/close",
+            {"session_token": "tok"},
+        ),
+        (
+            "POST",
+            "/api/projects/aming-claw/observer-sessions/obs-1/revoke",
+            {"session_token": "tok"},
         ),
     ]
 
