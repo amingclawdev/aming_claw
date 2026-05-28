@@ -39,8 +39,9 @@ import GraphView from "./views/GraphView";
 import BacklogView from "./views/BacklogView";
 import AssetInboxView from "./views/AssetInboxView";
 import ProjectConsoleView from "./views/ProjectConsoleView";
+import ProjectInboxView from "./views/ProjectInboxView";
 
-export type ViewName = "projects" | "overview" | "graph" | "operations" | "review" | "assets" | "backlog";
+export type ViewName = "projects" | "inbox" | "overview" | "graph" | "operations" | "review" | "assets" | "backlog";
 
 const DASHBOARD_PROJECT_STORAGE_KEY = "aming-claw.dashboard.projectId";
 const DASHBOARD_SIDEBAR_COLLAPSED_STORAGE_KEY = "aming-claw.dashboard.sidebarCollapsed";
@@ -48,7 +49,7 @@ const DASHBOARD_PROJECT_ID_PARAM = "project_id";
 const DASHBOARD_LEGACY_PROJECT_PARAM = "project";
 const DASHBOARD_VIEW_PARAM = "view";
 const DASHBOARD_WORKSPACE_PARAM = "workspace";
-const DASHBOARD_VIEWS: readonly ViewName[] = ["projects", "overview", "graph", "operations", "review", "assets", "backlog"];
+const DASHBOARD_VIEWS: readonly ViewName[] = ["projects", "inbox", "overview", "graph", "operations", "review", "assets", "backlog"];
 
 function normalizeProjectId(value: string | null | undefined): string {
   return (value ?? "").trim() || DEFAULT_PROJECT_ID;
@@ -75,9 +76,10 @@ function readDashboardLocation(): { projectId: string; view: ViewName; hasProjec
   const projectIdParam = params.get(DASHBOARD_PROJECT_ID_PARAM);
   const legacyProjectParam = params.get(DASHBOARD_LEGACY_PROJECT_PARAM);
   const projectParam = projectIdParam?.trim() ? projectIdParam : legacyProjectParam;
+  const viewParam = params.get(DASHBOARD_VIEW_PARAM);
   return {
     projectId: normalizeProjectId(projectParam || readStoredProjectId()),
-    view: normalizeViewName(params.get(DASHBOARD_VIEW_PARAM)),
+    view: viewParam ? normalizeViewName(viewParam) : (projectParam ? "inbox" : "projects"),
     hasProjectParam: Boolean(projectParam && projectParam.trim()),
     workspacePath: (params.get(DASHBOARD_WORKSPACE_PARAM) || "").trim(),
   };
@@ -327,6 +329,11 @@ export default function App() {
         setAiConfig(null);
         return;
       }
+      if (view === "inbox") {
+        setData(null);
+        setAiConfig(null);
+        return;
+      }
       const [status, summary, projection, backlog, aiCfg] = await Promise.all([
         api.statusFor(requestProjectId, signal),
         api.activeSummaryFor(requestProjectId, signal),
@@ -400,7 +407,7 @@ export default function App() {
         setError(null);
         return;
       }
-      if (shouldFallbackToProjects(e) && view !== "projects") {
+      if (shouldFallbackToProjects(e) && view !== "projects" && view !== "inbox") {
         setData(null);
         setAiConfig(null);
         setView("projects");
@@ -963,9 +970,9 @@ export default function App() {
       const next = nextProjectId.trim() || DEFAULT_PROJECT_ID;
       setApiProjectId(next);
       writeStoredProjectId(next);
-      writeDashboardLocation(next, "overview", "push");
+      writeDashboardLocation(next, "inbox", "push");
       setCurrentProjectId(next);
-      setView("overview");
+      setView("inbox");
       resetProjectScopedUi();
     },
     [resetProjectScopedUi],
@@ -1157,7 +1164,7 @@ export default function App() {
           onToggleCollapsed={() => setSidebarCollapsed((prev) => !prev)}
         />
         <main className="main scrollbar-thin">
-          {error && !data && view !== "projects" ? (
+          {error && !data && view !== "projects" && view !== "inbox" ? (
             <div className="view">
               <div className="empty">
                 Load failed. Check the governance service is reachable at{" "}
@@ -1176,6 +1183,9 @@ export default function App() {
               onOpenAiConfig={() => setAiConfigOpen(true)}
               onRefresh={handleRefresh}
             />
+          ) : null}
+          {view === "inbox" ? (
+            <ProjectInboxView projectId={currentProjectId} />
           ) : null}
           {view === "overview" && data ? (
             <OverviewView data={data} onSelectNode={handleSelectNode} />
@@ -1279,7 +1289,7 @@ export default function App() {
               projectId={currentProjectId}
             />
           ) : null}
-          {!data && !error && view !== "projects" ? (
+          {!data && !error && view !== "projects" && view !== "inbox" ? (
             <div className="view">
               <div className="empty">
                 <span className="spinner" /> Loading governance snapshot…

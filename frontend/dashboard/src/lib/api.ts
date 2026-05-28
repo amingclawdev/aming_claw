@@ -18,7 +18,9 @@ import type {
   HealthResponse,
   NodesResponse,
   OperationsQueueResponse,
+  ProjectInboxResponse,
   ProjectionResponse,
+  RawRequirement,
   StatusResponse,
   TaskTimelineResponse,
   UnbindFileHintResponse,
@@ -184,6 +186,38 @@ export const api = {
   },
   selectGitRefFor(projectId: string, payload: ProjectGitRefSelectPayload, signal?: AbortSignal) {
     return postJSON<ProjectGitRefsResponse>(`/api/projects/${pidFor(projectId)}/git-ref`, payload, signal);
+  },
+  projectInboxFor(projectId: string, signal?: AbortSignal) {
+    return getJSON<ProjectInboxResponse>(`/api/projects/${pidFor(projectId)}/project-inbox`, signal);
+  },
+  captureRawRequirementFor(
+    projectId: string,
+    payload: {
+      raw_text: string;
+      source?: string;
+      session_id?: string;
+      actor?: string;
+      metadata?: Record<string, unknown>;
+    },
+    signal?: AbortSignal,
+  ) {
+    return postJSON<{ ok: boolean; project_id: string; raw_requirement: RawRequirement; created_backlog: false }>(
+      `/api/projects/${pidFor(projectId)}/raw-requirements`,
+      payload,
+      signal,
+    );
+  },
+  updateRawRequirementStatusFor(
+    projectId: string,
+    rawId: string,
+    payload: { status: string; note?: string; promoted_bug_id?: string; bug_id?: string },
+    signal?: AbortSignal,
+  ) {
+    return postJSON<{ ok: boolean; project_id: string; raw_requirement: RawRequirement }>(
+      `/api/projects/${pidFor(projectId)}/raw-requirements/${encodeURIComponent(rawId)}/status`,
+      payload,
+      signal,
+    );
   },
   status(signal?: AbortSignal) {
     return getJSON<StatusResponse>(`/api/graph-governance/${pid()}/status`, signal);

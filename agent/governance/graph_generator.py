@@ -27,21 +27,28 @@ log = logging.getLogger(__name__)
 MAX_NODES = 50
 
 # File classification patterns
-_CONFIG_EXTENSIONS = {".yaml", ".yml", ".json", ".toml", ".ini", ".cfg", ".env"}
+_CONFIG_EXTENSIONS = {".yaml", ".yml", ".json", ".toml", ".ini", ".cfg", ".env", ".gemspec"}
 _CONFIG_NAMES = {
     "pyproject.toml", "package.json", "Cargo.toml", "go.mod",
     "Makefile", "Dockerfile", ".dockerignore", ".gitignore",
     ".github", ".aming-claw.yaml", ".aming-claw.json",
+    # Ruby manifests: Gemfile/Rakefile/config.ru are DSL files but classify
+    # as config so they map to L0 rather than appearing as production source.
+    "Gemfile", "Rakefile", "config.ru", "Gemfile.lock",
 }
 _CI_DIRS = {".github", ".circleci", ".gitlab-ci"}
 
 _TEST_PATTERNS_PY = ("test_", "_test.py")
 _TEST_PATTERNS_GO = ("_test.go",)
 _TEST_PATTERNS_TS = (".test.ts", ".test.tsx", ".test.js", ".test.jsx", ".spec.ts", ".spec.js")
+_TEST_PATTERNS_RB = ("_spec.rb", "_test.rb")
 
 _ENTRYPOINT_NAMES = {
     "__main__.py", "main.py", "app.py", "server.py", "cli.py",
     "index.ts", "index.js", "main.go", "main.rs",
+    # Ruby/Sinatra entrypoints — ``config.ru`` is the Rack rackup file,
+    # ``app.rb`` is the conventional Sinatra app entrypoint.
+    "config.ru", "app.rb",
 }
 
 _CORE_DIR_NAMES = {"core", "shared", "common", "lib", "utils", "pkg", "internal"}
@@ -82,7 +89,7 @@ def _is_test_file(filename: str) -> bool:
     lower = filename.lower()
     if lower.startswith("test_") and lower.endswith(".py"):
         return True
-    for pat in _TEST_PATTERNS_GO + _TEST_PATTERNS_TS:
+    for pat in _TEST_PATTERNS_GO + _TEST_PATTERNS_TS + _TEST_PATTERNS_RB:
         if lower.endswith(pat):
             return True
     if lower.endswith("_test.py"):
@@ -126,7 +133,7 @@ def _is_core_module(filepath: str) -> bool:
 def detect_language(workspace_path: str) -> str:
     """Detect primary language from project marker files.
 
-    Returns: 'python' | 'javascript' | 'typescript' | 'rust' | 'go' | 'unknown'
+    Returns: 'python' | 'javascript' | 'typescript' | 'rust' | 'go' | 'ruby' | 'unknown'
     """
     ws = Path(workspace_path)
 
@@ -140,6 +147,8 @@ def detect_language(workspace_path: str) -> str:
         return "typescript"
     if (ws / "package.json").exists():
         return "javascript"
+    if (ws / "Gemfile").exists() or any(ws.glob("*.gemspec")):
+        return "ruby"
     return "unknown"
 
 
@@ -188,8 +197,9 @@ def scan_codebase(
                 _, ext = os.path.splitext(name)
                 # Only include source-like files
                 if ext not in {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs",
+                               ".rb", ".rake",
                                ".yaml", ".yml", ".json", ".toml", ".ini", ".cfg",
-                               ".md", ".sh"}:
+                               ".md", ".sh"} and name not in {"Gemfile", "Rakefile", "config.ru"}:
                     continue
 
                 if _is_test_file(name):

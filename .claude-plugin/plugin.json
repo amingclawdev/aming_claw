@@ -1,7 +1,7 @@
 {
   "name": "aming-claw",
   "version": "0.1.1",
-  "description": "Graph-first governance workflow guard for Aming Claw. Bundles the core governance skill, launcher skill, HN challenge/demo skills, everyday AI coding demo skills, and the project MCP server (.mcp.json) so Claude Code sessions start with backlog/MF discipline, core runtime checks, and dashboard governance context.",
+  "description": "Graph-first governance workflow guard for Aming Claw. Bundles the core governance skill, launcher skill, Project Inbox capture skill, HN challenge/demo skills, everyday AI coding demo skills, and the project MCP server (.mcp.json) so Claude Code sessions start with backlog/MF discipline, core runtime checks, and dashboard governance context.",
   "author": {
     "name": "Aming Claw"
   },

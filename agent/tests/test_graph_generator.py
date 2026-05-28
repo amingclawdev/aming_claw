@@ -88,6 +88,16 @@ class TestDetectLanguage:
         (tmp_path / "go.mod").write_text("module example.com/test\n")
         assert detect_language(str(tmp_path)) == "go"
 
+    def test_ruby_gemfile(self, tmp_path):
+        (tmp_path / "Gemfile").write_text("source 'https://rubygems.org'\n")
+        assert detect_language(str(tmp_path)) == "ruby"
+
+    def test_ruby_gemspec(self, tmp_path):
+        (tmp_path / "demo.gemspec").write_text(
+            "Gem::Specification.new do |s|\n  s.name = 'demo'\nend\n"
+        )
+        assert detect_language(str(tmp_path)) == "ruby"
+
     def test_unknown_empty_dir(self, tmp_path):
         assert detect_language(str(tmp_path)) == "unknown"
 
@@ -216,5 +226,12 @@ class TestIsTestFile:
     def test_go_test(self):
         assert _is_test_file("foo_test.go") is True
 
+    def test_ruby_spec(self):
+        assert _is_test_file("foo_spec.rb") is True
+
+    def test_ruby_test_suffix(self):
+        assert _is_test_file("foo_test.rb") is True
+
     def test_not_test(self):
         assert _is_test_file("foo.py") is False
+        assert _is_test_file("foo.rb") is False

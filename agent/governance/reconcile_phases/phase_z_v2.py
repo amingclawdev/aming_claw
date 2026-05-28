@@ -24,6 +24,7 @@ from agent.governance.language_adapters import (
     JavaScriptTypescriptAdapter,
     LanguageAdapter,
     PythonAdapter,
+    RubyAdapter,
 )
 from agent.governance.asset_binding_proposals import (
     doc_binding_candidates,
@@ -42,9 +43,13 @@ DEFAULT_PROD_DIRS: Tuple[str, ...] = ("agent", "scripts")
 _GRAPH_LANGUAGE_ADAPTERS: Tuple[LanguageAdapter, ...] = (
     PythonAdapter(),
     JavaScriptTypescriptAdapter(),
+    RubyAdapter(),
 )
 _FILETREE_ADAPTER = FileTreeAdapter()
-_IMPORT_RESOLUTION_SUFFIXES: Tuple[str, ...] = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
+_IMPORT_RESOLUTION_SUFFIXES: Tuple[str, ...] = (
+    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+    ".rb", ".rake",
+)
 
 
 # ---------------------------------------------------------------------------

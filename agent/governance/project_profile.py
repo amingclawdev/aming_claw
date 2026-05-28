@@ -120,7 +120,7 @@ def _discover_languages(root: Path, manifests: Iterable[str]) -> List[str]:
     }
     for path in _iter_files(root):
         language = DEFAULT_LANGUAGE_POLICY.language_for_path(str(path))
-        if language in {"python", "javascript", "typescript", "go", "rust", "cpp"}:
+        if language in {"python", "javascript", "typescript", "go", "rust", "cpp", "ruby"}:
             langs.add(language)
     return sorted(langs)
 

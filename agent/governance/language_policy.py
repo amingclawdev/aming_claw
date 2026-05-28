@@ -25,10 +25,13 @@ class LanguagePolicy:
         ".ts", ".tsx",
         ".go", ".rs",
         ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp",
+        # Ruby: .rb is the canonical source extension; .rake is used for
+        # Rake task files that ship inside lib/ or tasks/ alongside .rb.
+        ".rb", ".rake",
     })
     python_extensions: frozenset[str] = frozenset({".py", ".pyi"})
     declaration_suffixes: tuple[str, ...] = (".d.ts", ".d.mts", ".d.cts")
-    test_dir_names: frozenset[str] = frozenset({"test", "tests", "__tests__"})
+    test_dir_names: frozenset[str] = frozenset({"test", "tests", "__tests__", "spec"})
     doc_dir_names: frozenset[str] = frozenset({"doc", "docs", "documentation"})
     exclude_roots: frozenset[str] = frozenset({
         "__pycache__", ".git", "node_modules", ".venv", "venv", ".tox",
@@ -47,6 +50,11 @@ class LanguagePolicy:
         "go.mod": "go",
         "CMakeLists.txt": "cpp",
         "compile_commands.json": "cpp",
+        # Ruby manifests & Sinatra/Rack entry. *.gemspec is handled by
+        # ``manifest_language`` below via suffix check.
+        "Gemfile": "ruby",
+        "Rakefile": "ruby",
+        "config.ru": "ruby",
     })
     extension_languages: dict[str, str] = field(default_factory=lambda: {
         ".py": "python",
@@ -59,6 +67,9 @@ class LanguagePolicy:
         ".tsx": "typescript",
         ".go": "go",
         ".rs": "rust",
+        ".rb": "ruby",
+        ".rake": "ruby",
+        ".gemspec": "ruby",
         ".c": "cpp",
         ".cc": "cpp",
         ".cpp": "cpp",
@@ -92,8 +103,17 @@ class LanguagePolicy:
         "pyproject.toml", "requirements.txt", "package.json", "tsconfig.json",
         "Cargo.toml", "go.mod", "CMakeLists.txt", "compile_commands.json",
         ".gitignore", ".mcp.json", "VERSION", "pipeline_config.yaml.example",
+        # Ruby project manifests / Rack entry. These are Ruby DSL files but
+        # behave like config: they pin dependencies and declare tasks rather
+        # than expose graph-bearing modules.
+        "Gemfile", "Rakefile", "config.ru",
     })
-    config_extensions: frozenset[str] = frozenset({".json", ".yaml", ".yml", ".toml", ".ini", ".cfg"})
+    config_extensions: frozenset[str] = frozenset({
+        ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg",
+        # ``foo.gemspec`` is a Ruby DSL manifest; treat the suffix like other
+        # config extensions so production-source filtering excludes it.
+        ".gemspec",
+    })
     script_extensions: frozenset[str] = frozenset({".sh", ".bash", ".ps1", ".bat", ".cmd"})
     doc_extensions: frozenset[str] = frozenset({".md", ".rst", ".txt", ".adoc"})
     index_doc_filenames: frozenset[str] = frozenset({
@@ -101,7 +121,7 @@ class LanguagePolicy:
     })
     generated_filenames: frozenset[str] = frozenset({
         "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock",
-        "Cargo.lock", ".coverage", "governance.db",
+        "Cargo.lock", "Gemfile.lock", ".coverage", "governance.db",
     })
     generated_extensions: frozenset[str] = frozenset({".log", ".db", ".sqlite", ".sqlite3", ".pyc"})
     generated_dir_markers: frozenset[str] = frozenset({"generated", "__generated__", "gen"})
@@ -155,7 +175,7 @@ class LanguagePolicy:
         name = parts[-1] if parts else ""
         if set(parts) & set(self.test_dir_names):
             return True
-        if name.startswith("test_") or name.endswith("_test.py"):
+        if name.startswith("test_") or name.endswith(("_test.py", "_test.rb", "_spec.rb")):
             return True
         if ".test." in name or ".spec." in name:
             return True
@@ -200,7 +220,14 @@ class LanguagePolicy:
         )
 
     def manifest_language(self, rel_path: str) -> str:
-        return self.manifest_language_hints.get(Path(str(rel_path or "")).name, "")
+        name = Path(str(rel_path or "")).name
+        direct = self.manifest_language_hints.get(name, "")
+        if direct:
+            return direct
+        # ``foo.gemspec`` is a Ruby manifest with a dynamic stem — match by suffix.
+        if name.lower().endswith(".gemspec"):
+            return "ruby"
+        return ""
 
     def language_for_path(self, rel_path: str, kind: str = "") -> str:
         if self.is_declaration_path(rel_path):
