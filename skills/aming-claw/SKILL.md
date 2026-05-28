@@ -48,6 +48,16 @@ subagents as bounded `mf_sub` workers when parallel help is needed. Governance
 chain/executor dev/test/qa/merge automation is advanced and experimental in V1,
 not the V1 default implementation entrypoint; use it only when the user
 explicitly asks to test chain automation.
+For governed nontrivial implementation work, the observer/judge is a
+coordinator, not an implementation author: it does not directly write
+implementation code. When Judgment Brain is available, run the protocol
+registry preflight `protocol_list` and topology precheck
+`judgment_plan_precheck` before implementation planning. Nontrivial
+implementation must be dispatched to bounded `mf_sub`/worker lanes with target
+files, tests or a recorded no-test/E2E decision, branch/worktree and fence
+evidence, and review evidence. The only direct observer mutation exception is
+tiny deterministic scope with an explicit reason, allowed files, exact
+dirty-scope match evidence, and a timeline event before mutation.
 For new features or user-visible behavior changes, treat E2E impact as part of the work ledger: run/update the relevant suite and evidence, or file an explicit follow-up backlog row when the E2E is deferred.
 For dashboard/graph E2E work, update repo-owned fixture artifacts first and materialize them into isolated temporary projects; do not hand-edit generated example projects as the source of truth.
 

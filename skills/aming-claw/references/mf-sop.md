@@ -12,6 +12,17 @@ Canonical source: `docs/governance/manual-fix-sop.md`. This file is only the sho
    dev/test/qa/merge execution is not the V1 default route; reserve it for
    explicit user requests to test chain automation or for documented
    experiments.
+   - Observer/judge is a no-direct-code coordinator for governed nontrivial
+     implementation work; it does not directly write implementation code.
+   - When Judgment Brain is available, run `protocol_list` as the protocol
+     registry preflight and `judgment_plan_precheck` as the topology precheck
+     before implementation planning.
+   - Dispatch nontrivial implementation to bounded `mf_sub`/worker lanes with
+     target files, tests or a recorded no-test/E2E decision, worktree/fence
+     evidence, and review evidence.
+   - The only direct observer mutation exception is tiny deterministic scope:
+     record the explicit reason, allowed files, exact dirty-scope match
+     evidence, and timeline event before mutation.
 2. Ensure a backlog row exists with target files, acceptance criteria, and details.
 3. Predeclare/start the MF row with an MF id.
    - In MVP, API/storage may show `mf_type=chain_rescue` for observer-hotfix or

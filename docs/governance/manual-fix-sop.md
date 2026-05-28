@@ -206,6 +206,7 @@ These rules are **not guidelines**. Violation constitutes a governance breach:
 | R18 | Observer MF timeline gate | Every observer/manual-fix backlog close | MUST append task timeline rows for `event_kind=implementation`, `event_kind=verification`, and `event_kind=close_ready` against the same `backlog_id` before calling backlog close. Governance enforces this in `handle_backlog_close`; missing rows return `mf_timeline_gate_failed`. Emergency bypass requires `bypass_timeline_gate=true` plus a non-empty `timeline_bypass_reason`, and the bypass is itself written to the task timeline. |
 | R19 | Instantiated contract gate | Parallel MF work, subagent work, dashboard/API/user-visible behavior, or any task with explicit evidence requirements | Observer MUST instantiate a source-controlled contract template such as `agent/governance/contract_templates/mf_parallel.v1.json` into `chain_trigger_json.parallel_contract` before delegation. Required evidence items MUST have stable `id` values. For `mf_sub` workers, the instance MUST include task metadata `task_id`, `parent_task_id`, `worker_role=mf_sub`, and `fence_token`; graph lookups MUST use audited `query_source=mf_subagent` with the same identity context, and timeline evidence MUST record returned graph trace ids through `payload.graph_trace_ids`, `payload.graph_query_trace_ids`, `verification.graph_trace_ids`, `verification.graph_query_trace_ids`, or `verification.contract_evidence[].graph_trace_ids`. Timeline evidence MUST reference requirement ids through `payload.requirement_id(s)`, `verification.requirement_id(s)`, or `verification.contract_evidence[].requirement_id`. `handle_backlog_close` blocks MF close until every required contract evidence id is present with a passing status. |
 | R20 | Asset binding/drift two-line model | Any doc/test/config bind, unbind, asset impact, or drift claim | Binding truth and drift observation MUST stay on separate audit lines. Binding relationship changes are source-controlled append-only commands, normally governance-hint bind/unbind events, then reconcile materializes graph secondary/test/config, file inventory effective state, asset projection, and binding events. File/hash/drift/impact state is observed DB evidence written by reconcile, gate, or workflow worker from git diff plus accepted bindings. Changed bound assets covered by contract/gate may be recorded as `not_drifted` with gate evidence; unchanged bound assets impacted by related source/config changes MUST become `suspected`/`impact_pending` until observer, user, or AI-assisted review resolves them. Do not directly hand-write trusted accepted binding rows into DB as a substitute for source-controlled binding evidence. |
+| R21 | Observer/judge no-direct-code topology gate | Governed nontrivial implementation work | Observer/judge MUST NOT directly write implementation code. When Judgment Brain is available, observer MUST run `protocol_list` as the protocol registry preflight and `judgment_plan_precheck` as the topology precheck before implementation planning. Nontrivial implementation MUST be dispatched to bounded `mf_sub`/worker lanes with target files, tests or a recorded no-test/E2E decision, worktree/fence evidence, and review evidence. The only direct observer mutation exception is tiny deterministic scope with an explicit reason, allowed files, exact dirty-scope match evidence, and observer timeline event before mutation. |
 
 #### R19.1 Local `mf_sub` Dispatch Gate
 
@@ -280,6 +281,25 @@ without mutating the live repo. E2E remains `e2e_not_applicable` while the
 change stays in local Python service/runtime modules, contract template,
 fixture tests, and SOP docs. If server, dashboard, MCP API, or operator runtime
 behavior is needed, the worker must stop with `needs_revision`.
+
+#### R21.1 Observer/Judge No-Direct-Code and Tiny Deterministic Exception
+
+For governed nontrivial implementation work, the observer/judge is the
+coordinator for requirements, topology, dispatch, and review. It does not
+directly write implementation code.
+
+When Judgment Brain is available, the observer must run `protocol_list` before
+implementation planning to confirm the registered protocol surface, then run
+`judgment_plan_precheck` to decide the approved topology. Nontrivial
+implementation is delegated to bounded `mf_sub`/worker lanes with target
+files, required tests or a recorded no-test/E2E decision, isolated
+worktree/fence evidence, and review evidence.
+
+The only direct observer mutation exception is a tiny deterministic change.
+Before mutation, the observer must record the explicit reason, the allowed
+files, exact dirty-scope match evidence, and a timeline event. If the scope is
+not deterministic or the dirty scope does not exactly match the allowed files,
+dispatch a bounded worker lane instead.
 
 ---
 
