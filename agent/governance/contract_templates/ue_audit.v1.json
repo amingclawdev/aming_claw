@@ -1,0 +1,110 @@
+{
+  "schema_version": "contract_template.v1",
+  "template_id": "ue_audit.v1",
+  "version": "v1",
+  "description": "Fixed V1 user-experience audit contract for user-facing product flows.",
+  "task_types": [
+    "ue_audit",
+    "design_review",
+    "frontend",
+    "manual_fix"
+  ],
+  "stages": [
+    "prd_design_review",
+    "pre_frontend_implementation",
+    "post_implementation_screenshot_smoke",
+    "pre_close_gate"
+  ],
+  "source": {
+    "type": "source_controlled",
+    "path": "agent/governance/contract_templates/ue_audit.v1.json"
+  },
+  "expert_profile": {
+    "source_id": "aming_claw.bundled_ue_expert.v1",
+    "source_type": "bundled_governance_template",
+    "source_record": "agent.governance.ue_audit_contract:BUNDLED_UE_EXPERT_PROFILE",
+    "profile_name": "Bundled UE Audit Expert",
+    "primary_archetype": "ordinary_vibe_coding_builder.v1"
+  },
+  "required_inputs": [
+    "target_user_type",
+    "skill_level",
+    "jtbd",
+    "product_surface",
+    "flow_scenario",
+    "task_stage",
+    "artifact_refs",
+    "constraints",
+    "non_goals",
+    "success_criteria"
+  ],
+  "built_in_archetypes": [
+    {
+      "id": "ordinary_vibe_coding_builder.v1",
+      "target_user_type": "non_technical_vibe_coding_builder",
+      "skill_level": "ordinary_user",
+      "primary_need": "seeing their requests and request states",
+      "description": "A non-technical builder who describes desired behavior in plain language and needs clear visibility into captured requests, AI interpretation, progress state, failures, and completion evidence."
+    }
+  ],
+  "audit_dimensions": [
+    "hierarchy",
+    "object_visibility",
+    "status_visibility",
+    "next_action_clarity",
+    "terminology",
+    "error_empty_loading",
+    "feedback_progress",
+    "accessibility_basics",
+    "mobile_desktop",
+    "developer_jargon_leakage"
+  ],
+  "required_output": {
+    "gate_decisions": [
+      "pass",
+      "pass_with_followups",
+      "block"
+    ],
+    "severity_values": [
+      "info",
+      "minor",
+      "major",
+      "critical"
+    ],
+    "finding_fields": [
+      "severity",
+      "screen_flow",
+      "user_impact",
+      "evidence_refs",
+      "recommendation",
+      "acceptance_impact"
+    ]
+  },
+  "flow_hooks": [
+    {
+      "stage": "prd_design_review",
+      "required": false,
+      "purpose": "Check user type, JTBD, terminology, object model, and success criteria before design is treated as implementation-ready."
+    },
+    {
+      "stage": "pre_frontend_implementation",
+      "required": true,
+      "purpose": "Gate user-facing frontend work before code generation or implementation begins."
+    },
+    {
+      "stage": "post_implementation_screenshot_smoke",
+      "required": true,
+      "purpose": "Review screenshots or equivalent artifacts for hierarchy, visibility, states, and action clarity."
+    },
+    {
+      "stage": "pre_close_gate",
+      "required": true,
+      "purpose": "Prevent close when a user-facing flow has blocking UE findings."
+    }
+  ],
+  "non_goals": [
+    "do_not_replace_product_owner_judgment",
+    "do_not_auto_approve_ui_changes_from_ai_only",
+    "do_not_block_non_user_facing_backend_by_default"
+  ]
+}

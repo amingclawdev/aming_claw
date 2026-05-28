@@ -741,6 +741,53 @@ TOOLS: list[dict] = [
             "required": ["project_id"],
         },
     },
+    # --- Contract Templates ---
+    {
+        "name": "contract_template_list",
+        "description": "List source-controlled contract templates, optionally filtered by task type or stage.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_type": {"type": "string"},
+                "stage": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "contract_template_get",
+        "description": "Get one source-controlled contract template by exact versioned template id.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "template_id": {"type": "string"},
+            },
+            "required": ["template_id"],
+        },
+    },
+    {
+        "name": "contract_template_resolve",
+        "description": "Resolve a source-controlled contract template by template id and optional task type, stage, or version.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "template_id": {"type": "string"},
+                "task_type": {"type": "string"},
+                "stage": {"type": "string"},
+                "version": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "ue_audit_validate",
+        "description": "Validate UE audit inputs and machine-readable audit output against ue_audit.v1.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "payload": {"type": "object"},
+            },
+            "required": ["payload"],
+        },
+    },
     # --- System ---
     {
         "name": "health",
@@ -1242,6 +1289,46 @@ class ToolDispatcher:
             if not version.get("runtime_match"):
                 status["recommended_actions"].append("advanced_chain_ops_redeploy_or_restart")
             return status
+
+        # --- Contract Templates ---
+        if name in {"contract_template_list", "contract_template_get", "contract_template_resolve"}:
+            from agent.governance.contract_template_registry import (
+                ContractTemplateError,
+                get_contract_template,
+                list_contract_templates,
+                resolve_contract_template,
+            )
+
+            try:
+                if name == "contract_template_list":
+                    return {
+                        "ok": True,
+                        "templates": list_contract_templates(
+                            task_type=args.get("task_type"),
+                            stage=args.get("stage"),
+                        ),
+                    }
+                if name == "contract_template_get":
+                    return {"ok": True, "template": get_contract_template(str(args["template_id"]))}
+                return {
+                    "ok": True,
+                    "template": resolve_contract_template(
+                        template_id=args.get("template_id"),
+                        task_type=args.get("task_type"),
+                        stage=args.get("stage"),
+                        version=args.get("version"),
+                    ),
+                }
+            except ContractTemplateError as exc:
+                return {"ok": False, "error": str(exc)}
+
+        if name == "ue_audit_validate":
+            from agent.governance.ue_audit_contract import validate_ue_audit_payload
+
+            payload = args.get("payload")
+            if not isinstance(payload, dict):
+                return {"ok": False, "errors": ["payload must be an object"]}
+            return validate_ue_audit_payload(payload)
 
         # --- System ---
         if name == "health":
