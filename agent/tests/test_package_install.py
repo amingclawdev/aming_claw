@@ -229,6 +229,8 @@ class TestLocalPluginPackaging:
         assert "docs/drift-demo/README.md" in REQUIRED_PLUGIN_FILES
         assert "docs/backlog-dupe-demo/README.md" in REQUIRED_PLUGIN_FILES
         assert "docker/hn-install-audit/run-install-audit.sh" in REQUIRED_PLUGIN_FILES
+        assert "docker/hn-install-audit/common/install-audit.mjs" in REQUIRED_PLUGIN_FILES
+        assert "docker/hn-install-audit/common/state-manager.mjs" in REQUIRED_PLUGIN_FILES
         assert "docker/hn-install-audit/codex/Dockerfile" in REQUIRED_PLUGIN_FILES
         assert "docker/hn-install-audit/claude/Dockerfile" in REQUIRED_PLUGIN_FILES
 

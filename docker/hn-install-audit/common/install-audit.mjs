@@ -2,6 +2,11 @@
 
 import crypto from "node:crypto";
 import {
+  buildInstallAuditStateManagerReport,
+  parseChangedFiles,
+  sanitizeReportValue,
+} from "./state-manager.mjs";
+import {
   cpSync,
   existsSync,
   mkdirSync,
@@ -11,6 +16,7 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { TextDecoder } from "node:util";
 
 const HOST = process.env.AI_HOST || "codex";
 const HOME = process.env.HOME || "/home/audit";
@@ -35,6 +41,7 @@ const AI_PROMPT_MODE = process.env.AI_PROMPT_MODE || "required"; // required | o
 const PROMPT_TIMEOUT_MS = Number(process.env.AI_PROMPT_TIMEOUT_MS || 20 * 60 * 1000);
 const GOVERNANCE_PORT = process.env.GOVERNANCE_PORT || "40000";
 const GOVERNANCE_URL = `http://127.0.0.1:${GOVERNANCE_PORT}`;
+const IMPACT_CHANGED_FILES = parseChangedFiles(process.env.DOCKER_AI_E2E_CHANGED_FILES || "");
 
 const REQUIRED_SKILLS = [
   "aming-claw",
@@ -56,6 +63,10 @@ const REQUIRED_RESOURCES = [
   "aming-claw://mf-sop",
 ];
 
+const FEATURE_SMOKE_NAMES = [
+  "observer_command_pending",
+];
+
 const DEFAULT_PLUGIN_VERSION = "0.1.1";
 
 function sha256(text) {
@@ -74,6 +85,44 @@ function redact(text) {
 
 function sample(text, max = 3000) {
   return redact(String(text || "")).slice(0, max);
+}
+
+function sanitizeEvidence(value) {
+  if (Array.isArray(value)) return value.map((item) => sanitizeEvidence(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => {
+        const normalized = key.toLowerCase();
+        if (
+          normalized === "token"
+          || normalized === "session_token"
+          || normalized.endsWith("_token")
+          || normalized === "authorization"
+        ) {
+          return [key, "[REDACTED]"];
+        }
+        return [key, sanitizeEvidence(item)];
+      }),
+    );
+  }
+  if (typeof value === "string") return redact(value);
+  return value;
+}
+
+function sortedValue(value) {
+  if (Array.isArray(value)) return value.map((item) => sortedValue(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, sortedValue(value[key])]),
+    );
+  }
+  return value;
+}
+
+function sameJson(left, right) {
+  return JSON.stringify(sortedValue(left)) === JSON.stringify(sortedValue(right));
 }
 
 function pluginVersion() {
@@ -329,6 +378,354 @@ async function dashboardHealth() {
   }
 }
 
+async function governanceJson(method, path, body = undefined) {
+  try {
+    const response = await fetch(`${GOVERNANCE_URL}${path}`, {
+      method,
+      headers: body === undefined ? {} : { "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
+    }
+    return {
+      ok: response.ok && (!payload || payload.ok !== false),
+      status: response.status,
+      payload,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      payload: { ok: false, error: sample(error?.message || error) },
+    };
+  }
+}
+
+function parseSseBlock(block) {
+  const lines = String(block || "").split(/\r?\n/);
+  let event = "message";
+  const dataLines = [];
+  for (const line of lines) {
+    if (line.startsWith(":")) continue;
+    if (line.startsWith("event:")) event = line.slice("event:".length).trim();
+    else if (line.startsWith("data:")) dataLines.push(line.slice("data:".length).trimStart());
+  }
+  if (!dataLines.length) return null;
+  const dataText = dataLines.join("\n");
+  let data = dataText;
+  try {
+    data = JSON.parse(dataText);
+  } catch {
+    // Non-JSON SSE data is still useful diagnostic evidence.
+  }
+  return { event, data };
+}
+
+async function startEventProbe(projectId) {
+  const controller = new AbortController();
+  const events = [];
+  const waiters = [];
+  const url = `${GOVERNANCE_URL}/api/graph-governance/${encodeURIComponent(projectId)}/events/stream`;
+  let response;
+  try {
+    response = await fetch(url, { signal: controller.signal });
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      error: sample(error?.message || error),
+      close: () => controller.abort(),
+      events: () => events.slice(),
+      waitFor: async () => null,
+    };
+  }
+
+  if (!response.ok || !response.body) {
+    return {
+      ok: false,
+      status: response.status,
+      error: "event stream unavailable",
+      close: () => controller.abort(),
+      events: () => events.slice(),
+      waitFor: async () => null,
+    };
+  }
+
+  function resolveWaiters(record) {
+    for (let index = waiters.length - 1; index >= 0; index -= 1) {
+      const waiter = waiters[index];
+      if (waiter.eventName !== record.event) continue;
+      clearTimeout(waiter.timer);
+      waiters.splice(index, 1);
+      waiter.resolve(record);
+    }
+  }
+
+  function finishWaiters() {
+    for (const waiter of waiters.splice(0)) {
+      clearTimeout(waiter.timer);
+      waiter.resolve(null);
+    }
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const pump = (async () => {
+    let buffer = "";
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        while (true) {
+          const splitAt = buffer.indexOf("\n\n");
+          if (splitAt < 0) break;
+          const block = buffer.slice(0, splitAt);
+          buffer = buffer.slice(splitAt + 2);
+          const record = parseSseBlock(block);
+          if (!record) continue;
+          events.push(record);
+          resolveWaiters(record);
+        }
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        events.push({ event: "probe_error", data: { error: sample(error?.message || error) } });
+      }
+    } finally {
+      finishWaiters();
+    }
+  })();
+
+  function waitFor(eventName, timeoutMs = 5000) {
+    const existing = events.find((event) => event.event === eventName);
+    if (existing) return Promise.resolve(existing);
+    return new Promise((resolve) => {
+      const waiter = {
+        eventName,
+        resolve,
+        timer: setTimeout(() => {
+          const index = waiters.indexOf(waiter);
+          if (index >= 0) waiters.splice(index, 1);
+          resolve(null);
+        }, timeoutMs),
+      };
+      waiters.push(waiter);
+    });
+  }
+
+  const ready = await waitFor("ready", 3000);
+  if (!ready) controller.abort();
+
+  return {
+    ok: Boolean(ready),
+    status: response.status,
+    ready: sanitizeEvidence(ready),
+    close: () => controller.abort(),
+    events: () => events.slice(),
+    waitFor,
+    pump,
+  };
+}
+
+function commandPendingReminder(projectId) {
+  return {
+    kind: "observer_command_pending",
+    project_id: projectId,
+    message: "pending observer commands exist; call observer_command_next",
+    payload_included: false,
+  };
+}
+
+function isReminderOnlyPayload(value, projectId) {
+  return sameJson(value, commandPendingReminder(projectId));
+}
+
+function failedChecks(checks) {
+  return Object.entries(checks)
+    .filter(([, value]) => value !== true)
+    .map(([key]) => key);
+}
+
+async function observerCommandPendingSmoke() {
+  const name = "observer_command_pending";
+  const projectId = `install-audit-${name}-${HOST}-${RUN_ID}`.toLowerCase();
+  const rawId = `raw-${HOST}-${RUN_ID}`;
+  let probe = null;
+  let sessionId = "";
+  let sessionToken = "";
+  let claimedCommandId = "";
+
+  try {
+    probe = await startEventProbe(projectId);
+    if (!probe.ok) {
+      return {
+        name,
+        ok: false,
+        project_id: projectId,
+        phase: "event_stream_ready",
+        errors: ["event_stream_ready"],
+        evidence: sanitizeEvidence({
+          status: probe.status,
+          error: probe.error,
+          events_seen: probe.events(),
+        }),
+      };
+    }
+
+    const register = await governanceJson(
+      "POST",
+      `/api/projects/${encodeURIComponent(projectId)}/observer-sessions/register`,
+      {
+        observer_kind: HOST,
+        session_label: "docker-install-audit-feature-smoke",
+        capabilities: {
+          actions: ["observer_command_claim", "observer_command_complete", "observer_command_fail"],
+          command_types: ["analyze_requirements"],
+        },
+      },
+    );
+    if (!register.ok) {
+      return {
+        name,
+        ok: false,
+        project_id: projectId,
+        phase: "observer_session_register",
+        errors: ["observer_session_register"],
+        evidence: sanitizeEvidence({ status: register.status, payload: register.payload }),
+      };
+    }
+    sessionId = String(register.payload?.session_id || register.payload?.observer_session_id || "");
+    sessionToken = String(register.payload?.session_token || "");
+
+    const commandBusinessPayload = {
+      raw_id: rawId,
+      source: "docker_install_audit_feature_smoke",
+      host: HOST,
+    };
+    const enqueue = await governanceJson(
+      "POST",
+      `/api/projects/${encodeURIComponent(projectId)}/observer-commands`,
+      {
+        command_type: "analyze_requirements",
+        payload: commandBusinessPayload,
+        created_by: "docker-install-audit",
+      },
+    );
+    const eventRecord = await probe.waitFor("observer_command_pending", 5000);
+    const hookReminder = enqueue.payload?.hook_reminder || null;
+    const eventPayload = eventRecord?.data?.payload || null;
+    const command = enqueue.payload?.observer_command || {};
+
+    const claim = await governanceJson(
+      "POST",
+      `/api/projects/${encodeURIComponent(projectId)}/observer-commands/next`,
+      { session_id: sessionId, session_token: sessionToken },
+    );
+    claimedCommandId = String(claim.payload?.command?.command_id || "");
+
+    let complete = { ok: false, status: 0, payload: { error: "claim failed" } };
+    let failCleanup = null;
+    if (claim.ok && claimedCommandId) {
+      complete = await governanceJson(
+        "POST",
+        `/api/projects/${encodeURIComponent(projectId)}/observer-commands/${encodeURIComponent(claimedCommandId)}/complete`,
+        {
+          session_id: sessionId,
+          session_token: sessionToken,
+          result: { ok: true, smoke: name },
+        },
+      );
+      if (!complete.ok) {
+        failCleanup = await governanceJson(
+          "POST",
+          `/api/projects/${encodeURIComponent(projectId)}/observer-commands/${encodeURIComponent(claimedCommandId)}/fail`,
+          {
+            session_id: sessionId,
+            session_token: sessionToken,
+            error: "docker install-audit smoke cleanup after completion failure",
+            result: { ok: false, smoke: name },
+          },
+        );
+      }
+    }
+
+    const checks = {
+      observer_session_registered: Boolean(sessionId && sessionToken),
+      enqueue_http_ok: enqueue.ok,
+      hook_reminder_contract: isReminderOnlyPayload(hookReminder, projectId),
+      event_stream_received: eventRecord?.event === "observer_command_pending",
+      event_reminder_contract: isReminderOnlyPayload(eventPayload, projectId),
+      event_payload_reminder_only: isReminderOnlyPayload(eventPayload, projectId),
+      command_payload_preserved: command?.payload?.raw_id === rawId
+        && command?.payload?.source === "docker_install_audit_feature_smoke",
+      claim_via_token: claim.ok && claim.payload?.empty === false && claimedCommandId === command?.command_id,
+      complete_via_token: complete.ok && complete.payload?.command?.status === "completed",
+      token_omitted_from_report: true,
+    };
+    const errors = failedChecks(checks);
+
+    return {
+      name,
+      ok: errors.length === 0,
+      project_id: projectId,
+      event_name: "observer_command_pending",
+      checks,
+      command_status: {
+        initial_status: String(command?.status || ""),
+        notified_at_set: Boolean(command?.notified_at),
+        claimable_statuses: ["queued", "notified"],
+        decision: command?.status === "notified"
+          ? "notified_status_records_enqueue_notification"
+          : "queued_until_claim; callback event is the reminder evidence",
+      },
+      evidence: sanitizeEvidence({
+        session_id: sessionId,
+        command_id: command?.command_id || "",
+        claimed_command_id: claimedCommandId,
+        hook_reminder: hookReminder,
+        event_payload: eventPayload,
+        event_ts: eventRecord?.data?.ts || "",
+        command_payload_sha256: sha256(JSON.stringify(command?.payload || {})),
+        claim_status: claim.status,
+        complete_status: complete.status,
+        fail_cleanup_status: failCleanup?.status || 0,
+      }),
+      errors,
+    };
+  } catch (error) {
+    return {
+      name,
+      ok: false,
+      project_id: projectId,
+      phase: "exception",
+      errors: ["exception"],
+      evidence: sanitizeEvidence({
+        session_id: sessionId,
+        claimed_command_id: claimedCommandId,
+        error: sample(error?.stack || error?.message || error),
+      }),
+    };
+  } finally {
+    if (probe?.close) probe.close();
+  }
+}
+
+async function runFeatureSmokes() {
+  const smokes = [
+    observerCommandPendingSmoke,
+  ];
+  const results = [];
+  for (const smoke of smokes) {
+    results.push(await smoke());
+  }
+  return results;
+}
+
 function runDemoFixture() {
   return run(
     "node",
@@ -493,6 +890,48 @@ function selfRating(status, blockers) {
   return 1;
 }
 
+function buildAiFixtureReadiness({ runtimeInstall, hostInstall, version, dashboard, skills, tools, resources }) {
+  const missingSkills = missing(REQUIRED_SKILLS, skills);
+  const missingResources = missing(REQUIRED_RESOURCES, resources);
+  return {
+    ok: Boolean(
+      runtimeInstall.ok
+      && hostInstall.ok
+      && version.ok
+      && dashboard.ok
+      && tools.includes("graph_query")
+      && missingSkills.length === 0
+      && missingResources.length === 0
+    ),
+    isolated_governance_workspace: {
+      started: Boolean(dashboard.ok),
+      work_root: WORK_ROOT,
+      source_root: SRC_ROOT,
+      governance_url: GOVERNANCE_URL,
+    },
+    ai_host: {
+      host: HOST,
+      cli_version_ok: Boolean(version.ok),
+      auth_mode: AUTH_MODE,
+    },
+    plugin: {
+      runtime_install_ok: Boolean(runtimeInstall.ok),
+      host_install_ok: Boolean(hostInstall.ok),
+      cache_path: HOST === "codex" ? codexCacheRoot() : claudeCacheRoot(),
+    },
+    mcp: {
+      graph_query_visible: tools.includes("graph_query"),
+      tools_seen_count: Array.isArray(tools) ? tools.length : 0,
+      required_resources_present: missingResources.length === 0,
+      missing_resources: missingResources,
+    },
+    skills: {
+      required_skills_present: missingSkills.length === 0,
+      missing_skills: missingSkills,
+    },
+  };
+}
+
 function buildReport({
   authCopied,
   clone,
@@ -505,10 +944,12 @@ function buildReport({
   dashboard,
   demo,
   everydayDemos,
+  featureSmokes,
   skills,
   tools,
   resources,
 }) {
+  const sourceCommit = clone.ok ? gitHead(SRC_ROOT) : "";
   const blockers = [];
   if (!version.ok) blockers.push(`${HOST} CLI version check failed`);
   if (!authCopied.length) blockers.push("host auth files were not found in mounted auth volume");
@@ -524,10 +965,23 @@ function buildReport({
   if (everydayFailures.length) {
     blockers.push(`everyday demo audit failed: ${everydayFailures.map((item) => item.name).join(", ")}`);
   }
+  const featureFailures = (featureSmokes || []).filter((item) => !item.ok);
+  if (featureFailures.length) {
+    blockers.push(`feature smoke failed: ${featureFailures.map((item) => item.name).join(", ")}`);
+  }
   const loginRequired = HOST === "claude" && AI_PROMPT_MODE === "required" && (isLoginRequired(ai.install) || isLoginRequired(ai.demo));
   if (loginRequired) blockers.push("Claude AI prompt execution requires login");
   else if (AI_PROMPT_MODE === "required" && (!ai.install.ok || !ai.demo.ok)) blockers.push("AI prompt execution failed");
 
+  const aiFixtureReadiness = buildAiFixtureReadiness({
+    runtimeInstall,
+    hostInstall,
+    version,
+    dashboard,
+    skills,
+    tools,
+    resources,
+  });
   const aiSkipped = AI_PROMPT_MODE === "skip";
   const status = loginRequired ? "LOGIN_REQUIRED" : blockers.length ? "FAIL" : aiSkipped ? "SKIPPED" : "PASS";
   const skipReason = aiSkipped
@@ -535,7 +989,34 @@ function buildReport({
     : loginRequired
       ? "Claude CLI is installed but not authenticated in the mounted auth home. Run `claude /login` or `claude auth login` with the same auth home, then rerun with --claude-auth-home <dir>."
     : "";
-  return {
+  const stateManager = buildInstallAuditStateManagerReport({
+    host: HOST,
+    status,
+    authMode: AUTH_MODE,
+    authCopied,
+    repoUrl: REPO_URL,
+    repoRef: REPO_REF,
+    workRoot: WORK_ROOT,
+    imageDigest: process.env.IMAGE_DIGEST || "unknown-local-build",
+    governanceUrl: GOVERNANCE_URL,
+    dashboard,
+    sourceCommit,
+    pluginVersion: pluginVersion(),
+    reportPath: REPORT_PATH,
+    changedFiles: IMPACT_CHANGED_FILES,
+    commandEvidence: [
+      clone,
+      runtimeInstall,
+      hostInstall,
+      version,
+      dashboard,
+      demo,
+      ...(featureSmokes || []),
+    ],
+    featureSmokeResults: featureSmokes || [],
+  });
+
+  return sanitizeReportValue({
     schema_version: "aming_claw_install_audit.v1",
     host: HOST,
     status,
@@ -552,6 +1033,9 @@ function buildReport({
     mcp_tools_seen: tools,
     resources_read: resources,
     dashboard_health: dashboard,
+    ai_fixture_readiness: aiFixtureReadiness,
+    feature_smoke_names: FEATURE_SMOKE_NAMES,
+    feature_smoke_results: featureSmokes || [],
     demo_fixture_result: {
       ok: demo.ok,
       command: demo.command,
@@ -570,7 +1054,7 @@ function buildReport({
         ? `Install lane failed because: ${blockers.join("; ")}`
       : aiSkipped
         ? "Install lane is skipped, not passed, because deterministic checks ran without exercising the AI one-click install prompt."
-        : "Install lane passed because the fresh container installed the plugin, verified skills/MCP/resources, served dashboard, ran the HN demo fixture, and ran the everyday demo fixture/audit checks.",
+        : "Install lane passed because the fresh container installed the plugin, verified skills/MCP/resources, served dashboard, ran feature contract smokes, ran the HN demo fixture, and ran the everyday demo fixture/audit checks.",
     evidence_refs: {
       report_path: REPORT_PATH,
       ai_self_report_path: AI_SELF_REPORT_PATH,
@@ -583,7 +1067,8 @@ function buildReport({
     },
     skip_reason: skipReason,
     blockers,
-  };
+    state_manager: stateManager,
+  });
 }
 
 async function main() {
@@ -598,6 +1083,7 @@ async function main() {
   let dashboard = { ok: false, status: 0 };
   let demo = { ok: false, command: "not-run", stdout: "", stderr: "governance not started" };
   let everydayDemos = [];
+  let featureSmokes = [];
   let governance = null;
 
   if (clone.ok) runtimeInstall = installRuntime();
@@ -613,6 +1099,7 @@ async function main() {
     dashboard = health.ok ? await dashboardHealth() : { ok: false, status: 0, error: "health timeout" };
     if (dashboard.ok) demo = runDemoFixture();
     if (dashboard.ok) everydayDemos = runEverydayDemos();
+    if (dashboard.ok) featureSmokes = await runFeatureSmokes();
   }
 
   const skills = hostInstall.ok ? listSkillsSeen() : [];
@@ -635,6 +1122,7 @@ async function main() {
     dashboard,
     demo,
     everydayDemos,
+    featureSmokes,
     skills,
     tools,
     resources,

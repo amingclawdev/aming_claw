@@ -140,6 +140,8 @@ def _write_plugin_fixture(root: Path) -> None:
         "docs/backlog-dupe-demo/README.md",
         "docs/backlog-dupe-demo/prompts.md",
         "docker/hn-install-audit/run-install-audit.sh",
+        "docker/hn-install-audit/common/install-audit.mjs",
+        "docker/hn-install-audit/common/state-manager.mjs",
         "docker/hn-install-audit/validate-report.mjs",
         "docker/hn-install-audit/codex/Dockerfile",
         "docker/hn-install-audit/claude/Dockerfile",

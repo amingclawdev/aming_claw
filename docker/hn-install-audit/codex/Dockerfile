@@ -25,9 +25,10 @@ ENV AI_HOST=codex \
 WORKDIR /workspace
 
 COPY docker/hn-install-audit/common/install-audit.mjs /opt/hn-install-audit/install-audit.mjs
+COPY docker/hn-install-audit/common/state-manager.mjs /opt/hn-install-audit/state-manager.mjs
 COPY docker/hn-install-audit/validate-report.mjs /opt/hn-install-audit/validate-report.mjs
 
-RUN chmod 0755 /opt/hn-install-audit/install-audit.mjs /opt/hn-install-audit/validate-report.mjs \
+RUN chmod 0755 /opt/hn-install-audit/install-audit.mjs /opt/hn-install-audit/state-manager.mjs /opt/hn-install-audit/validate-report.mjs \
     && chown -R audit:audit /home/audit /workspace /opt/hn-install-audit
 
 USER audit

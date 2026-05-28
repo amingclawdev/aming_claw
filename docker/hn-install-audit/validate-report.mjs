@@ -2,6 +2,17 @@
 
 import { readFileSync } from "node:fs";
 
+let stateManagerModule;
+try {
+  stateManagerModule = await import("./common/state-manager.mjs");
+} catch {
+  stateManagerModule = await import("./state-manager.mjs");
+}
+const {
+  runStateManagerSelfTest,
+  validateStateManagerReport,
+} = stateManagerModule;
+
 const REQUIRED_SKILLS = [
   "aming-claw",
   "aming-claw-launcher",
@@ -36,6 +47,8 @@ const REQUIRED_FIELDS = [
   "mcp_tools_seen",
   "resources_read",
   "dashboard_health",
+  "ai_fixture_readiness",
+  "feature_smoke_results",
   "demo_fixture_result",
   "everyday_demo_results",
   "limitations",
@@ -43,6 +56,7 @@ const REQUIRED_FIELDS = [
   "self_rating",
   "why_rating",
   "evidence_refs",
+  "state_manager",
 ];
 
 const TOKEN_PATTERNS = [
@@ -56,7 +70,7 @@ const TOKEN_PATTERNS = [
 ];
 
 function usage() {
-  console.error("Usage: node docker/hn-install-audit/validate-report.mjs <report.json>");
+  console.error("Usage: node docker/hn-install-audit/validate-report.mjs <report.json>|--self-test");
   process.exit(2);
 }
 
@@ -97,6 +111,7 @@ function validate(report) {
   if (report.auth_mode !== "AUTH_REUSED_FROM_HOST") {
     errors.push("first Docker implementation must label auth_mode as AUTH_REUSED_FROM_HOST");
   }
+  errors.push(...validateStateManagerReport(report.state_manager));
 
   const tokenLeaks = [];
   for (const [path, value] of stringsIn(report)) {
@@ -116,6 +131,33 @@ function validate(report) {
     }
     if (!report.dashboard_health || report.dashboard_health.ok !== true) {
       errors.push("PASS report must include dashboard_health.ok=true");
+    }
+    if (!report.ai_fixture_readiness || report.ai_fixture_readiness.ok !== true) {
+      errors.push("PASS report must include ai_fixture_readiness.ok=true");
+    } else if (!report.ai_fixture_readiness.isolated_governance_workspace?.started) {
+      errors.push("PASS report must include started isolated_governance_workspace evidence");
+    }
+    if (!Array.isArray(report.feature_smoke_results) || report.feature_smoke_results.length < 1) {
+      errors.push("PASS report must include feature_smoke_results");
+    } else {
+      const observerSmoke = report.feature_smoke_results.find((item) => item?.name === "observer_command_pending");
+      if (!observerSmoke || observerSmoke.ok !== true) {
+        errors.push("PASS report must include passing observer_command_pending feature smoke");
+      } else {
+        const checks = observerSmoke.checks || {};
+        for (const check of [
+          "hook_reminder_contract",
+          "event_stream_received",
+          "event_reminder_contract",
+          "event_payload_reminder_only",
+          "command_payload_preserved",
+          "claim_via_token",
+          "complete_via_token",
+          "token_omitted_from_report",
+        ]) {
+          if (checks[check] !== true) errors.push(`observer_command_pending smoke failed check: ${check}`);
+        }
+      }
     }
     if (!report.demo_fixture_result || report.demo_fixture_result.ok !== true) {
       errors.push("PASS report must include demo_fixture_result.ok=true");
@@ -145,6 +187,11 @@ function validate(report) {
 
 const file = process.argv[2];
 if (!file) usage();
+if (file === "--self-test") {
+  const result = runStateManagerSelfTest();
+  console.log(`INSTALL AUDIT STATE MANAGER SELF TEST OK: ${result.assertions} assertions`);
+  process.exit(0);
+}
 
 const report = readReport(file);
 const errors = validate(report);

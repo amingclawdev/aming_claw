@@ -20,6 +20,7 @@ Useful options:
 docker/hn-install-audit/run-install-audit.sh \
   --host codex \
   --run-id local-install-smoke \
+  --changed-files "docker/hn-install-audit/run-install-audit.sh,agent/mcp/events.py" \
   --ai-prompt-mode required
 ```
 
@@ -62,6 +63,48 @@ Each lane has two phases:
 The container also runs deterministic code checks so the final report cannot
 claim pass solely because the model said it passed.
 
+The same harness is also the reusable AI feature fixture surface. After it
+starts an isolated governance service against the cloned container workspace,
+it emits:
+
+- `ai_fixture_readiness`: deterministic host/plugin/MCP/dashboard readiness.
+- `feature_smoke_results`: feature-specific contract smokes with sanitized
+  evidence.
+
+The first feature smoke is `observer_command_pending`. It registers an observer
+session, subscribes to the governance event stream, enqueues an observer
+command, verifies the reminder-only callback payload, claims the durable command
+with the session token, and completes it. The JSON evidence records session and
+command ids plus hashes/statuses, but never records `session_token` or host auth
+token values.
+
+Future AI feature smokes should be added to
+`docker/hn-install-audit/common/install-audit.mjs` via the reusable feature
+smoke runner, then validated in `docker/hn-install-audit/validate-report.mjs`.
+Avoid standalone one-off scripts unless the harness cannot provide the required
+isolated governance workspace.
+
+## State Manager Contract
+
+Each install audit report includes a `state_manager` section with schema
+`docker_ai_e2e_state_manager.v1`. It records sanitized before/after lane state,
+provider config, impact planning, dependency decisions, command evidence, and
+feature-smoke evidence.
+
+The first executable lane is still the install audit. The shared state manager
+also defines update, new-feature, and external-project lanes so later Docker AI
+E2E suites can reuse the same state/report semantics:
+
+- install: reuse read-only host auth while reinstalling plugin/runtime state;
+- update: upgrade from a previous known-good baseline to the target commit;
+- new-feature: run feature smokes only after the container is current;
+- external-project: bootstrap/reconcile governed target projects through a
+  provider adapter.
+
+`--changed-files` accepts a newline or comma separated file list. The runner
+passes it to the impact planner so the report can explain why lanes were
+selected, skipped, blocked, reused, or reserved for a later feature smoke.
+
 The runner attempts every requested lane, then exits non-zero if any requested
 lane failed. This keeps the harness useful for CI while still collecting both
 Codex and Claude reports from the same run when possible.
@@ -81,10 +124,17 @@ node docker/hn-install-audit/validate-report.mjs \
   docs/hn-demo/audits/install-<run-id>/codex-install-audit-<run-id>.json
 ```
 
+Run state-manager unit checks without Docker:
+
+```bash
+node docker/hn-install-audit/validate-report.mjs --self-test
+```
+
 ## Security
 
 - Tokens are never baked into images.
 - Token-looking values are rejected by `validate-report.mjs`.
+- `state_manager` command evidence is sanitized before it is written.
 - Reports may mention auth files only as redacted evidence labels.
 - If host auth is absent, unusable, or Claude reports `Not logged in`, the lane
   is `FAIL`, `SKIPPED`, or `LOGIN_REQUIRED`, not `PASS`.

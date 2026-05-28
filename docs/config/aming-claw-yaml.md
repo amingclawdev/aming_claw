@@ -92,6 +92,45 @@ feature hashes. The impact endpoint compares that ledger to a later graph
 snapshot so the dashboard can show `current`, `stale`, `missing`, or `failed`
 without guessing from filenames alone.
 
+### Docker AI E2E Providers
+
+Docker AI E2E suites that need durable container state can add an optional
+provider contract under a suite. The HN install audit state manager uses this
+shape first; external-project providers can fill the same fields later without
+changing report semantics.
+
+```yaml
+testing:
+  e2e:
+    suites:
+      docker.ai.install:
+        command: "docker/hn-install-audit/run-install-audit.sh --host both"
+        live_ai: true
+        requires_human_approval: true
+        docker_ai_e2e:
+          provider_id: "aming-claw-self-install"
+          adapter: "self_install"
+          host_lanes: ["codex", "claude"]
+          workspace_source:
+            type: "git"
+            repo_url: "https://github.com/amingclawdev/aming-claw"
+            ref: "main"
+          bootstrap:
+            policy: "none"
+            graph_reconcile: "skip"
+            require_clean_worktree: true
+          suite_registry:
+            install: ["docker-hn-install-audit"]
+            update: []
+            new_feature: ["observer_command_pending"]
+            external_project: []
+```
+
+`docker_ai_e2e` is report and planning metadata. It must not contain API keys,
+OAuth tokens, session cookies, or copied auth file contents. Auth readiness is
+reported as redacted evidence labels in the Docker report, not as trusted
+project config.
+
 ## Graph Governance
 
 ```yaml

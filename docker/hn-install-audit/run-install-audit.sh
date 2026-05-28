@@ -11,6 +11,7 @@ AI_PROMPT_MODE="${AI_PROMPT_MODE:-required}"
 AUTH_MODE="${AUTH_MODE:-AUTH_REUSED_FROM_HOST}"
 CODEX_AUTH_HOME="${CODEX_AUTH_HOME:-}"
 CLAUDE_AUTH_HOME="${CLAUDE_AUTH_HOME:-}"
+DOCKER_AI_E2E_CHANGED_FILES="${DOCKER_AI_E2E_CHANGED_FILES:-}"
 
 usage() {
   cat <<'USAGE'
@@ -25,6 +26,7 @@ Options:
   --ai-prompt-mode MODE         required|optional|skip. Default: required.
   --codex-auth-home DIR         Read Codex auth from DIR instead of $HOME.
   --claude-auth-home DIR        Read Claude auth from DIR instead of $HOME.
+  --changed-files LIST          Newline or comma separated changed files for lane impact planning.
   --no-build                    Reuse existing Docker images.
   --help                        Show this help.
 
@@ -47,6 +49,7 @@ while [[ $# -gt 0 ]]; do
     --ai-prompt-mode) AI_PROMPT_MODE="$2"; shift 2 ;;
     --codex-auth-home) CODEX_AUTH_HOME="$2"; shift 2 ;;
     --claude-auth-home) CLAUDE_AUTH_HOME="$2"; shift 2 ;;
+    --changed-files) DOCKER_AI_E2E_CHANGED_FILES="$2"; shift 2 ;;
     --no-build) NO_BUILD=1; shift ;;
     --help|-h) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage; exit 2 ;;
@@ -117,12 +120,14 @@ run_host() {
     "${mounts[@]}" \
     -v "$ROOT:/plugin-source:ro" \
     -v "$OUT_DIR:/audit-output" \
+    -v "$ROOT/docker/hn-install-audit/common/state-manager.mjs:/opt/hn-install-audit/state-manager.mjs:ro" \
     -e "AI_HOST=$host" \
     -e "RUN_ID=$RUN_ID" \
     -e "PLUGIN_REPO_URL=$PLUGIN_REPO_URL" \
     -e "PLUGIN_REF=$PLUGIN_REF" \
     -e "AI_PROMPT_MODE=$AI_PROMPT_MODE" \
     -e "AUTH_MODE=$AUTH_MODE" \
+    -e "DOCKER_AI_E2E_CHANGED_FILES=$DOCKER_AI_E2E_CHANGED_FILES" \
     "$image"
 }
 
