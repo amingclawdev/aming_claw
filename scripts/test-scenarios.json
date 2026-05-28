@@ -1,0 +1,136 @@
+{
+  "schema_version": 1,
+  "scenarios": [
+    {
+      "id": "simple_user_entry",
+      "title": "Simple user entry and Project Inbox flow",
+      "description": "Focused validation for ordinary user entry, Simple Mode, Project Inbox, and observer command queue controls.",
+      "target_project": "aming-claw",
+      "target_ref": "HEAD",
+      "runner": "commands",
+      "dependencies": [
+        {
+          "id": "python",
+          "kind": "command",
+          "command": "{python}",
+          "required": true,
+          "remediation": "Install Python or set PYTHON/PYTHON_BIN to the interpreter used for this checkout."
+        }
+      ],
+      "commands": [
+        {
+          "id": "simple_mode_project_inbox_flow",
+          "cwd": "repo",
+          "command": [
+            "{python}",
+            "-m",
+            "pytest",
+            "agent/tests/test_raw_requirement.py::test_simple_mode_observer_command_flow_for_execution_and_worker_controls"
+          ],
+          "env": {
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"
+          },
+          "timeout_ms": 120000
+        },
+        {
+          "id": "observer_session_command_queue",
+          "cwd": "repo",
+          "command": [
+            "{python}",
+            "-m",
+            "pytest",
+            "agent/tests/test_observer_session.py",
+            "agent/tests/test_observer_command_queue.py"
+          ],
+          "env": {
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"
+          },
+          "timeout_ms": 120000
+        }
+      ],
+      "artifacts": []
+    },
+    {
+      "id": "ruby_graph_sinatra",
+      "title": "Ruby graph validation against Sinatra",
+      "description": "Clones or reuses a pinned Sinatra workspace outside this repo, bootstraps it through governance when explicitly allowed, and validates Ruby graph reasonableness.",
+      "project_id": "test-scenario-ruby-sinatra",
+      "target_project": "test-scenario-ruby-sinatra",
+      "target_ref": "5236d3459b8b9015e5ce21ddd0c6beb0db4081d4",
+      "runner": "ruby_graph",
+      "repository": {
+        "url": "https://github.com/sinatra/sinatra.git",
+        "ref": "5236d3459b8b9015e5ce21ddd0c6beb0db4081d4",
+        "commit": "5236d3459b8b9015e5ce21ddd0c6beb0db4081d4",
+        "workspace_name": "sinatra"
+      },
+      "dependencies": [
+        {
+          "id": "git",
+          "kind": "command",
+          "command": "git",
+          "required": true,
+          "remediation": "Install git so the pinned Sinatra workspace can be cloned or inspected."
+        },
+        {
+          "id": "network",
+          "kind": "capability",
+          "required": "when_workspace_missing",
+          "remediation": "Re-run with --allow-network or pre-populate the cache workspace at the pinned ref."
+        },
+        {
+          "id": "governance_bootstrap",
+          "kind": "capability",
+          "required": true,
+          "remediation": "Start governance on port 40000 and re-run with --allow-bootstrap."
+        }
+      ],
+      "bootstrap": {
+        "project_name": "test-scenario-ruby-sinatra",
+        "scan_depth": 8,
+        "config_override": {
+          "graph": {
+            "exclude_paths": [
+              ".git",
+              ".bundle",
+              "vendor",
+              "tmp",
+              "log",
+              "coverage",
+              "pkg"
+            ],
+            "ignore_globs": [
+              "**/.git/**",
+              "**/vendor/**",
+              "**/tmp/**",
+              "**/log/**",
+              "**/coverage/**"
+            ]
+          }
+        }
+      },
+      "graph_expectations": {
+        "min_nodes": 1,
+        "required_language": "ruby",
+        "required_path": "lib/sinatra/base.rb",
+        "function_index_queries": [
+          "Sinatra::Base",
+          "route",
+          "configure"
+        ]
+      },
+      "validation": {
+        "min_nodes": 1,
+        "status_endpoint": true,
+        "required_language": "ruby",
+        "required_path": "lib/sinatra/base.rb",
+        "function_index_queries": [
+          "Sinatra::Base",
+          "route",
+          "configure"
+        ]
+      },
+      "artifacts": []
+    }
+  ]
+}
