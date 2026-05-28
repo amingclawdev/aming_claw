@@ -250,6 +250,7 @@ export default function App() {
   const [batchEnrichBusy, setBatchEnrichBusy] = useState(false);
   const [currentProjectId, setCurrentProjectId] = useState(initialLocation.projectId);
   const currentProjectIdRef = useRef(currentProjectId);
+  const [simpleInboxRefreshSeq, setSimpleInboxRefreshSeq] = useState(0);
   const [projects, setProjects] = useState<ProjectListItem[]>([]);
   const [bootstrapWorkspacePath, setBootstrapWorkspacePath] = useState(initialLocation.workspacePath);
   const [aiConfig, setAiConfig] = useState<AiConfigResponse | null>(null);
@@ -954,7 +955,12 @@ export default function App() {
     [data, fetchAll],
   );
 
-  const handleRefresh = useCallback(() => fetchAll(), [fetchAll]);
+  const handleRefresh = useCallback(() => {
+    if (view === "inbox") {
+      setSimpleInboxRefreshSeq((value) => value + 1);
+    }
+    return fetchAll();
+  }, [fetchAll, view]);
 
   const handleProjectChange = useCallback((nextProjectId: string) => {
     const next = nextProjectId.trim() || DEFAULT_PROJECT_ID;
@@ -1152,7 +1158,7 @@ export default function App() {
           </div>
         </header>
         <main className="simple-shell-main scrollbar-thin">
-          <ProjectInboxView projectId={currentProjectId} />
+          <ProjectInboxView projectId={currentProjectId} refreshKey={simpleInboxRefreshSeq} />
         </main>
         {toast ? (
           <div className={`toast ${toast.kind}`} role="status">

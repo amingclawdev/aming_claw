@@ -12,6 +12,7 @@ import type {
 
 interface Props {
   projectId: string;
+  refreshKey?: number;
 }
 
 type SimpleTab = "before" | "in_progress" | "completed";
@@ -83,6 +84,20 @@ function commandsForBacklog(bugId: string, commands: ObserverCommand[]): Observe
   );
 }
 
+function commandTypeLabel(type: string): string {
+  if (type === "analyze_requirements") return "Analyze request";
+  if (type === "confirm_requirement") return "Confirm request";
+  if (type === "move_to_execution_queue") return "Send to execution queue";
+  if (type === "pause_worker") return "Pause";
+  if (type === "continue_worker") return "Continue";
+  if (type === "cancel_worker") return "Cancel";
+  return type.replace(/_/g, " ");
+}
+
+function actionCountLabel(count: number): string {
+  return `${count} action${count === 1 ? "" : "s"}`;
+}
+
 function statusToneLabel(status: ObserverCommandStatus | null | undefined): {
   tone: "neutral" | "queued" | "running" | "complete" | "failed";
   label: string;
@@ -109,26 +124,42 @@ function commandIsActive(command: ObserverCommand | null | undefined): boolean {
 function observerStatusLine(
   observer: ObserverConnectionSummary | undefined,
   lastCommand: ObserverCommand | null,
+  counts: { queued: number; running: number; failed: number },
 ): { tone: "connected" | "waiting" | "queued" | "running" | "failed" | "complete"; label: string } {
+  const assistantLabel = observer?.connected
+    ? `AI assistant connected (${observer.connected_count})`
+    : "AI assistant not connected";
+  if (counts.failed > 0) {
+    return { tone: "failed", label: `${actionCountLabel(counts.failed)} failed · ${assistantLabel}` };
+  }
+  if (counts.running > 0) {
+    return { tone: "running", label: `${actionCountLabel(counts.running)} running · ${assistantLabel}` };
+  }
+  if (counts.queued > 0) {
+    return { tone: "queued", label: `${actionCountLabel(counts.queued)} queued · ${assistantLabel}` };
+  }
   if (!observer?.connected) {
-    return { tone: "waiting", label: "Waiting for observer" };
+    return { tone: "waiting", label: assistantLabel };
   }
   if (lastCommand) {
     const { tone, label } = statusToneLabel(lastCommand.status);
-    if (tone === "queued") return { tone: "queued", label: "Command queued" };
-    if (tone === "running") return { tone: "running", label: "Command running" };
-    if (tone === "complete") return { tone: "complete", label: "Last command completed" };
-    if (tone === "failed") return { tone: "failed", label: `Last command ${label.toLowerCase()}` };
+    if (tone === "complete") return { tone: "complete", label: `Last action completed · ${assistantLabel}` };
+    if (tone === "failed") return { tone: "failed", label: `Last action ${label.toLowerCase()} · ${assistantLabel}` };
   }
-  return { tone: "connected", label: `Observer connected (${observer.connected_count})` };
+  return { tone: "connected", label: assistantLabel };
 }
 
 function viewAuditUrl(projectId: string, ref: { bug_id?: string; raw_id?: string }): string {
   if (typeof window === "undefined") return "#";
   const url = new URL(window.location.href);
   url.searchParams.set("project_id", projectId);
-  url.searchParams.set("view", "backlog");
-  if (ref.bug_id) url.searchParams.set("audit_bug_id", ref.bug_id);
+  if (ref.bug_id) {
+    url.searchParams.set("view", "backlog");
+    url.searchParams.set("backlog", ref.bug_id);
+    url.searchParams.delete("audit_bug_id");
+  } else {
+    url.searchParams.set("view", "inbox");
+  }
   if (ref.raw_id) url.searchParams.set("audit_raw_id", ref.raw_id);
   return `${url.pathname}${url.search}${url.hash}`;
 }
@@ -151,7 +182,7 @@ function plainTextPreview(value: unknown, max = 240): string {
   }
 }
 
-export default function ProjectInboxView({ projectId }: Props) {
+export default function ProjectInboxView({ projectId, refreshKey = 0 }: Props) {
   const [inbox, setInbox] = useState<ProjectInboxResponse | null>(null);
   const [rawText, setRawText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -177,6 +208,30 @@ export default function ProjectInboxView({ projectId }: Props) {
     return () => controller.abort();
   }, [load]);
 
+  useEffect(() => {
+    if (!refreshKey) return;
+    setError("");
+    void load().catch((err) => setError(errorMessage(err)));
+  }, [load, refreshKey]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      void load().catch(() => {
+        // Keep lightweight polling quiet; explicit user actions surface errors.
+      });
+    }, 15000);
+    const handleFocus = () => {
+      void load().catch((err) => setError(errorMessage(err)));
+    };
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleFocus);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleFocus);
+    };
+  }, [load]);
+
   const observer = inbox?.observer;
   const observerConnected = Boolean(observer?.connected);
   const commands = inbox?.observer_commands?.items ?? [];
@@ -193,18 +248,27 @@ export default function ProjectInboxView({ projectId }: Props) {
   const reviewLane = inbox?.lanes.review_needed.items ?? [];
   const doneLane = inbox?.lanes.done.items ?? [];
 
-  const allRaw = useMemo(
-    () => [...rawLane, ...confirmLane].filter(isRawRequirement),
-    [rawLane, confirmLane],
+  const draftRows = useMemo(
+    () => rawLane.filter(isRawRequirement),
+    [rawLane],
   );
 
-  const confirmedRaw = useMemo(
-    () => allRaw.filter((row) => rawUiStatus(row) === "confirmed"),
-    [allRaw],
+  const readyToQueueRaw = useMemo(
+    () => confirmLane.filter(isRawRequirement),
+    [confirmLane],
+  );
+
+  const allRaw = useMemo(
+    () => [...draftRows, ...readyToQueueRaw],
+    [draftRows, readyToQueueRaw],
   );
 
   const lastCommand = commands[0] ?? null;
-  const observerLine = observerStatusLine(observer, lastCommand);
+  const observerLine = observerStatusLine(observer, lastCommand, {
+    queued: queuedCount,
+    running: runningCount,
+    failed: failedCount,
+  });
 
   const detailRow = useMemo(() => {
     if (!detailRawId) return null;
@@ -309,6 +373,7 @@ export default function ProjectInboxView({ projectId }: Props) {
             bug_id: bug.bug_id,
             worktree_branch: bug.worktree_branch || "",
             current_task_id: bug.current_task_id || "",
+            source: "project_inbox",
           },
           created_by: "dashboard",
         });
@@ -332,8 +397,8 @@ export default function ProjectInboxView({ projectId }: Props) {
           </p>
         </div>
         <div className="project-inbox-stats">
-          <Kpi label="Unconfirmed" value={rawLane.length} />
-          <Kpi label="Confirmed" value={confirmLane.length} />
+          <Kpi label="Drafts" value={draftRows.length} />
+          <Kpi label="Ready" value={readyToQueueRaw.length} />
           <Kpi label="In progress" value={inProgressLane.length + reviewLane.length} />
           <Kpi label="Completed" value={doneLane.length} />
         </div>
@@ -349,7 +414,7 @@ export default function ProjectInboxView({ projectId }: Props) {
         <span className="project-inbox-command-count">Failed {failedCount}</span>
         {!observerConnected ? (
           <span className="simple-mode-observer-hint">
-            AI Analyze and worker controls are disabled until an observer session registers.
+            AI actions and worker controls are disabled until an AI assistant connects.
           </span>
         ) : null}
       </section>
@@ -377,11 +442,11 @@ export default function ProjectInboxView({ projectId }: Props) {
           setRawText={setRawText}
           busy={busy}
           onCapture={capture}
-          rawRows={allRaw}
+          draftRows={draftRows}
           commands={commands}
           observerConnected={observerConnected}
           readyBacklog={readyLane.filter(isBacklogItem)}
-          confirmedRaw={confirmedRaw}
+          readyToQueueRaw={readyToQueueRaw}
           onAnalyze={analyzeRequirement}
           onConfirm={confirmRequirement}
           onMoveToExecution={moveToExecution}
@@ -414,6 +479,11 @@ export default function ProjectInboxView({ projectId }: Props) {
         <RawDetailModal
           row={detailRow}
           commands={detailRowCommands}
+          observerConnected={observerConnected}
+          busy={busy}
+          onAnalyze={analyzeRequirement}
+          onConfirm={confirmRequirement}
+          onMoveToExecution={moveToExecution}
           onClose={() => setDetailRawId(null)}
           onOpenAudit={(ref) => navigateToAudit(projectId, ref)}
         />
@@ -436,11 +506,11 @@ function BeforeDevelopmentTab({
   setRawText,
   busy,
   onCapture,
-  rawRows,
+  draftRows,
   commands,
   observerConnected,
   readyBacklog,
-  confirmedRaw,
+  readyToQueueRaw,
   onAnalyze,
   onConfirm,
   onMoveToExecution,
@@ -451,11 +521,11 @@ function BeforeDevelopmentTab({
   setRawText: (value: string) => void;
   busy: boolean;
   onCapture: () => void;
-  rawRows: RawRequirement[];
+  draftRows: RawRequirement[];
   commands: ObserverCommand[];
   observerConnected: boolean;
   readyBacklog: BacklogBug[];
-  confirmedRaw: RawRequirement[];
+  readyToQueueRaw: RawRequirement[];
   onAnalyze: (row: RawRequirement) => void;
   onConfirm: (row: RawRequirement) => void;
   onMoveToExecution: (row: RawRequirement) => void;
@@ -468,14 +538,13 @@ function BeforeDevelopmentTab({
         <textarea
           value={rawText}
           onChange={(event) => setRawText(event.target.value)}
-          placeholder="Describe what you need in your own words. Capture mode stores the exact text and does not dispatch work."
+          placeholder="Describe what you need in your own words. This saves the exact text and does not dispatch work."
           rows={5}
-          aria-label="Raw requirement text"
+          aria-label="New request text"
         />
         <div className="project-inbox-capture-actions">
           <span>
-            Capture only. The dashboard writes a raw requirement row; AI runs only after AI
-            Analyze is clicked and a registered observer claims the command.
+            Saves the request as written. AI runs only after you ask for analysis and an AI assistant picks it up.
           </span>
           <button
             type="button"
@@ -483,19 +552,19 @@ function BeforeDevelopmentTab({
             disabled={busy || !rawText.trim()}
             onClick={onCapture}
           >
-            {busy ? "Working…" : "Capture requirement"}
+            {busy ? "Working…" : "Save request"}
           </button>
         </div>
       </section>
 
       <section className="simple-mode-section">
         <header className="simple-mode-section-head">
-          <h3>Raw requirements</h3>
-          <span className="pill pill-mono">{rawRows.length}</span>
+          <h3>Drafts</h3>
+          <span className="pill pill-mono">{draftRows.length}</span>
         </header>
-        {rawRows.length ? (
+        {draftRows.length ? (
           <div className="simple-mode-cards">
-            {rawRows.map((row) => (
+            {draftRows.map((row) => (
               <RawRequirementCard
                 key={row.raw_id}
                 row={row}
@@ -512,23 +581,23 @@ function BeforeDevelopmentTab({
           </div>
         ) : (
           <div className="project-inbox-empty">
-            No raw requirements captured yet. Use the box above to write one.
+            No saved requests yet. Use the box above to write one.
           </div>
         )}
       </section>
 
       <section className="simple-mode-section">
         <header className="simple-mode-section-head">
-          <h3>Execution queue</h3>
-          <span className="pill pill-mono">{confirmedRaw.length + readyBacklog.length}</span>
+          <h3>Ready to queue</h3>
+          <span className="pill pill-mono">{readyToQueueRaw.length}</span>
         </header>
-        {!confirmedRaw.length && !readyBacklog.length ? (
+        {!readyToQueueRaw.length ? (
           <div className="project-inbox-empty">
-            Confirmed requirements move here when you click "Move to execution queue".
+            Confirm a saved request when it is ready to send to execution.
           </div>
         ) : (
           <div className="simple-mode-cards">
-            {confirmedRaw.map((row) => {
+            {readyToQueueRaw.map((row) => {
               const move = latestCommandOfType(
                 commandsForRaw(row.raw_id, commands),
                 "move_to_execution_queue",
@@ -549,7 +618,7 @@ function BeforeDevelopmentTab({
                     ) : null}
                     {!observerConnected ? (
                       <span className="simple-mode-disabled-reason">
-                        Disabled until observer connects
+                        Disabled until an AI assistant connects
                       </span>
                     ) : null}
                   </div>
@@ -560,24 +629,39 @@ function BeforeDevelopmentTab({
                       disabled={busy || !observerConnected || commandIsActive(move)}
                       onClick={() => onMoveToExecution(row)}
                     >
-                      {commandIsActive(move) ? label : "Move to execution queue"}
+                      {commandIsActive(move) ? label : "Send to execution queue"}
                     </button>
                     <button
                       type="button"
                       className="action-btn"
                       onClick={() => onOpenDetail(row)}
                     >
-                      Open detail
+                      Details
                     </button>
                   </div>
                 </article>
               );
             })}
+          </div>
+        )}
+      </section>
+
+      <section className="simple-mode-section">
+        <header className="simple-mode-section-head">
+          <h3>Queued for execution</h3>
+          <span className="pill pill-mono">{readyBacklog.length}</span>
+        </header>
+        {!readyBacklog.length ? (
+          <div className="project-inbox-empty">
+            Requests sent to execution appear here once they have an associated work item.
+          </div>
+        ) : (
+          <div className="simple-mode-cards">
             {readyBacklog.map((bug) => (
               <article className="execution-queue-card backlog" key={`bug-${bug.bug_id}`}>
                 <div className="execution-queue-title">{bug.title || "Untitled requirement"}</div>
                 <div className="execution-queue-meta">
-                  <span>Ready for development {fmtTimestamp(bug.updated_at || bug.created_at)}</span>
+                  <span>Queued {fmtTimestamp(bug.updated_at || bug.created_at)}</span>
                 </div>
                 <div className="project-inbox-card-actions">
                   <button
@@ -585,7 +669,7 @@ function BeforeDevelopmentTab({
                     className="action-btn"
                     onClick={() => onOpenAudit({ bug_id: bug.bug_id })}
                   >
-                    Engineer details
+                    View audit
                   </button>
                 </div>
               </article>
@@ -633,13 +717,13 @@ function RawRequirementCard({
       <div className="simple-raw-card-text">{row.raw_text}</div>
       <div className="project-inbox-command-row">
         <span className={`project-inbox-command-status tone-${analyzeTone}`}>
-          AI Analyze: {analyzeLabel}
+          Analysis: {analyzeLabel}
         </span>
         {analyze?.error ? (
           <span className="project-inbox-command-error">{analyze.error}</span>
         ) : null}
         {!observerConnected ? (
-          <span className="simple-mode-disabled-reason">Waiting for observer</span>
+          <span className="simple-mode-disabled-reason">Waiting for AI assistant</span>
         ) : null}
       </div>
       <div className="project-inbox-card-actions">
@@ -649,7 +733,7 @@ function RawRequirementCard({
           disabled={busy || !observerConnected || commandIsActive(analyze)}
           onClick={() => onAnalyze(row)}
         >
-          {commandIsActive(analyze) ? analyzeLabel : "AI Analyze"}
+          {commandIsActive(analyze) ? analyzeLabel : "Analyze request"}
         </button>
         {uiStatus === "unconfirmed" ? (
           <button
@@ -667,7 +751,7 @@ function RawRequirementCard({
             disabled={busy || !observerConnected || commandIsActive(move)}
             onClick={() => onMoveToExecution(row)}
           >
-            {commandIsActive(move) ? statusToneLabel(move?.status).label : "Move to execution queue"}
+            {commandIsActive(move) ? statusToneLabel(move?.status).label : "Send to execution queue"}
           </button>
         )}
         <button
@@ -675,7 +759,7 @@ function RawRequirementCard({
           className="action-btn"
           onClick={() => onOpenDetail(row)}
         >
-          Open detail
+          Details
         </button>
         {row.promoted_bug_id ? (
           <button
@@ -683,7 +767,7 @@ function RawRequirementCard({
             className="action-btn"
             onClick={() => onOpenAudit({ bug_id: row.promoted_bug_id, raw_id: row.raw_id })}
           >
-            Engineer details
+            View audit
           </button>
         ) : null}
       </div>
@@ -710,7 +794,7 @@ function InProgressTab({
     return (
       <div className="simple-mode-tab-panel">
         <div className="project-inbox-empty">
-          No workers active. Confirmed requirements show up here once a worker starts running.
+          No work is active. Queued requests show up here once execution starts.
         </div>
       </div>
     );
@@ -757,18 +841,21 @@ function WorkerCard({
   const isPaused = runtimeState === "paused";
   const isCancelled = runtimeState === "cancelled" || runtimeState === "canceled";
   const isBlocked = runtimeState === "blocked" || runtimeState === "failed";
+  const isRunning = !isPaused && !isCancelled && !isBlocked;
 
   const disabledReason = !observerConnected
-    ? "Waiting for observer"
+    ? "Waiting for AI assistant"
     : isCancelled
-    ? "Worker already cancelled"
+    ? "Work was cancelled"
     : "";
 
   const progressLabel = isPaused
-    ? "Work is paused"
+    ? "Paused"
     : isBlocked
-    ? "Work is blocked"
-    : "Work is in progress";
+    ? "Needs attention"
+    : isCancelled
+    ? "Cancelled"
+    : "Running";
 
   return (
     <article className="worker-card">
@@ -779,30 +866,36 @@ function WorkerCard({
         <span>{progressLabel}</span>
       </div>
       <div className="worker-card-controls">
-        <ControlButton
-          label={isPaused ? "Pause requested" : "Pause"}
-          command={pause}
-          disabled={busy || !observerConnected || isCancelled || commandIsActive(pause)}
-          onClick={() => onControl(bug, "pause")}
-        />
-        <ControlButton
-          label="Continue"
-          command={cont}
-          disabled={busy || !observerConnected || isCancelled || commandIsActive(cont)}
-          onClick={() => onControl(bug, "continue")}
-        />
-        <ControlButton
-          label="Cancel"
-          command={cancel}
-          disabled={busy || !observerConnected || isCancelled || commandIsActive(cancel)}
-          onClick={() => onControl(bug, "cancel")}
-        />
+        {isRunning ? (
+          <ControlButton
+            label="Pause"
+            command={pause}
+            disabled={busy || !observerConnected || commandIsActive(pause)}
+            onClick={() => onControl(bug, "pause")}
+          />
+        ) : null}
+        {isPaused ? (
+          <ControlButton
+            label="Continue"
+            command={cont}
+            disabled={busy || !observerConnected || commandIsActive(cont)}
+            onClick={() => onControl(bug, "continue")}
+          />
+        ) : null}
+        {!isBlocked ? (
+          <ControlButton
+            label="Cancel"
+            command={cancel}
+            disabled={busy || !observerConnected || isCancelled || commandIsActive(cancel)}
+            onClick={() => onControl(bug, "cancel")}
+          />
+        ) : null}
         <button
           type="button"
           className="action-btn"
           onClick={() => onOpenAudit({ bug_id: bug.bug_id })}
         >
-          Engineer details
+          {isBlocked ? "View issue" : "View audit"}
         </button>
       </div>
       {disabledReason ? (
@@ -848,7 +941,7 @@ function CompletedTab({
     return (
       <div className="simple-mode-tab-panel">
         <div className="project-inbox-empty">
-          No completed requirements yet. Finished work appears here with its commit hash.
+          No completed requests yet. Finished work appears here with its outcome and commit.
         </div>
       </div>
     );
@@ -862,9 +955,13 @@ function CompletedTab({
               <div className="completed-card-title">{bug.title || "Untitled requirement"}</div>
             </div>
             <div className="completed-card-meta">
-              {bug.status ? <span>Status: {bug.status}</span> : null}
               {bug.fixed_at ? <span>Finished {fmtTimestamp(bug.fixed_at)}</span> : null}
+              {!bug.fixed_at && bug.updated_at ? <span>Updated {fmtTimestamp(bug.updated_at)}</span> : null}
+              {bug.status ? <span>{bug.status}</span> : null}
             </div>
+            <p className="completed-summary">
+              {bug.details_preview || bug.details_md || "Completed work is recorded. Open the audit for full execution details."}
+            </p>
             {bug.commit ? (
               <div className="completed-commit">
                 <span className="completed-commit-label">commit</span>
@@ -881,7 +978,7 @@ function CompletedTab({
                 className="action-btn"
                 onClick={() => onOpenAudit({ bug_id: bug.bug_id })}
               >
-                Engineer details
+                View audit
               </button>
             </div>
           </article>
@@ -898,7 +995,7 @@ function simpleAiStatus(
   if (command.status === "queued" || command.status === "notified") {
     return {
       tone: "queued",
-      message: "AI analysis is queued. It will start once an observer picks it up.",
+      message: "AI analysis is queued. It will start once an AI assistant picks it up.",
     };
   }
   if (command.status === "claimed" || command.status === "running") {
@@ -907,7 +1004,7 @@ function simpleAiStatus(
   if (command.status === "failed" || command.status === "cancelled") {
     return {
       tone: "failed",
-      message: "AI analysis did not complete. Try AI Analyze again from the requirement card.",
+      message: "AI analysis did not complete. Retry analysis from this request.",
     };
   }
   if (command.status === "completed") {
@@ -919,15 +1016,26 @@ function simpleAiStatus(
 function RawDetailModal({
   row,
   commands,
+  observerConnected,
+  busy,
+  onAnalyze,
+  onConfirm,
+  onMoveToExecution,
   onClose,
   onOpenAudit,
 }: {
   row: RawRequirement;
   commands: ObserverCommand[];
+  observerConnected: boolean;
+  busy: boolean;
+  onAnalyze: (row: RawRequirement) => void;
+  onConfirm: (row: RawRequirement) => void;
+  onMoveToExecution: (row: RawRequirement) => void;
   onClose: () => void;
   onOpenAudit: (ref: { bug_id?: string; raw_id?: string }) => void;
 }) {
   const analyze = latestCommandOfType(commands, "analyze_requirements");
+  const move = latestCommandOfType(commands, "move_to_execution_queue");
   const result = (analyze?.result || {}) as Record<string, unknown>;
   const refined =
     result["refined_requirement"] ??
@@ -939,6 +1047,9 @@ function RawDetailModal({
   const acceptance = result["acceptance_criteria"] ?? result["suggested_acceptance"];
   const risks = result["risk"] ?? result["risks"] ?? result["missing_context"];
   const aiStatus = simpleAiStatus(analyze);
+  const isConfirmed = rawUiStatus(row) === "confirmed";
+  const canRetryAnalysis = !analyze || analyze.status === "failed" || analyze.status === "cancelled";
+  const recentCommands = commands.slice(0, 5);
 
   useEffect(() => {
     function handleKey(event: KeyboardEvent) {
@@ -959,7 +1070,7 @@ function RawDetailModal({
       >
         <header className="raw-detail-modal-head">
           <div>
-            <h3 id="raw-detail-modal-title">Requirement detail</h3>
+            <h3 id="raw-detail-modal-title">Request details</h3>
           </div>
           <button
             type="button"
@@ -976,8 +1087,65 @@ function RawDetailModal({
           <div className="raw-detail-meta">
             <span>Status: {rawUiStatus(row) === "confirmed" ? "Confirmed" : "Unconfirmed"}</span>
             <span>Captured {fmtTimestamp(row.created_at)}</span>
-            {row.source ? <span>Source: {row.source}</span> : null}
           </div>
+        </section>
+        <section className="raw-detail-section">
+          <h4>Next actions</h4>
+          <div className="raw-detail-actions">
+            {!isConfirmed ? (
+              <button
+                type="button"
+                className="action-btn action-btn-primary"
+                disabled={busy}
+                onClick={() => onConfirm(row)}
+              >
+                Confirm request
+              </button>
+            ) : null}
+            {canRetryAnalysis ? (
+              <button
+                type="button"
+                className="action-btn"
+                disabled={busy || !observerConnected || commandIsActive(analyze)}
+                onClick={() => onAnalyze(row)}
+              >
+                {analyze ? "Retry analysis" : "Analyze request"}
+              </button>
+            ) : null}
+            {isConfirmed ? (
+              <button
+                type="button"
+                className="action-btn"
+                disabled={busy || !observerConnected || commandIsActive(move)}
+                onClick={() => onMoveToExecution(row)}
+              >
+                {commandIsActive(move) ? statusToneLabel(move?.status).label : "Send to execution queue"}
+              </button>
+            ) : null}
+            {!observerConnected ? (
+              <span className="simple-mode-disabled-reason">AI actions wait for an AI assistant.</span>
+            ) : null}
+          </div>
+        </section>
+        <section className="raw-detail-section">
+          <h4>Action history</h4>
+          {recentCommands.length ? (
+            <ul className="raw-detail-command-list">
+              {recentCommands.map((command) => {
+                const { tone, label } = statusToneLabel(command.status);
+                return (
+                  <li key={command.command_id}>
+                    <span>{commandTypeLabel(command.command_type)}</span>
+                    <span className={`project-inbox-command-status tone-${tone}`}>{label}</span>
+                    <span>{fmtTimestamp(command.completed_at || command.claimed_at || command.created_at)}</span>
+                    {command.error ? <span className="project-inbox-command-error">{command.error}</span> : null}
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <p className="raw-detail-empty">No actions have run for this request yet.</p>
+          )}
         </section>
         <section className="raw-detail-section">
           <h4>AI interpretation</h4>
@@ -988,11 +1156,11 @@ function RawDetailModal({
             <p className="raw-detail-text">{plainTextPreview(refined, 1200)}</p>
           ) : !analyze ? (
             <p className="raw-detail-empty">
-              AI Analyze has not run for this requirement.
+              Analysis has not run for this request.
             </p>
           ) : analyze.status === "completed" ? (
             <p className="raw-detail-empty">
-              AI Analyze completed but did not return a refined requirement.
+              Analysis completed but did not return a refined request.
             </p>
           ) : null}
         </section>
@@ -1002,7 +1170,7 @@ function RawDetailModal({
             <pre className="raw-detail-pre">{plainTextPreview(proposedBacklog, 1200)}</pre>
           ) : (
             <p className="raw-detail-empty">
-              No proposed work plan yet. AI Analyze produces this when completed.
+              No proposed work plan yet. Analysis produces this when completed.
             </p>
           )}
         </section>
@@ -1025,7 +1193,7 @@ function RawDetailModal({
               className="action-btn action-btn-primary"
               onClick={() => onOpenAudit({ bug_id: row.promoted_bug_id, raw_id: row.raw_id })}
             >
-              Engineer details · Open in Engineer Mode
+              View audit
             </button>
           </footer>
         ) : null}

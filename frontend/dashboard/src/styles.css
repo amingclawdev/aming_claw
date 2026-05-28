@@ -7355,13 +7355,31 @@ svg.graph-svg path.ghit:hover {
   color: #075985;
 }
 
+.simple-mode-observer.tone-running .project-inbox-observer-pill {
+  background: #e0f2fe;
+  border-color: #bae6fd;
+  color: #075985;
+}
+
 .simple-mode-observer.tone-queued .project-inbox-observer-pill.connected {
   background: var(--amber-bg);
   border-color: #fde68a;
   color: var(--amber-fg);
 }
 
+.simple-mode-observer.tone-queued .project-inbox-observer-pill {
+  background: var(--amber-bg);
+  border-color: #fde68a;
+  color: var(--amber-fg);
+}
+
 .simple-mode-observer.tone-failed .project-inbox-observer-pill.connected {
+  background: var(--red-bg);
+  border-color: #fecaca;
+  color: var(--red-fg);
+}
+
+.simple-mode-observer.tone-failed .project-inbox-observer-pill {
   background: var(--red-bg);
   border-color: #fecaca;
   color: var(--red-fg);
@@ -7618,6 +7636,14 @@ svg.graph-svg path.ghit:hover {
   color: var(--ink-500);
 }
 
+.completed-summary {
+  margin: 0;
+  color: var(--ink-700);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 .completed-commit {
   display: inline-flex;
   align-items: center;
@@ -7737,6 +7763,13 @@ svg.graph-svg path.ghit:hover {
   color: var(--ink-500);
 }
 
+.raw-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
 .raw-detail-empty {
   margin: 0;
   font-size: 12px;
@@ -7787,11 +7820,53 @@ svg.graph-svg path.ghit:hover {
 }
 
 @media (max-width: 720px) {
+  .simple-shell .project-inbox-view {
+    padding: 18px 14px 36px;
+  }
+  .project-inbox-head,
+  .project-inbox-stats,
+  .project-inbox-observer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .project-inbox-kpi,
+  .project-inbox-observer-pill,
+  .project-inbox-command-count,
+  .project-inbox-command-status,
+  .simple-mode-observer-hint {
+    max-width: 100%;
+    white-space: normal;
+  }
+  .simple-mode-tabs {
+    overflow-x: auto;
+    padding-bottom: 1px;
+  }
+  .simple-mode-tab {
+    flex: 0 0 auto;
+  }
   .simple-mode-cards {
     grid-template-columns: 1fr;
   }
+  .project-inbox-card-actions,
+  .project-inbox-capture-actions,
+  .raw-detail-actions,
   .worker-card-controls {
     flex-direction: column;
     align-items: stretch;
+  }
+  .project-inbox-card-actions .action-btn,
+  .project-inbox-capture-actions .action-btn,
+  .raw-detail-actions .action-btn,
+  .worker-card-controls .action-btn,
+  .worker-control {
+    width: 100%;
+  }
+  .raw-detail-modal {
+    max-width: calc(100vw - 24px);
+  }
+  .raw-detail-modal-head,
+  .raw-detail-modal-foot {
+    align-items: stretch;
+    flex-direction: column;
   }
 }

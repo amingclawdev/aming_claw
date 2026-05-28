@@ -233,7 +233,7 @@ def test_simple_mode_observer_command_flow_for_execution_and_worker_controls():
 
 
 def test_project_inbox_groups_backlog_rows_into_operator_lanes():
-    from agent.governance import server
+    from agent.governance import observer_session, server
 
     conn = _conn()
     conn.execute(
@@ -271,7 +271,19 @@ def test_project_inbox_groups_backlog_rows_into_operator_lanes():
         ("WORK-1", "In-progress row", "OPEN", "manual_fix_in_progress", "", ""),
         ("REVIEW-1", "Needs review row", "OPEN", "blocked", "", "needs human"),
         ("DONE-1", "Done row", "FIXED", "", "", ""),
+        ("UNRELATED-1", "Existing unrelated backlog row", "OPEN", "", "", ""),
     ]
+    rows.extend(
+        (
+            f"UNRELATED-RECENT-{idx}",
+            f"Recent unrelated backlog row {idx}",
+            "OPEN",
+            "",
+            "",
+            "",
+        )
+        for idx in range(205)
+    )
     for bug_id, title, status, runtime_state, chain_stage, failure_reason in rows:
         conn.execute(
             """
@@ -282,6 +294,26 @@ def test_project_inbox_groups_backlog_rows_into_operator_lanes():
             """,
             (bug_id, title, status, runtime_state, chain_stage, failure_reason),
         )
+    for bug_id in ("READY-1", "WORK-1", "REVIEW-1", "DONE-1"):
+        raw = raw_requirement.create_raw_requirement(
+            conn,
+            project_id="demo",
+            raw_text=f"Request for {bug_id}",
+        )
+        raw_requirement.update_status(
+            conn,
+            project_id="demo",
+            raw_id=raw["raw_id"],
+            new_status=raw_requirement.STATUS_PROMOTED,
+            promoted_bug_id=bug_id,
+        )
+    observer_session.enqueue_command(
+        conn,
+        project_id="demo",
+        command_type=observer_session.COMMAND_TYPE_PAUSE_WORKER,
+        payload={"bug_id": "WORK-1", "source": "project_inbox"},
+        created_by="dashboard",
+    )
     conn.commit()
 
     inbox_ctx = SimpleNamespace(
@@ -297,3 +329,9 @@ def test_project_inbox_groups_backlog_rows_into_operator_lanes():
     assert inbox["lanes"]["in_progress"]["items"][0]["bug_id"] == "WORK-1"
     assert inbox["lanes"]["review_needed"]["items"][0]["bug_id"] == "REVIEW-1"
     assert inbox["lanes"]["done"]["items"][0]["bug_id"] == "DONE-1"
+    all_lane_ids = {
+        item["bug_id"]
+        for lane in ("ready_backlog", "in_progress", "review_needed", "done")
+        for item in inbox["lanes"][lane]["items"]
+    }
+    assert "UNRELATED-1" not in all_lane_ids

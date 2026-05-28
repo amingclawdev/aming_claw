@@ -1349,7 +1349,7 @@ def handle_observer_command_fail(ctx: RequestContext):
 def handle_project_inbox(ctx: RequestContext):
     project_id = ctx.get_project_id()
     conn = get_connection(project_id)
-    backlog_lanes = _project_inbox_backlog_lanes(conn)
+    backlog_lanes = _project_inbox_backlog_lanes(conn, project_id=project_id)
     raw_rows = raw_requirement.list_raw_requirements(
         conn,
         project_id=project_id,
@@ -1386,7 +1386,61 @@ def handle_project_inbox(ctx: RequestContext):
     }
 
 
-def _project_inbox_backlog_lanes(conn: sqlite3.Connection, *, item_limit: int = 50) -> dict[str, dict]:
+def _project_inbox_backlog_ids(conn: sqlite3.Connection, *, project_id: str) -> set[str]:
+    """Return backlog ids explicitly associated with the ordinary Project Inbox path."""
+    ids: set[str] = set()
+    pid = (project_id or "").strip()
+    if not pid:
+        return ids
+    try:
+        rows = conn.execute(
+            "SELECT promoted_bug_id FROM raw_requirements WHERE project_id = ? AND promoted_bug_id <> ''",
+            (pid,),
+        ).fetchall()
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc).lower():
+            rows = []
+        else:
+            raise
+    for row in rows:
+        value = row["promoted_bug_id"] if isinstance(row, sqlite3.Row) else row[0]
+        if str(value or "").strip():
+            ids.add(str(value).strip())
+
+    try:
+        command_rows = conn.execute(
+            "SELECT payload_json FROM observer_command_queue WHERE project_id = ?",
+            (pid,),
+        ).fetchall()
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc).lower():
+            command_rows = []
+        else:
+            raise
+    for row in command_rows:
+        payload_raw = row["payload_json"] if isinstance(row, sqlite3.Row) else row[0]
+        try:
+            payload = json.loads(payload_raw or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        source = str(payload.get("source") or "").strip()
+        if source not in {"project_inbox", "dashboard_project_inbox"}:
+            continue
+        for key in ("bug_id", "backlog_id", "promoted_bug_id"):
+            value = str(payload.get(key) or "").strip()
+            if value:
+                ids.add(value)
+    return ids
+
+
+def _project_inbox_backlog_lanes(
+    conn: sqlite3.Connection,
+    *,
+    project_id: str,
+    item_limit: int = 50,
+) -> dict[str, dict]:
     """Build operator-facing backlog lanes for the Project Inbox homepage."""
     lanes = {
         "ready_backlog": {"count": 0, "items": [], "source": "backlog"},
@@ -1394,9 +1448,14 @@ def _project_inbox_backlog_lanes(conn: sqlite3.Connection, *, item_limit: int = 
         "review_needed": {"count": 0, "items": [], "source": "backlog"},
         "done": {"count": 0, "items": [], "source": "backlog"},
     }
+    associated_bug_ids = _project_inbox_backlog_ids(conn, project_id=project_id)
+    if not associated_bug_ids:
+        return lanes
+    placeholders = ", ".join("?" for _ in associated_bug_ids)
     try:
         rows = conn.execute(
-            "SELECT * FROM backlog_bugs ORDER BY created_at DESC LIMIT 200"
+            f"SELECT * FROM backlog_bugs WHERE bug_id IN ({placeholders}) ORDER BY created_at DESC",
+            tuple(sorted(associated_bug_ids)),
         ).fetchall()
     except sqlite3.OperationalError as exc:
         if "no such table" in str(exc).lower():
