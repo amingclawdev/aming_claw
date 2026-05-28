@@ -235,6 +235,14 @@ function sanitizeUrl(url) {
   }
 }
 
+function normalizeProjectId(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 function tailText(text, maxChars = 12000) {
   const sanitized = sanitizeText(text);
   if (sanitized.length <= maxChars) return sanitized;
@@ -833,15 +841,23 @@ async function runRubyGraphScenario(scenario, options) {
   const prepared = await ensureSinatraWorkspace(scenario, options, report);
   if (!prepared.ok) return prepared.blocked;
   report.target_commit = prepared.commit;
-  report.target_project = scenario.project_id || scenario.bootstrap?.project_name || scenario.target_project || scenario.id;
+  const requestedProjectId = normalizeProjectId(
+    scenario.project_id || scenario.bootstrap?.project_name || scenario.target_project || scenario.id,
+  );
+  report.target_project = requestedProjectId;
   report.artifacts.push({ kind: "workspace", path: prepared.workspace });
 
+  const configOverride = {
+    ...(scenario.bootstrap?.config_override || {}),
+    project_id: requestedProjectId,
+    language: scenario.validation?.required_language || "ruby",
+  };
   const bootstrapBody = {
     workspace_path: prepared.workspace,
-    project_id: scenario.project_id || scenario.target_project || "test-scenario-ruby-sinatra",
-    project_name: scenario.project_id || scenario.bootstrap?.project_name || "test-scenario-ruby-sinatra",
+    project_id: requestedProjectId,
+    project_name: requestedProjectId,
     scan_depth: scenario.bootstrap?.scan_depth || 8,
-    config_override: scenario.bootstrap?.config_override || {},
+    config_override: configOverride,
   };
   const bootstrap = await fetchJson("POST", `${options.governanceUrl}/api/project/bootstrap`, bootstrapBody, report, 240000);
   if (!bootstrap.ok || !bootstrap.json) {
@@ -852,7 +868,15 @@ async function runRubyGraphScenario(scenario, options) {
       "Check the governance bootstrap response, ensure the cached workspace is clean, and re-run.",
     );
   }
-  const projectId = String(bootstrap.json.project_id || bootstrapBody.project_name || report.target_project);
+  const projectId = normalizeProjectId(bootstrap.json.project_id || bootstrapBody.project_name || report.target_project);
+  if (projectId !== requestedProjectId) {
+    return blockedReport(
+      report,
+      "bootstrap_project_id_mismatch",
+      `Bootstrap returned project_id ${projectId || "unknown"} instead of ${requestedProjectId}.`,
+      "Do not trust this graph evidence. Fix the bootstrap project_id override before re-running.",
+    );
+  }
   report.target_project = projectId;
 
   const status = await fetchJson("GET", `${options.governanceUrl}/api/graph-governance/${encodeURIComponent(projectId)}/status`, undefined, report, 60000);

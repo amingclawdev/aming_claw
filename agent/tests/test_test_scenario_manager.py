@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
@@ -152,3 +154,137 @@ def test_ruby_scenario_blocked_report_shape_without_network(tmp_path: Path) -> N
         Path(scenario_state["report_path"]).read_text(encoding="utf8")
     )
     assert persisted["blocked"]["reason_code"] == "governance_unreachable"
+
+
+def test_ruby_scenario_bootstrap_forces_external_project_id(tmp_path: Path) -> None:
+    workspace = tmp_path / "state" / "workspaces" / "tiny-ruby"
+    workspace.mkdir(parents=True)
+    (workspace / "lib").mkdir()
+    (workspace / "lib" / "app.rb").write_text("module Local; class App; end; end\n", encoding="utf-8")
+    subprocess.run(["git", "init"], cwd=workspace, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    subprocess.run(["git", "add", "."], cwd=workspace, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    subprocess.run(
+        ["git", "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-m", "init"],
+        cwd=workspace,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=workspace, text=True).strip()
+
+    registry = tmp_path / "registry.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "scenarios": [
+                    {
+                        "id": "local_ruby_graph",
+                        "title": "Local Ruby graph",
+                        "project_id": "local-ruby-project",
+                        "target_project": "local-ruby-project",
+                        "runner": "ruby_graph",
+                        "repository": {
+                            "url": "file:///unused",
+                            "ref": commit,
+                            "commit": commit,
+                            "workspace_name": "tiny-ruby",
+                        },
+                        "dependencies": [
+                            {"id": "git", "kind": "command", "command": "git"},
+                            {"id": "governance_bootstrap", "kind": "capability"},
+                        ],
+                        "validation": {
+                            "required_path": "lib/app.rb",
+                            "required_language": "ruby",
+                            "function_index_queries": ["Local::App"],
+                        },
+                    }
+                ],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    bootstrap_bodies: list[dict] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: object) -> None:
+            return None
+
+        def _json(self, status: int, payload: dict) -> None:
+            raw = json.dumps(payload).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def do_GET(self) -> None:  # noqa: N802
+            if self.path == "/api/health":
+                self._json(200, {"status": "ok"})
+                return
+            if self.path == "/api/graph-governance/local-ruby-project/status":
+                self._json(200, {"ok": True, "active_snapshot_id": "snap-local-ruby"})
+                return
+            self._json(404, {"ok": False, "error": "not found"})
+
+        def do_POST(self) -> None:  # noqa: N802
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            if self.path == "/api/project/bootstrap":
+                bootstrap_bodies.append(body)
+                project_id = body.get("config_override", {}).get("project_id", "aming-claw")
+                self._json(200, {"project_id": project_id, "snapshot_id": "snap-local-ruby"})
+                return
+            if self.path == "/api/graph-governance/local-ruby-project/query":
+                tool = body.get("tool")
+                if tool == "list_layers":
+                    result = {"layers": [{"layer": "L7", "count": 1}]}
+                elif tool == "find_node_by_path":
+                    result = {
+                        "matches": [
+                            {
+                                "node": {
+                                    "primary_files": ["lib/app.rb"],
+                                    "metadata": {"language": "ruby"},
+                                },
+                                "primary_file": "lib/app.rb",
+                            }
+                        ]
+                    }
+                else:
+                    result = {"matches": [{"function": "Local::App", "primary_file": "lib/app.rb"}]}
+                self._json(200, {"ok": True, "result": result})
+                return
+            self._json(404, {"ok": False, "error": "not found"})
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = _run_manager(
+            "run",
+            "--scenario",
+            "local_ruby_graph",
+            "--registry",
+            str(registry),
+            "--json",
+            "--state-dir",
+            str(tmp_path / "state"),
+            "--backend",
+            f"http://127.0.0.1:{server.server_port}",
+            "--allow-bootstrap",
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    payload = _json(result)
+    [report] = payload["reports"]
+    assert report["status"] == "passed"
+    assert report["target_project"] == "local-ruby-project"
+    assert bootstrap_bodies[0]["config_override"]["project_id"] == "local-ruby-project"
+    assert bootstrap_bodies[0]["config_override"]["language"] == "ruby"
+    assert any("local-ruby-project" in item["url"] for item in report["http_summaries"])
