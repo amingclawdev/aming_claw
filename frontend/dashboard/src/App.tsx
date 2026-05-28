@@ -61,12 +61,6 @@ function normalizeViewName(value: string | null | undefined): ViewName {
   return DASHBOARD_VIEWS.includes(value as ViewName) ? (value as ViewName) : "projects";
 }
 
-function isSimpleEntryParam(params: URLSearchParams): boolean {
-  const mode = (params.get(DASHBOARD_MODE_PARAM) || "").trim().toLowerCase();
-  const simple = (params.get(DASHBOARD_SIMPLE_PARAM) || "").trim().toLowerCase();
-  return mode === "simple" || ["1", "true", "yes"].includes(simple);
-}
-
 function readStoredProjectId(): string {
   if (typeof window === "undefined") return DEFAULT_PROJECT_ID;
   try {
@@ -78,17 +72,16 @@ function readStoredProjectId(): string {
 
 function readDashboardLocation(): { projectId: string; view: ViewName; hasProjectParam: boolean; workspacePath: string } {
   if (typeof window === "undefined") {
-    return { projectId: DEFAULT_PROJECT_ID, view: "projects", hasProjectParam: false, workspacePath: "" };
+    return { projectId: DEFAULT_PROJECT_ID, view: "inbox", hasProjectParam: false, workspacePath: "" };
   }
   const params = new URLSearchParams(window.location.search);
   const projectIdParam = params.get(DASHBOARD_PROJECT_ID_PARAM);
   const legacyProjectParam = params.get(DASHBOARD_LEGACY_PROJECT_PARAM);
   const projectParam = projectIdParam?.trim() ? projectIdParam : legacyProjectParam;
   const viewParam = params.get(DASHBOARD_VIEW_PARAM);
-  const simpleEntry = isSimpleEntryParam(params);
   return {
     projectId: normalizeProjectId(projectParam || readStoredProjectId()),
-    view: viewParam ? normalizeViewName(viewParam) : (simpleEntry || projectParam ? "inbox" : "projects"),
+    view: viewParam ? normalizeViewName(viewParam) : "inbox",
     hasProjectParam: Boolean(projectParam && projectParam.trim()),
     workspacePath: (params.get(DASHBOARD_WORKSPACE_PARAM) || "").trim(),
   };
@@ -1161,10 +1154,11 @@ export default function App() {
             <button
               type="button"
               className="simple-shell-engineer-link"
+              data-testid="simple-shell-engineer-panel"
               onClick={handleEnterEngineerMode}
-              title="Open engineer dashboard for graph, backlog, and details"
+              title="Open engineer panel for advanced project tools"
             >
-              Engineer Mode →
+              Engineer panel
             </button>
           </div>
         </header>

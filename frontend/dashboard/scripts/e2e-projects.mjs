@@ -252,23 +252,55 @@ function verifySimpleModeRequestFirstDesktopContract() {
 }
 
 function verifyOrdinaryUserEntryContract() {
-  phase("ordinary user entry desktop contract");
+  phase("simple-first ordinary user entry desktop contract");
   const appSource = readFileSync(path.join(REPO_ROOT, "frontend/dashboard/src/App.tsx"), "utf8");
   const consoleSource = readFileSync(
     path.join(REPO_ROOT, "frontend/dashboard/src/views/ProjectConsoleView.tsx"),
     "utf8",
   );
+  const treeSource = readFileSync(path.join(REPO_ROOT, "frontend/dashboard/src/components/TreePanel.tsx"), "utf8");
   const cssSource = readFileSync(path.join(REPO_ROOT, "frontend/dashboard/src/styles.css"), "utf8");
+  const readLocationStart = appSource.indexOf("function readDashboardLocation");
+  const readLocationEnd = appSource.indexOf("function writeStoredProjectId", readLocationStart);
+  assert(readLocationStart >= 0 && readLocationEnd > readLocationStart, "readDashboardLocation source block is missing");
+  const readLocationBlock = appSource.slice(readLocationStart, readLocationEnd);
   const consoleBlock = extractFunctionBlock(consoleSource, "ProjectConsoleView");
   const rowBlock = extractFunctionBlock(consoleSource, "ProjectRow");
 
   assert(appSource.includes('DASHBOARD_MODE_PARAM = "mode"'), "App should define a simple mode query parameter");
   assert(appSource.includes('DASHBOARD_SIMPLE_PARAM = "simple"'), "App should define a simple boolean query parameter");
-  assert(appSource.includes('mode === "simple"'), "App should recognize mode=simple as the ordinary entry URL");
   assert(
-    /simpleEntry\s*\|\|\s*projectParam\s*\?\s*["']inbox["']\s*:\s*["']projects["']/.test(appSource),
-    "mode=simple should route directly to the Simple Mode inbox view",
+    /view:\s*["']inbox["']/.test(readLocationBlock),
+    "Server-side/default dashboard state should prefer the Simple Mode inbox",
   );
+  assert(
+    /view:\s*viewParam\s*\?\s*normalizeViewName\(viewParam\)\s*:\s*["']inbox["']/.test(readLocationBlock),
+    "Dashboard URLs without an explicit view should land in Simple Mode",
+  );
+  assert(!readLocationBlock.includes("|| true"), "Simple-first routing must not rely on an always-true condition");
+  assert(
+    !/projectParam\s*\?\s*["']inbox["']\s*:\s*["']projects["']/.test(readLocationBlock),
+    "Project-scoped URLs must not be the only Simple Mode entry",
+  );
+  assert(
+    appSource.includes("url.searchParams.delete(DASHBOARD_MODE_PARAM)") &&
+      appSource.includes("url.searchParams.delete(DASHBOARD_SIMPLE_PARAM)"),
+    "Canonical dashboard navigation should strip legacy simple entry params after routing",
+  );
+  assert(
+    appSource.includes('data-testid="simple-shell-engineer-panel"'),
+    "Simple Mode should expose a stable engineer-panel escape action",
+  );
+  assert(
+    appSource.includes('writeDashboardLocation(currentProjectId, "overview", "push")'),
+    "Engineer-panel escape should enter the dashboard overview without changing projects",
+  );
+  assert(appSource.includes('setView("overview")'), "Engineer-panel escape should update current view state");
+  assert(
+    appSource.includes("Engineer panel"),
+    "Engineer-panel escape should be visible as a secondary action in Simple Mode",
+  );
+  assert(treeSource.includes('label="Project Inbox"'), "Engineer sidebar should keep a route back to Simple Mode");
 
   const entryIndex = consoleBlock.indexOf("ordinary-entry-panel");
   const statsIndex = consoleBlock.indexOf("project-console-score-grid");
@@ -303,8 +335,9 @@ function verifyOrdinaryUserEntryContract() {
   const forbidden = ["graph", "backlog", "worker", "execution queue", "audit", "commit", "snapshot"];
   const found = forbidden.filter((term) => entryCopy.toLowerCase().includes(term));
   assert(found.length === 0, `Ordinary-user entry copy uses operator term(s): ${found.join(", ")}`);
-  ok("mode=simple opens the Simple Mode request workspace");
-  ok("Projects first viewport exposes an ordinary-user request entry");
+  ok("/dashboard and project-scoped dashboard URLs default to Simple Mode");
+  ok("Simple Mode exposes a secondary engineer-panel escape");
+  ok("Projects still exposes an ordinary-user request entry when users enter the engineer panel");
   ok("ordinary-user entry copy avoids operator terms");
 }
 
@@ -781,7 +814,11 @@ async function main() {
     if (ONLY) {
       if (ONLY === "simple-mode-request-first-desktop") {
         verifySimpleModeRequestFirstDesktopContract();
-      } else if (ONLY === "ordinary-user-entry-desktop") {
+      } else if (
+        ONLY === "ordinary-user-entry-desktop" ||
+        ONLY === "simple-first-entry-desktop" ||
+        ONLY === "simple-first-entry-engineer-escape-desktop"
+      ) {
         verifyOrdinaryUserEntryContract();
       } else {
         throw new Error(`unknown --only target: ${ONLY}`);

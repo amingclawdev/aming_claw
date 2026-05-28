@@ -64,6 +64,18 @@
           "timeout_ms": 120000
         },
         {
+          "id": "simple_first_entry_engineer_escape_desktop_contract",
+          "cwd": "repo",
+          "command": [
+            "{node}",
+            "frontend/dashboard/scripts/e2e-projects.mjs",
+            "--only",
+            "simple-first-entry-engineer-escape-desktop"
+          ],
+          "env": {},
+          "timeout_ms": 120000
+        },
+        {
           "id": "observer_session_command_queue",
           "cwd": "repo",
           "command": [
@@ -90,7 +102,13 @@
           "id": "ordinary_user_entry_desktop_contract",
           "kind": "e2e_contract",
           "path": "frontend/dashboard/scripts/e2e-projects.mjs",
-          "description": "Desktop-only ordinary-user entry check: mode=simple opens Simple Mode, Projects shows an entry panel before operator registry details, and entry copy avoids operator terms."
+          "description": "Desktop-only ordinary-user entry check: /dashboard defaults to Simple Mode, Simple Mode exposes a secondary engineer-panel action, Projects keeps a request entry after escalation, and entry copy avoids operator terms."
+        },
+        {
+          "id": "simple_first_entry_engineer_escape_desktop_contract",
+          "kind": "e2e_contract",
+          "path": "frontend/dashboard/scripts/e2e-projects.mjs",
+          "description": "Regression check for the simple-first route: ordinary users land in Simple Mode before entering the engineer panel."
         }
       ]
     },
