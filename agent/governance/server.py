@@ -38,6 +38,7 @@ from . import memory_service
 from . import audit_service
 from . import reconcile_session
 from . import backlog_runtime
+from . import raw_requirement
 from .idempotency import check_idempotency, store_idempotency
 from .redis_client import get_redis
 from .models import Evidence, MemoryEntry, NodeDef
@@ -1041,6 +1042,165 @@ def handle_project_list(ctx: RequestContext):
 def handle_projects_list(ctx: RequestContext):
     """List registered projects for dashboard project switching."""
     return {"ok": True, "projects": project_service.list_projects()}
+
+
+@route("GET", "/api/projects/{project_id}/raw-requirements")
+def handle_project_raw_requirements_list(ctx: RequestContext):
+    project_id = ctx.get_project_id()
+    status = ctx.query.get("status", "")
+    try:
+        limit = int(ctx.query.get("limit", 200) or 200)
+    except (TypeError, ValueError):
+        limit = 200
+    conn = get_connection(project_id)
+    rows = raw_requirement.list_raw_requirements(
+        conn,
+        project_id=project_id,
+        status=status or None,
+        limit=limit,
+    )
+    return {
+        "ok": True,
+        "project_id": project_id,
+        "raw_requirements": rows,
+        "count": len(rows),
+        "lane_counts": raw_requirement.lane_counts(conn, project_id=project_id),
+    }
+
+
+@route("POST", "/api/projects/{project_id}/raw-requirements")
+def handle_project_raw_requirement_create(ctx: RequestContext):
+    project_id = ctx.get_project_id()
+    conn = get_connection(project_id)
+    try:
+        row = raw_requirement.create_raw_requirement(
+            conn,
+            project_id=project_id,
+            raw_text=str(ctx.body.get("raw_text") or ctx.body.get("text") or ""),
+            source=str(ctx.body.get("source") or ""),
+            session_id=str(ctx.body.get("session_id") or ""),
+            captured_by=str(ctx.body.get("captured_by") or ctx.body.get("actor") or ""),
+            metadata=ctx.body.get("metadata") if isinstance(ctx.body.get("metadata"), dict) else {},
+            raw_id=str(ctx.body.get("raw_id") or "") or None,
+        )
+    except ValueError as exc:
+        return 400, {"ok": False, "error": "invalid_raw_requirement", "message": str(exc)}
+    return 201, {
+        "ok": True,
+        "project_id": project_id,
+        "raw_requirement": row,
+        "created_backlog": False,
+    }
+
+
+@route("POST", "/api/projects/{project_id}/raw-requirements/{raw_id}/status")
+def handle_project_raw_requirement_status(ctx: RequestContext):
+    project_id = ctx.get_project_id()
+    raw_id = unquote(str(ctx.path_params.get("raw_id") or ""))
+    conn = get_connection(project_id)
+    try:
+        row = raw_requirement.update_status(
+            conn,
+            project_id=project_id,
+            raw_id=raw_id,
+            new_status=str(ctx.body.get("status") or ""),
+            note=ctx.body.get("note") if "note" in ctx.body else None,
+            promoted_bug_id=(
+                str(ctx.body.get("promoted_bug_id") or ctx.body.get("bug_id") or "")
+                if ("promoted_bug_id" in ctx.body or "bug_id" in ctx.body)
+                else None
+            ),
+        )
+    except LookupError as exc:
+        return 404, {"ok": False, "error": "raw_requirement_not_found", "message": str(exc)}
+    except ValueError as exc:
+        return 400, {"ok": False, "error": "invalid_raw_requirement_status", "message": str(exc)}
+    return {"ok": True, "project_id": project_id, "raw_requirement": row}
+
+
+@route("GET", "/api/projects/{project_id}/project-inbox")
+def handle_project_inbox(ctx: RequestContext):
+    project_id = ctx.get_project_id()
+    conn = get_connection(project_id)
+    backlog_lanes = _project_inbox_backlog_lanes(conn)
+    raw_rows = raw_requirement.list_raw_requirements(
+        conn,
+        project_id=project_id,
+        status=raw_requirement.STATUS_RAW_INBOX,
+        limit=50,
+    )
+    confirmation_rows = raw_requirement.list_raw_requirements(
+        conn,
+        project_id=project_id,
+        status=raw_requirement.STATUS_NEEDS_CONFIRMATION,
+        limit=50,
+    )
+    counts = raw_requirement.lane_counts(conn, project_id=project_id)
+    return {
+        "ok": True,
+        "project_id": project_id,
+        "homepage_view": "project_inbox",
+        "lanes": {
+            "raw_inbox": {
+                "count": counts.get(raw_requirement.STATUS_RAW_INBOX, 0),
+                "items": raw_rows,
+            },
+            "needs_confirmation": {
+                "count": counts.get(raw_requirement.STATUS_NEEDS_CONFIRMATION, 0),
+                "items": confirmation_rows,
+            },
+            "ready_backlog": backlog_lanes["ready_backlog"],
+            "in_progress": backlog_lanes["in_progress"],
+            "review_needed": backlog_lanes["review_needed"],
+            "done": backlog_lanes["done"],
+        },
+    }
+
+
+def _project_inbox_backlog_lanes(conn: sqlite3.Connection, *, item_limit: int = 50) -> dict[str, dict]:
+    """Build operator-facing backlog lanes for the Project Inbox homepage."""
+    lanes = {
+        "ready_backlog": {"count": 0, "items": [], "source": "backlog"},
+        "in_progress": {"count": 0, "items": [], "source": "backlog"},
+        "review_needed": {"count": 0, "items": [], "source": "backlog"},
+        "done": {"count": 0, "items": [], "source": "backlog"},
+    }
+    try:
+        rows = conn.execute(
+            "SELECT * FROM backlog_bugs ORDER BY created_at DESC LIMIT 200"
+        ).fetchall()
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc).lower():
+            return lanes
+        raise
+
+    def add(lane: str, item: dict) -> None:
+        bucket = lanes[lane]
+        bucket["count"] += 1
+        if len(bucket["items"]) < item_limit:
+            bucket["items"].append(item)
+
+    for row in rows:
+        raw = dict(row)
+        bug = _backlog_compact_bug(row)
+        bug["kind"] = "backlog"
+        status = str(raw.get("status") or "OPEN").upper()
+        runtime_state = str(raw.get("runtime_state") or "").strip().lower()
+        chain_stage = str(raw.get("chain_stage") or "").strip().lower()
+        current_task_id = str(raw.get("current_task_id") or "").strip()
+        failure_reason = str(raw.get("last_failure_reason") or "").strip()
+
+        if status in _BACKLOG_CLOSED_STATUSES:
+            add("done", bug)
+        elif status in {"REVIEW", "QA", "READY_FOR_REVIEW", "VERIFY", "VERIFICATION"}:
+            add("review_needed", bug)
+        elif runtime_state in {"blocked", "failed"} or failure_reason:
+            add("review_needed", bug)
+        elif runtime_state or chain_stage or current_task_id:
+            add("in_progress", bug)
+        else:
+            add("ready_backlog", bug)
+    return lanes
 
 
 @route("GET", "/api/projects/{project_id}/git-refs")

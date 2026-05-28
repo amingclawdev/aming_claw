@@ -33,6 +33,45 @@ export interface StatusResponse {
   };
 }
 
+export interface RawRequirement {
+  kind?: "raw_requirement";
+  raw_id: string;
+  project_id: string;
+  raw_text: string;
+  source?: string;
+  session_id?: string;
+  captured_by?: string;
+  status: "raw_inbox" | "needs_confirmation" | "promoted" | "dismissed" | string;
+  note?: string;
+  promoted_bug_id?: string;
+  metadata?: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export type ProjectInboxItem = RawRequirement | (BacklogBug & { kind: "backlog" });
+
+export interface ProjectInboxLane {
+  count: number;
+  items: ProjectInboxItem[];
+  source?: string;
+}
+
+export interface ProjectInboxResponse {
+  ok: boolean;
+  project_id: string;
+  homepage_view: "project_inbox" | string;
+  lanes: {
+    raw_inbox: ProjectInboxLane;
+    needs_confirmation: ProjectInboxLane;
+    ready_backlog: ProjectInboxLane;
+    in_progress: ProjectInboxLane;
+    review_needed: ProjectInboxLane;
+    done: ProjectInboxLane;
+  };
+  request_id?: string;
+}
+
 export interface ActiveSummaryResponse {
   ok: boolean;
   project_id: string;
