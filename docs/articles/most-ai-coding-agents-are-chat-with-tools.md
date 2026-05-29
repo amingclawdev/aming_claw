@@ -97,8 +97,8 @@ The surfaces are not a diagram. Each is backed by a runnable case.
 
 | Failure | Surface that caught it | Evidence |
 |---|---|---|
-| A TypeScript node was falsely credited with unrelated Python tests as strong coverage. | Relationship / impact + constraint | The graph exposed the weak binding, the AI proposal went to review instead of mutating truth, the rule moved into the test fan-in path, a regression fixture was added, and full reconcile materialized the corrected graph. |
-| A hook reminder carried no business payload, so a worker could have claimed context it never received. | Intent + process + constraint | The observer claims the command before the payload is visible, and the worker must echo the exact reminder as timeline evidence. |
+| A TypeScript node was falsely credited with unrelated Python tests as strong coverage. | Relationship / impact + constraint | The graph exposed the weak binding, the AI proposal went to review instead of mutating truth, the rule moved into the test fan-in path, a regression fixture was added, and full reconcile materialized the corrected graph. Evidence: [semantic rule](https://github.com/amingclawdev/aming-claw/blob/main/docs/config/semantic-enrichment.md), [fixture](https://github.com/amingclawdev/aming-claw/blob/main/docs/fixtures/external-governance-demo/l4-smoke-fixture.md). |
+| A hook reminder carried no business payload, so a worker could have claimed context it never received. | Intent + process + constraint | The observer claims the command before the payload is visible, and the worker must echo the exact reminder as timeline evidence. Evidence: [Observer Reminder Echo Demo](https://github.com/amingclawdev/aming-claw/blob/main/docs/demos/observer-reminder-echo.md). |
 
 Longer implementation note:
 [How Aming Claw implements right context for AI-agent development](https://github.com/amingclawdev/aming-claw/blob/main/docs/articles/how-aming-claw-implements-right-context.md)
