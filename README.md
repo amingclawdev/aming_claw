@@ -208,6 +208,10 @@ For repository dogfood screenshots, pass the real project explicitly:
 These demos are for ordinary vibe-coding users. They avoid audit-heavy language
 and show the day-to-day problems people hit while working with AI agents:
 
+- **Demo map / proof matrix**:
+  [Demo Map](docs/demos/README.md). Start here if you want to see which demo
+  proves which part of the paradigm: intent, contract, relationship / impact,
+  process, or constraint.
 - **Keep talking while agents work**:
   [Vibe Queue Demo](docs/vibe-queue-demo/README.md). You keep describing
   requirements while the observer turns confirmed items into backlog rows,

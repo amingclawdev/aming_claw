@@ -103,11 +103,16 @@ The surfaces are not a diagram. Each is backed by a runnable case.
 Longer implementation note:
 [How Aming Claw implements right context for AI-agent development](https://github.com/amingclawdev/aming-claw/blob/main/docs/articles/how-aming-claw-implements-right-context.md)
 
-Try the demo:
+Full proof matrix:
+[Demo Map: proof cases for the AI-agent development system paradigm](https://github.com/amingclawdev/aming-claw/blob/main/docs/demos/README.md)
+maps each demo to the surface it proves: intent, contract, relationship /
+impact, process, or constraint.
+
+Ordinary-user demo:
 [Vibe Queue Demo](https://github.com/amingclawdev/aming-claw/blob/main/docs/vibe-queue-demo/README.md)
-shows the ordinary-user version: keep describing requirements while the
-observer records, confirms, queues, executes, and reports progress through
-backlog and timeline state.
+shows the simple version: keep describing requirements while the observer
+records, confirms, queues, executes, and reports progress through backlog and
+timeline state.
 
 Technical challenge:
 [HN Multi-Agent Challenge Demo](https://github.com/amingclawdev/aming-claw/blob/main/docs/hn-demo/README.md)
