@@ -1,0 +1,120 @@
+{
+  "schema_version": "observer_reminder_echo_demo_contract_template.v1",
+  "template_id": "observer_reminder_echo_demo.v1",
+  "version": "v1",
+  "description": "Contract template for the reproducible new-user demo where an observer receives a reminder-only command notification and a bounded worker echoes the safe reminder fields as evidence.",
+  "task_types": [
+    "observer_demo",
+    "mf_sub",
+    "task"
+  ],
+  "stages": [
+    "observer_command_notified",
+    "review_ready",
+    "waiting_merge"
+  ],
+  "required_instance_fields": [
+    "contract_instance_id",
+    "workers",
+    "evidence_requirements"
+  ],
+  "service_routes": [
+    {
+      "route_id": "service.observer.reminder_echo",
+      "service_id": "observer.reminder_echo",
+      "mode": "preview",
+      "side_effect_class": "read",
+      "requirement_ids": [
+        "observer_reminder_visible",
+        "payload_boundary_preserved",
+        "received_reminder_echo"
+      ],
+      "idempotency_key_policy": {
+        "fields": [
+          "event_id",
+          "event_kind",
+          "project_id",
+          "route_id",
+          "service_id"
+        ]
+      }
+    }
+  ],
+  "event_routes": [
+    {
+      "route_id": "event.observer_command_notified.reminder_echo",
+      "event_kind": "observer.command.notified",
+      "service_route_id": "service.observer.reminder_echo",
+      "required_evidence_ids": [
+        "received_reminder_echo",
+        "payload_boundary_preserved"
+      ],
+      "enabled": true
+    }
+  ],
+  "evidence_requirements": [
+    {
+      "id": "observer_reminder_visible",
+      "required": true,
+      "phase": "implementation",
+      "kind": "observer_hook_reminder",
+      "description": "The observer-facing reminder shows kind, project_id, message, payload_included=false, and next_action only."
+    },
+    {
+      "id": "received_reminder_echo",
+      "required": true,
+      "phase": "verification",
+      "kind": "worker_contract",
+      "description": "The bounded worker final output echoes the safe reminder fields it received."
+    },
+    {
+      "id": "payload_boundary_preserved",
+      "required": true,
+      "phase": "verification",
+      "kind": "security_boundary",
+      "description": "raw_id, source, command_type, command_id, and command business payload are absent from the reminder echo."
+    }
+  ],
+  "worker_contract": {
+    "required_fields": [
+      "task_id",
+      "parent_task_id",
+      "worker_role",
+      "fence_token",
+      "owned_files",
+      "target_files",
+      "test_commands",
+      "responsibility",
+      "received_reminder_echo",
+      "review_evidence",
+      "final_output"
+    ],
+    "review_evidence": {
+      "required_fields": [
+        "received_reminder_echo",
+        "payload_boundary_preserved"
+      ]
+    },
+    "final_output": {
+      "required": true,
+      "required_fields": [
+        "status",
+        "branch",
+        "worktree",
+        "owned_changed_files",
+        "tests_run",
+        "received_reminder_echo",
+        "risks_open_questions"
+      ]
+    },
+    "forbidden_capabilities": [
+      "merge",
+      "push",
+      "activate_graph_refs",
+      "release_gates",
+      "close_backlog",
+      "delete_worktrees",
+      "mutate_merge_queues"
+    ]
+  }
+}

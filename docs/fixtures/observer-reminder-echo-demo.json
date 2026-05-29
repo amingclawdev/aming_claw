@@ -1,0 +1,221 @@
+{
+  "schema_version": "observer_reminder_echo_demo_fixture.v1",
+  "demo_id": "AC-DEMO-OBSERVER-REMINDER-ECHO-20260529",
+  "title": "Observer reminder echo demo fixture",
+  "purpose": "Support a new-user demo where the observer runs the real local governance observer-command flow, shows the reminder it receives, and requires the subagent contract to echo that reminder as review evidence.",
+  "boundaries": {
+    "normal_user_entrypoint": "Use observer_prompt_steps in a normal local Codex session with Aming Claw governance running. The fixture is prompt and data support, not a proof script.",
+    "docker_role": "Docker is a validation harness for this fixture and documentation boundary only. It must not call governance, MCP, Codex, Claude, OpenAI, Anthropic, or any live model.",
+    "payload_boundary": "The hook reminder contains reminder metadata only. The command business payload is available only after a token-authenticated observer command claim.",
+    "no_secret_policy": "This fixture contains no real secrets. Runtime session_token values are transient local credentials and must not be copied into public docs, timeline summaries, or subagent prompts."
+  },
+  "fixture_payload": {
+    "project_id": "aming-claw",
+    "observer_session_register": {
+      "observer_kind": "codex",
+      "session_label": "observer-reminder-echo-demo",
+      "capabilities": {
+        "demo": "observer_reminder_echo",
+        "can_display_hook_reminder": true,
+        "can_claim_observer_command": true
+      }
+    },
+    "observer_command_enqueue": {
+      "command_type": "analyze_requirements",
+      "created_by": "observer-reminder-echo-demo",
+      "payload": {
+        "demo_id": "AC-DEMO-OBSERVER-REMINDER-ECHO-20260529",
+        "request_summary": "Show how Aming Claw notifies an observer, keeps hook reminders payload-free, and asks the subagent contract to echo the received reminder.",
+        "requested_worker_lane": "prompt_fixture_docs",
+        "business_payload_should_not_appear_in_hook": "This string proves the hook reminder did not leak the command payload."
+      }
+    }
+  },
+  "observer_prompt_steps": [
+    {
+      "step_id": "01_prepare",
+      "actor": "user",
+      "copyable_prompt": "Use docs/fixtures/observer-reminder-echo-demo.json. Run the real local observer command flow. Display the hook reminder you receive exactly, then claim the command and show that the business payload appears only after claim. Do not call a proof script. Do not expose session_token in the final summary."
+    },
+    {
+      "step_id": "02_register_observer",
+      "actor": "observer",
+      "tool": "observer_session_register",
+      "input_from": "fixture_payload.observer_session_register",
+      "must_record": [
+        "session_id",
+        "session_token only in private working memory"
+      ],
+      "must_not_show": [
+        "session_token"
+      ]
+    },
+    {
+      "step_id": "03_enqueue_command",
+      "actor": "observer",
+      "tool": "observer_command_enqueue",
+      "input_from": "fixture_payload.observer_command_enqueue",
+      "must_display_to_user": [
+        "hook_reminder"
+      ],
+      "must_explain": "This is the actual reminder emitted by governance when a pending observer command is created."
+    },
+    {
+      "step_id": "04_verify_reminder_boundary",
+      "actor": "observer",
+      "check": "hook_reminder equals expected_hook_reminder and contains no payload fields.",
+      "must_not_find_in_hook_reminder": [
+        "payload",
+        "command_type",
+        "demo_id",
+        "request_summary",
+        "requested_worker_lane",
+        "business_payload_should_not_appear_in_hook",
+        "session_token"
+      ]
+    },
+    {
+      "step_id": "05_claim_command",
+      "actor": "observer",
+      "tool": "observer_command_next",
+      "input": {
+        "project_id": "aming-claw",
+        "session_id": "<runtime session_id from step 02>",
+        "session_token": "<runtime session_token from step 02>"
+      },
+      "must_display_to_user": [
+        "claimed command_id",
+        "claimed command_type",
+        "claimed payload keys"
+      ],
+      "must_explain": "The command payload is visible after authenticated claim, not in the hook reminder."
+    },
+    {
+      "step_id": "06_dispatch_subagent_contract",
+      "actor": "observer",
+      "copyable_subagent_contract_addendum": "Before doing any other work, write the exact hook reminder you received into received_reminder_echo. Use the same JSON shape and values. Then continue with your owned files. Do not include session_token or the claimed business payload inside received_reminder_echo.",
+      "required_worker_output_field": "received_reminder_echo"
+    },
+    {
+      "step_id": "07_record_evidence",
+      "actor": "observer",
+      "tool": "task_timeline_append",
+      "suggested_payload": {
+        "backlog_id": "AC-DEMO-OBSERVER-REMINDER-ECHO-20260529",
+        "event_type": "observer_reminder_echo_demo",
+        "event_kind": "verification",
+        "status": "passed",
+        "payload": {
+          "hook_reminder": "expected_hook_reminder",
+          "subagent_received_reminder_echo": "expected_subagent_received_reminder_echo.required_value",
+          "payload_boundary_preserved": true
+        }
+      }
+    }
+  ],
+  "expected_hook_reminder": {
+    "kind": "observer_command_pending",
+    "project_id": "aming-claw",
+    "message": "pending observer commands exist; call observer_command_next",
+    "payload_included": false,
+    "next_action": {
+      "tool": "observer_command_next",
+      "description": "claim the next pending observer command"
+    }
+  },
+  "expected_subagent_received_reminder_echo": {
+    "field_name": "received_reminder_echo",
+    "required_value": {
+      "kind": "observer_command_pending",
+      "project_id": "aming-claw",
+      "message": "pending observer commands exist; call observer_command_next",
+      "payload_included": false,
+      "next_action": {
+        "tool": "observer_command_next",
+        "description": "claim the next pending observer command"
+      }
+    },
+    "must_not_include": [
+      "payload",
+      "command_type",
+      "demo_id",
+      "request_summary",
+      "requested_worker_lane",
+      "business_payload_should_not_appear_in_hook",
+      "session_token"
+    ],
+    "worker_result_example": {
+      "received_reminder_echo": {
+        "kind": "observer_command_pending",
+        "project_id": "aming-claw",
+        "message": "pending observer commands exist; call observer_command_next",
+        "payload_included": false,
+        "next_action": {
+          "tool": "observer_command_next",
+          "description": "claim the next pending observer command"
+        }
+      },
+      "claimed_command_summary": {
+        "command_type": "analyze_requirements",
+        "payload_keys": [
+          "demo_id",
+          "request_summary",
+          "requested_worker_lane",
+          "business_payload_should_not_appear_in_hook"
+        ]
+      },
+      "owned_files_changed": [
+        "docs/fixtures/observer-reminder-echo-demo.json",
+        "docs/demos/observer-reminder-echo.md",
+        "docker/observer-reminder-echo-demo.Dockerfile"
+      ]
+    }
+  },
+  "expected_file_locations": {
+    "demo_fixture": "docs/fixtures/observer-reminder-echo-demo.json",
+    "new_user_demo_doc": "docs/demos/observer-reminder-echo.md",
+    "docker_validation_harness": "docker/observer-reminder-echo-demo.Dockerfile",
+    "reminder_source": "agent/governance/observer_session.py",
+    "reminder_publish_route": "agent/governance/server.py",
+    "reminder_echo_service": "agent/governance/service_registry.py",
+    "reminder_echo_contract": "agent/governance/contract_templates/observer_reminder_echo_demo.v1.json",
+    "existing_boundary_tests": "agent/tests/test_observer_command_queue.py",
+    "companion_contract_lane_expected_files": [
+      "agent/governance/service_registry.py",
+      "agent/governance/contract_templates/observer_reminder_echo_demo.v1.json",
+      "agent/tests/test_service_router.py",
+      "agent/tests/test_contract_template_registry.py",
+      "agent/tests/test_task_timeline.py"
+    ]
+  },
+  "change_record_checks": [
+    {
+      "surface": "Backlog",
+      "check": "Open the backlog row and confirm target_files includes this fixture, demo doc, Dockerfile, reminder service/contract files, and focused tests.",
+      "dashboard_url": "http://localhost:40000/dashboard?project_id=aming-claw&view=backlog&backlog=AC-DEMO-OBSERVER-REMINDER-ECHO-20260529"
+    },
+    {
+      "surface": "Timeline",
+      "check": "Filter timeline by backlog_id=AC-DEMO-OBSERVER-REMINDER-ECHO-20260529 and find implementation or verification evidence containing hook_reminder and received_reminder_echo."
+    },
+    {
+      "surface": "Git",
+      "check": "After the observer merges the worker branch, run git show --name-only --format='%H%n%s%n%aI' <commit> and confirm the changed file list matches the owned-file evidence."
+    },
+    {
+      "surface": "Graph and asset inventory",
+      "check": "After the merge and graph update, use the dashboard graph/assets views or graph path lookup to inspect the file inventory. New doc/fixture/docker assets may appear as unbound asset inventory first; that is expected until a binding or governance hint is accepted."
+    }
+  ],
+  "docker_validation_expectations": {
+    "must_pass_without_network": true,
+    "must_not_call_models": true,
+    "must_not_start_governance": true,
+    "must_check": [
+      "fixture JSON parses",
+      "required top-level fixture sections exist",
+      "expected hook reminder is payload-free",
+      "documentation states that Docker is verification, not the user entrypoint"
+    ]
+  }
+}

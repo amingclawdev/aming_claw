@@ -292,6 +292,93 @@ class TestTaskTimeline(unittest.TestCase):
             payload["contract_evidence"],
         )
 
+    def test_observer_reminder_echo_timeline_route_persists_safe_echo(self):
+        from agent.governance import task_timeline
+
+        bug_id = "BUG-REMINDER-ECHO"
+        self._insert_router_backlog(
+            bug_id=bug_id,
+            contract={
+                "parallel_contract": {
+                    "template_id": "observer_reminder_echo_demo.v1",
+                    "contract_instance_id": bug_id,
+                }
+            },
+        )
+
+        source = task_timeline.record_event(
+            self.conn,
+            project_id="proj",
+            task_id="task-reminder-echo",
+            backlog_id=bug_id,
+            event_type="observer.command.notified",
+            actor="observer-fixture",
+            status="notified",
+            payload={
+                "hook_reminder": {
+                    "kind": "observer_command_pending",
+                    "project_id": "proj",
+                    "message": "pending observer commands exist; call observer_command_next",
+                    "payload_included": False,
+                    "next_action": {
+                        "tool": "observer_command_next",
+                        "description": "claim the next pending observer command",
+                        "source": "nested-business-field",
+                    },
+                    "raw_id": "raw-1",
+                    "source": "dashboard",
+                    "command_type": "analyze_requirements",
+                    "command_id": "cmd-1",
+                }
+            },
+        )
+        self.conn.commit()
+
+        routed = task_timeline.list_events(
+            self.conn,
+            "proj",
+            parent_event_id=source["id"],
+            event_kind="service_route",
+        )
+
+        self.assertEqual(len(routed), 1)
+        payload = routed[0]["payload"]
+        result = payload["result"]
+        received_reminder = result["received_reminder"]
+        echo = result["received_reminder_echo"]
+        self.assertEqual(routed[0]["event_type"], "service.route.completed")
+        self.assertEqual(payload["service_id"], "observer.reminder_echo")
+        self.assertEqual(payload["route_id"], "event.observer_command_notified.reminder_echo")
+        self.assertEqual(
+            payload["requirement_ids"],
+            [
+                "observer_reminder_visible",
+                "payload_boundary_preserved",
+                "received_reminder_echo",
+            ],
+        )
+        self.assertEqual(
+            echo,
+            {
+                "kind": "observer_command_pending",
+                "project_id": "proj",
+                "message": "pending observer commands exist; call observer_command_next",
+                "payload_included": False,
+                "next_action": {
+                    "tool": "observer_command_next",
+                    "description": "claim the next pending observer command",
+                },
+            },
+        )
+        self.assertEqual(received_reminder, echo)
+        result_json = json.dumps(result, sort_keys=True)
+        self.assertNotIn("raw_id", result_json)
+        self.assertNotIn("source", result_json)
+        self.assertNotIn("nested-business-field", result_json)
+        self.assertNotIn("command_type", result_json)
+        self.assertNotIn("command_id", result_json)
+        self.assertTrue(result["payload_boundary"]["business_payload_excluded"])
+
     def test_route_timeline_event_is_idempotent_for_same_source_event(self):
         from agent.governance import service_router, task_timeline
 

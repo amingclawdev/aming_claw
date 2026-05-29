@@ -23,6 +23,7 @@ def test_template_loading_includes_ue_audit_contract():
     ids = {template["template_id"] for template in templates}
 
     assert "ue_audit.v1" in ids
+    assert "observer_reminder_echo_demo.v1" in ids
 
 
 def test_template_filtering_by_task_type_and_stage():
@@ -40,6 +41,20 @@ def test_get_template_returns_versioned_source_controlled_template():
     assert template["version"] == "v1"
     assert template["source"]["type"] == "source_controlled"
     assert template["expert_profile"]["source_id"] == "aming_claw.bundled_ue_expert.v1"
+
+
+def test_observer_reminder_echo_template_declares_route_and_worker_echo_requirement():
+    template = get_contract_template("observer_reminder_echo_demo.v1")
+
+    assert template["version"] == "v1"
+    assert template["service_routes"][0]["service_id"] == "observer.reminder_echo"
+    assert template["service_routes"][0]["mode"] == "preview"
+    assert template["service_routes"][0]["side_effect_class"] == "read"
+    assert template["event_routes"][0]["event_kind"] == "observer.command.notified"
+    assert template["event_routes"][0]["service_route_id"] == "service.observer.reminder_echo"
+    assert "received_reminder_echo" in template["event_routes"][0]["required_evidence_ids"]
+    assert "received_reminder_echo" in template["worker_contract"]["required_fields"]
+    assert "received_reminder_echo" in template["worker_contract"]["final_output"]["required_fields"]
 
 
 def test_unknown_template_id_raises_explicit_error():

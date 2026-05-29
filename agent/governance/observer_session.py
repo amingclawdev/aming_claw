@@ -963,4 +963,8 @@ def command_pending_reminder(project_id: str) -> dict[str, Any]:
         "project_id": (project_id or "").strip(),
         "message": "pending observer commands exist; call observer_command_next",
         "payload_included": False,
+        "next_action": {
+            "tool": "observer_command_next",
+            "description": "claim the next pending observer command",
+        },
     }

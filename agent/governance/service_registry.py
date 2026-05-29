@@ -91,6 +91,75 @@ def deterministic_default_handler(
     }
 
 
+def observer_reminder_echo_handler(
+    event: Mapping[str, Any],
+    route_context: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Echo only the safe observer reminder fields for demo evidence."""
+
+    service_id = str(route_context.get("service_id") or "")
+    route_id = str(route_context.get("route_id") or "")
+    event_kind = str(event.get("event_kind") or event.get("kind") or "")
+    reminder = _reminder_payload(event)
+    payload_included = reminder.get("payload_included")
+    received_reminder = {
+        "kind": _text(reminder.get("kind")),
+        "project_id": _text(reminder.get("project_id") or event.get("project_id")),
+        "message": _text(reminder.get("message")),
+        "payload_included": payload_included if isinstance(payload_included, bool) else False,
+        "next_action": _safe_next_action(
+            reminder.get("next_action") or reminder.get("claim_instruction")
+        ),
+    }
+    return {
+        "ok": True,
+        "service_id": service_id,
+        "route_id": route_id,
+        "event_kind": event_kind,
+        "received_reminder": received_reminder,
+        "received_reminder_echo": received_reminder,
+        "payload_boundary": {
+            "payload_included": received_reminder["payload_included"],
+            "business_payload_excluded": True,
+            "safe_fields": list(received_reminder.keys()),
+        },
+    }
+
+
+def _reminder_payload(event: Mapping[str, Any]) -> Mapping[str, Any]:
+    payload = event.get("payload")
+    payload_map = payload if isinstance(payload, Mapping) else {}
+    for key in ("hook_reminder", "received_reminder"):
+        value = event.get(key)
+        if isinstance(value, Mapping):
+            return value
+        value = payload_map.get(key)
+        if isinstance(value, Mapping):
+            return value
+    return {}
+
+
+def _text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _safe_next_action(value: Any) -> dict[str, str]:
+    if isinstance(value, Mapping):
+        return {
+            "tool": _text(value.get("tool") or "observer_command_next"),
+            "description": _text(
+                value.get("description") or "claim the next pending observer command"
+            ),
+        }
+    description = _text(value) or "claim the next pending observer command"
+    return {
+        "tool": "observer_command_next",
+        "description": description,
+    }
+
+
 def default_service_descriptors() -> dict[str, ServiceDescriptor]:
     """Return the built-in deterministic governance service descriptors."""
 
@@ -144,6 +213,20 @@ def default_service_descriptors() -> dict[str, ServiceDescriptor]:
             supported_events=("backlog.close.requested",),
             idempotency_fields=common_idempotency,
             handler=deterministic_default_handler,
+        ),
+        "observer.reminder_echo": ServiceDescriptor(
+            service_id="observer.reminder_echo",
+            mode="preview",
+            side_effect="read",
+            supported_events=("observer.command.notified",),
+            idempotency_fields=(
+                "event_id",
+                "event_kind",
+                "project_id",
+                "route_id",
+                "service_id",
+            ),
+            handler=observer_reminder_echo_handler,
         ),
     }
 

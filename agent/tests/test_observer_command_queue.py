@@ -42,6 +42,10 @@ def test_command_enqueue_and_list_preserve_business_payload_in_db():
         "project_id": "demo",
         "message": "pending observer commands exist; call observer_command_next",
         "payload_included": False,
+        "next_action": {
+            "tool": "observer_command_next",
+            "description": "claim the next pending observer command",
+        },
     }
 
 
@@ -235,15 +239,27 @@ def test_api_enqueue_publishes_reminder_only_event_and_preserves_command_payload
         "project_id": "demo",
         "message": "pending observer commands exist; call observer_command_next",
         "payload_included": False,
+        "next_action": {
+            "tool": "observer_command_next",
+            "description": "claim the next pending observer command",
+        },
     }
     command = payload["observer_command"]
 
     assert code == 201
     assert payload["hook_reminder"] == expected_reminder
     assert captured == [expected_reminder]
-    assert set(captured[0]) == {"kind", "project_id", "message", "payload_included"}
+    assert set(captured[0]) == {
+        "kind",
+        "project_id",
+        "message",
+        "payload_included",
+        "next_action",
+    }
     assert "raw_id" not in captured[0]
     assert "command_type" not in captured[0]
+    assert "source" not in captured[0]
+    assert "command_id" not in captured[0]
     assert command["payload"] == {"raw_id": "raw-1", "source": "dashboard"}
     assert command["status"] == observer_session.COMMAND_STATUS_NOTIFIED
     assert command["notified_at"]

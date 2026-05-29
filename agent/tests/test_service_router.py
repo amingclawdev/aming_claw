@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from agent.governance.service_router import route_event
 
 
@@ -281,3 +283,83 @@ def test_legacy_side_effect_alias_still_routes():
     assert result["decision"] == "allow"
     assert result["routes"][0]["side_effect_class"] == "read"
     assert result["routes"][0]["side_effect"] == "read"
+
+
+def test_observer_reminder_echo_route_returns_only_safe_reminder_fields():
+    contract = _contract(
+        service_routes=[
+            _service_route(
+                service_id="observer.reminder_echo",
+                mode="preview",
+                side_effect_class="read",
+                route_id="service.observer.reminder_echo",
+                requirement_ids=["received_reminder_echo", "payload_boundary_preserved"],
+            )
+        ],
+        event_routes=[
+            {
+                "route_id": "event.observer_command_notified.reminder_echo",
+                "event_kind": "observer.command.notified",
+                "service_route_id": "service.observer.reminder_echo",
+                "enabled": True,
+            }
+        ],
+    )
+
+    result = route_event(
+        {
+            "event_id": "evt-reminder",
+            "event_kind": "observer.command.notified",
+            "project_id": "demo",
+            "payload": {
+                "hook_reminder": {
+                    "kind": "observer_command_pending",
+                    "project_id": "demo",
+                    "message": "pending observer commands exist; call observer_command_next",
+                    "payload_included": False,
+                    "next_action": {
+                        "tool": "observer_command_next",
+                        "description": "claim the next pending observer command",
+                        "raw_id": "raw-in-next-action",
+                    },
+                    "raw_id": "raw-1",
+                    "source": "dashboard",
+                    "command_type": "analyze_requirements",
+                    "command_id": "cmd-1",
+                }
+            },
+        },
+        contract,
+    )
+
+    route = result["routes"][0]
+    received_reminder = route["result"]["received_reminder"]
+    echo = route["result"]["received_reminder_echo"]
+
+    assert result["decision"] == "allow"
+    assert route["service_id"] == "observer.reminder_echo"
+    assert route["mode"] == "preview"
+    assert route["side_effect_class"] == "read"
+    assert received_reminder == echo
+    assert set(echo) == {"kind", "project_id", "message", "payload_included", "next_action"}
+    assert echo == {
+        "kind": "observer_command_pending",
+        "project_id": "demo",
+        "message": "pending observer commands exist; call observer_command_next",
+        "payload_included": False,
+        "next_action": {
+            "tool": "observer_command_next",
+            "description": "claim the next pending observer command",
+        },
+    }
+    assert "raw_id" not in echo
+    assert "source" not in echo
+    assert "command_type" not in echo
+    assert "command_id" not in echo
+    result_json = json.dumps(route["result"], sort_keys=True)
+    assert "raw_id" not in result_json
+    assert "raw-in-next-action" not in result_json
+    assert "source" not in result_json
+    assert "command_type" not in result_json
+    assert "command_id" not in result_json
+    assert route["result"]["payload_boundary"]["business_payload_excluded"] is True
