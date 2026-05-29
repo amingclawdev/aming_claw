@@ -52,6 +52,22 @@ class TestTaskTimeline(unittest.TestCase):
         os.environ.pop("SHARED_VOLUME_PATH", None)
         self.tmp.cleanup()
 
+    def _insert_router_backlog(self, bug_id="BUG-SERVICE-ROUTER"):
+        contract = {
+            "parallel_contract": {
+                "template_id": "mf_parallel.v1",
+                "contract_instance_id": bug_id,
+            }
+        }
+        self.conn.execute(
+            """INSERT INTO backlog_bugs
+               (bug_id, title, status, priority, chain_trigger_json, created_at, updated_at)
+               VALUES (?, ?, 'OPEN', 'P1', ?, '2026-05-29T00:00:00Z', '2026-05-29T00:00:00Z')""",
+            (bug_id, "Service router test", json.dumps(contract)),
+        )
+        self.conn.commit()
+        return contract
+
     def test_concurrent_timeline_writes_use_serialized_queue(self):
         from agent.governance import task_timeline
 
@@ -174,6 +190,99 @@ class TestTaskTimeline(unittest.TestCase):
 
         self.assertEqual([event["task_id"] for event in events], ["task-a", "task-b"])
         self.assertEqual({event["backlog_id"] for event in events}, {"BUG-A"})
+
+    def test_task_completed_timeline_event_routes_contract_services(self):
+        from agent.governance import task_timeline
+
+        self._insert_router_backlog()
+
+        source = task_timeline.record_event(
+            self.conn,
+            project_id="proj",
+            task_id="task-router",
+            backlog_id="BUG-SERVICE-ROUTER",
+            event_type="task.completed",
+            actor="worker",
+            status="succeeded",
+            payload={"task_type": "dev"},
+        )
+        self.conn.commit()
+
+        routed = task_timeline.list_events(
+            self.conn,
+            "proj",
+            parent_event_id=source["id"],
+            event_kind="service_route",
+        )
+
+        self.assertGreaterEqual(len(routed), 2)
+        self.assertEqual({event["parent_event_id"] for event in routed}, {source["id"]})
+        self.assertTrue(all(event["correlation_id"].startswith("service-route:") for event in routed))
+        self.assertIn(
+            "test_governance.preview",
+            {event["payload"]["service_id"] for event in routed},
+        )
+        self.assertIn(
+            "review.recommendations",
+            {event["payload"]["service_id"] for event in routed},
+        )
+        self.assertEqual({event["event_type"] for event in routed}, {"service.route.completed"})
+
+    def test_route_timeline_event_is_idempotent_for_same_source_event(self):
+        from agent.governance import service_router, task_timeline
+
+        self._insert_router_backlog()
+        source = task_timeline.record_event(
+            self.conn,
+            project_id="proj",
+            task_id="task-router",
+            backlog_id="BUG-SERVICE-ROUTER",
+            event_type="task.completed",
+            actor="worker",
+            status="succeeded",
+        )
+        self.conn.commit()
+
+        service_router.route_timeline_event(self.conn, source)
+        service_router.route_timeline_event(self.conn, source)
+        self.conn.commit()
+
+        routed = task_timeline.list_events(
+            self.conn,
+            "proj",
+            parent_event_id=source["id"],
+            event_kind="service_route",
+        )
+        correlations = [event["correlation_id"] for event in routed]
+        self.assertEqual(len(correlations), len(set(correlations)))
+        self.assertEqual(len(routed), 2)
+
+    def test_service_route_timeline_event_does_not_recurse(self):
+        from agent.governance import task_timeline
+
+        self._insert_router_backlog()
+        source = task_timeline.record_event(
+            self.conn,
+            project_id="proj",
+            task_id="task-router",
+            backlog_id="BUG-SERVICE-ROUTER",
+            event_type="service.route.completed",
+            phase="service_router",
+            event_kind="service_route",
+            actor="service-router",
+            status="allowed",
+            payload={"service_router_suppress": True},
+            correlation_id="service-route:test",
+        )
+        self.conn.commit()
+
+        children = task_timeline.list_events(
+            self.conn,
+            "proj",
+            parent_event_id=source["id"],
+        )
+
+        self.assertEqual(children, [])
 
     def test_mf_process_timeline_records_queryable_test_scenario_decision(self):
         from agent.governance import task_timeline

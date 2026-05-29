@@ -173,6 +173,9 @@ def _insert_event(conn: sqlite3.Connection, event: dict[str, Any]) -> dict[str, 
     from .db import sqlite_write_lock
 
     created_at = event.get("created_at") or _utc_iso()
+    payload = event.get("payload") or {}
+    verification = event.get("verification") or {}
+    artifact_refs = event.get("artifact_refs") or {}
     with sqlite_write_lock():
         cur = conn.execute(
             """INSERT INTO task_timeline_events
@@ -198,26 +201,54 @@ def _insert_event(conn: sqlite3.Connection, event: dict[str, Any]) -> dict[str, 
                 int(event.get("schema_version") or TIMELINE_SCHEMA_VERSION),
                 _text(event.get("actor")),
                 _text(event.get("status")),
-                _json(event.get("payload"), {}),
-                _json(event.get("verification"), {}),
-                _json(event.get("artifact_refs"), {}),
+                _json(payload, {}),
+                _json(verification, {}),
+                _json(artifact_refs, {}),
                 _text(event.get("trace_id")),
                 _text(event.get("commit_sha")),
                 created_at,
             ),
         )
-    return {
+    inserted = {
         "id": cur.lastrowid,
         "project_id": _text(event.get("project_id")),
+        "backlog_id": _text(event.get("backlog_id")),
+        "mf_id": _text(event.get("mf_id")),
         "task_id": _text(event.get("task_id")),
+        "attempt_num": int(event.get("attempt_num") or 0),
         "event_type": _text(event.get("event_type")),
         "phase": _text(event.get("phase")),
         "event_kind": _text(event.get("event_kind")),
         "scenario_id": _text(event.get("scenario_id")),
+        "parent_event_id": int(event.get("parent_event_id") or 0),
         "correlation_id": _text(event.get("correlation_id")),
+        "severity": _text(event.get("severity")),
+        "decision": _text(event.get("decision")),
         "schema_version": int(event.get("schema_version") or TIMELINE_SCHEMA_VERSION),
+        "actor": _text(event.get("actor")),
+        "status": _text(event.get("status")),
+        "payload": payload if isinstance(payload, dict) else {},
+        "verification": verification if isinstance(verification, dict) else {},
+        "artifact_refs": artifact_refs if isinstance(artifact_refs, dict) else {},
+        "trace_id": _text(event.get("trace_id")),
+        "commit_sha": _text(event.get("commit_sha")),
         "created_at": created_at,
     }
+    _run_service_router_hook(conn, inserted)
+    return inserted
+
+
+def _run_service_router_hook(conn: sqlite3.Connection, inserted_event: dict[str, Any]) -> None:
+    event_type = _text(inserted_event.get("event_type"))
+    payload = _mapping(inserted_event.get("payload"))
+    if event_type.startswith("service.route.") or payload.get("service_router_suppress") is True:
+        return
+    try:
+        from agent.governance.service_router import route_timeline_event
+
+        route_timeline_event(conn, inserted_event, record=True)
+    except Exception:
+        log.debug("service router timeline hook failed", exc_info=True)
 
 
 def record_event(

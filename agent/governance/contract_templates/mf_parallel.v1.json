@@ -351,14 +351,12 @@
     {
       "route_id": "event.task_completed.test_preview",
       "event_kind": "task.completed",
-      "stage": "review_ready",
       "service_route_id": "service.test_governance.preview",
       "enabled": true
     },
     {
       "route_id": "event.task_completed.review_recommendations",
       "event_kind": "task.completed",
-      "stage": "review_ready",
       "service_route_id": "service.review.recommendations",
       "enabled": true
     },

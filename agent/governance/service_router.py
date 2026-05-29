@@ -5,8 +5,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 import hashlib
 import json
+import sqlite3
 from typing import Any
 
+from agent.governance.contract_template_registry import (
+    ContractTemplateError,
+    get_contract_template,
+)
 from agent.governance.service_registry import (
     ServiceDescriptor,
     ServiceRegistry,
@@ -26,6 +31,49 @@ def route_event(
 
     router = ServiceRouter(registry or default_service_registry())
     return router.route(event, contract, call_handlers=call_handlers)
+
+
+def route_timeline_event(
+    conn: sqlite3.Connection,
+    timeline_event: Mapping[str, Any],
+    registry: ServiceRegistry | None = None,
+    *,
+    call_handlers: bool = True,
+    record: bool = True,
+) -> dict[str, Any]:
+    """Route one durable task_timeline event and optionally record evidence rows."""
+
+    event_type = _string(timeline_event.get("event_type"))
+    payload = _mapping(timeline_event.get("payload"))
+    if event_type.startswith("service.route.") or payload.get("service_router_suppress") is True:
+        return {
+            "status": "suppressed",
+            "decision": "no_op",
+            "event_kind": event_type,
+            "route_count": 0,
+            "routes": [],
+        }
+
+    contract = _resolve_timeline_contract(conn, timeline_event)
+    if not contract:
+        return {
+            "status": "no_contract",
+            "decision": "no_op",
+            "event_kind": event_type,
+            "route_count": 0,
+            "routes": [],
+        }
+
+    router_event = _normalize_timeline_event(timeline_event)
+    result = route_event(
+        router_event,
+        contract,
+        registry=registry,
+        call_handlers=call_handlers,
+    )
+    if record and result.get("routes"):
+        _record_timeline_route_results(conn, timeline_event, router_event, result)
+    return result
 
 
 class ServiceRouter:
@@ -97,23 +145,25 @@ class ServiceRouter:
         )
         descriptor = self.registry.get(service_id)
         if descriptor is None:
+            idempotency_key = _fallback_idempotency_key(event, contract, route_id, service_id)
             return {
                 "route_id": route_id,
                 "service_id": service_id,
                 "decision": "block",
                 "status": "unknown_service",
                 "reason": f"unknown service: {service_id}",
-                "idempotency_key": "",
+                "idempotency_key": idempotency_key,
             }
         event_kind = _event_kind(event)
         if descriptor.supported_events and event_kind not in descriptor.supported_events:
+            idempotency_key = _fallback_idempotency_key(event, contract, route_id, service_id)
             return {
                 "route_id": route_id,
                 "service_id": service_id,
                 "decision": "block",
                 "status": "unsupported_event",
                 "reason": f"{service_id} does not support {event_kind}",
-                "idempotency_key": "",
+                "idempotency_key": idempotency_key,
             }
 
         merged = _merge_descriptor_route(descriptor, service_route, event_route)
@@ -300,6 +350,212 @@ def _idempotency_key(
         json.dumps(values, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()[:24]
     return f"service-route:{service_id}:{route_id}:{digest}"
+
+
+def _fallback_idempotency_key(
+    event: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    route_id: str,
+    service_id: str,
+) -> str:
+    return _idempotency_key(
+        event,
+        contract,
+        {"idempotency_key_policy": ["event_id", "event_kind", "stage", "task_id", "backlog_id"]},
+        route_id,
+        service_id or "unknown",
+    )
+
+
+def _normalize_timeline_event(timeline_event: Mapping[str, Any]) -> dict[str, Any]:
+    payload = _mapping(timeline_event.get("payload"))
+    event_id = timeline_event.get("id") or timeline_event.get("event_id") or ""
+    phase = _string(timeline_event.get("phase"))
+    return {
+        "event_id": str(event_id),
+        "source_event_id": str(event_id),
+        "event_kind": _string(timeline_event.get("event_type")),
+        "project_id": _string(timeline_event.get("project_id")),
+        "task_id": _string(timeline_event.get("task_id")),
+        "backlog_id": _string(timeline_event.get("backlog_id")),
+        "mf_id": _string(timeline_event.get("mf_id")),
+        "attempt_num": timeline_event.get("attempt_num") or 0,
+        "phase": phase,
+        "stage": _string(timeline_event.get("stage") or payload.get("stage") or ""),
+        "status": _string(timeline_event.get("status")),
+        "payload": payload,
+        "artifact_refs": _mapping(timeline_event.get("artifact_refs")),
+        "trace_id": _string(timeline_event.get("trace_id")),
+    }
+
+
+def _resolve_timeline_contract(
+    conn: sqlite3.Connection,
+    timeline_event: Mapping[str, Any],
+) -> dict[str, Any]:
+    explicit = _explicit_contract_from_timeline_event(timeline_event)
+    if explicit:
+        return _with_template_routes(explicit)
+
+    backlog_id = _string(timeline_event.get("backlog_id"))
+    if not backlog_id:
+        return {}
+    try:
+        row = conn.execute(
+            "SELECT chain_trigger_json FROM backlog_bugs WHERE bug_id = ?",
+            (backlog_id,),
+        ).fetchone()
+    except sqlite3.Error:
+        return {}
+    if not row:
+        return {}
+    raw = row["chain_trigger_json"] if isinstance(row, sqlite3.Row) else row[0]
+    try:
+        data = json.loads(raw or "{}")
+    except Exception:
+        return {}
+    if not isinstance(data, Mapping):
+        return {}
+    return _with_template_routes(_contract_root(data))
+
+
+def _explicit_contract_from_timeline_event(timeline_event: Mapping[str, Any]) -> dict[str, Any]:
+    for container in (
+        _mapping(timeline_event.get("payload")),
+        _mapping(timeline_event.get("artifact_refs")),
+    ):
+        if not _looks_like_contract_container(container):
+            continue
+        root = _contract_root(container)
+        if root:
+            return root
+    return {}
+
+
+def _looks_like_contract_container(container: Mapping[str, Any]) -> bool:
+    return any(
+        key in container
+        for key in (
+            "parallel_contract",
+            "mf_contract",
+            "contract_instance",
+            "contract",
+            "template_id",
+            "event_routes",
+            "service_routes",
+        )
+    )
+
+
+def _contract_root(contract: Mapping[str, Any] | None) -> dict[str, Any]:
+    data = dict(contract) if isinstance(contract, Mapping) else {}
+    for key in ("parallel_contract", "mf_contract", "contract_instance", "contract"):
+        nested = data.get(key)
+        if isinstance(nested, Mapping):
+            return dict(nested)
+    return data
+
+
+def _with_template_routes(contract: Mapping[str, Any]) -> dict[str, Any]:
+    root = dict(contract)
+    if not root:
+        return {}
+    if root.get("event_routes") or root.get("service_routes"):
+        return root
+    template_id = _string(root.get("template_id"))
+    if not template_id:
+        return root
+    try:
+        template = get_contract_template(template_id)
+    except ContractTemplateError:
+        return root
+    merged = dict(template)
+    merged.update(root)
+    if "event_routes" in template:
+        merged.setdefault("event_routes", template["event_routes"])
+    if "service_routes" in template:
+        merged.setdefault("service_routes", template["service_routes"])
+    return merged
+
+
+def _record_timeline_route_results(
+    conn: sqlite3.Connection,
+    source_event: Mapping[str, Any],
+    router_event: Mapping[str, Any],
+    route_result: Mapping[str, Any],
+) -> None:
+    source_event_id = int(source_event.get("id") or 0)
+    if not source_event_id:
+        return
+    project_id = _string(source_event.get("project_id"))
+    if not project_id:
+        return
+    from agent.governance import task_timeline
+
+    for route in route_result.get("routes") or []:
+        if not isinstance(route, Mapping):
+            continue
+        idempotency_key = _string(route.get("idempotency_key"))
+        if not idempotency_key or _route_evidence_exists(
+            conn,
+            project_id=project_id,
+            parent_event_id=source_event_id,
+            correlation_id=idempotency_key,
+        ):
+            continue
+        decision = _string(route.get("decision"))
+        event_type = "service.route.completed" if decision == "allow" else "service.route.blocked"
+        task_timeline.record_event(
+            conn,
+            project_id=project_id,
+            backlog_id=_string(source_event.get("backlog_id")),
+            task_id=_string(source_event.get("task_id")),
+            mf_id=_string(source_event.get("mf_id")),
+            attempt_num=int(source_event.get("attempt_num") or 0),
+            event_type=event_type,
+            phase="service_router",
+            event_kind="service_route",
+            parent_event_id=source_event_id,
+            correlation_id=idempotency_key,
+            actor="service-router",
+            status=_string(route.get("status")),
+            decision=decision,
+            payload={
+                "service_router_suppress": True,
+                "source_event_id": _string(router_event.get("source_event_id")),
+                "source_event_type": _string(source_event.get("event_type")),
+                "route_id": _string(route.get("route_id")),
+                "service_id": _string(route.get("service_id")),
+                "mode": _string(route.get("mode")),
+                "side_effect_class": _string(route.get("side_effect_class") or route.get("side_effect")),
+                "decision": decision,
+                "status": _string(route.get("status")),
+                "result": _mapping(route.get("result")),
+                "reason": _string(route.get("reason")),
+            },
+        )
+
+
+def _route_evidence_exists(
+    conn: sqlite3.Connection,
+    *,
+    project_id: str,
+    parent_event_id: int,
+    correlation_id: str,
+) -> bool:
+    try:
+        row = conn.execute(
+            """SELECT 1 FROM task_timeline_events
+               WHERE project_id = ?
+                 AND parent_event_id = ?
+                 AND correlation_id = ?
+                 AND event_type IN ('service.route.completed', 'service.route.blocked')
+               LIMIT 1""",
+            (project_id, int(parent_event_id), correlation_id),
+        ).fetchone()
+    except sqlite3.Error:
+        return False
+    return row is not None
 
 
 def _value_for_field(
