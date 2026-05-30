@@ -87,6 +87,13 @@ def test_plan_output_lists_scenarios_actions_and_fixture_metadata(tmp_path: Path
     }
     assert scenario["scenario_id"] == "simple_user_entry"
     assert scenario["target_project"] == "aming-claw"
+    assert scenario["test_flow_route"]["schema_version"] == "test_flow_route.v1"
+    assert scenario["test_flow_route"]["decision"] == "mixed"
+    assert set(scenario["test_flow_route"]["lanes"]) == {"focused_unit", "e2e_fixture"}
+    assert scenario["test_flow_route"]["prompt_alert_bundle"]["noise_policy"] == "selected_lanes_only"
+    assert {
+        alert["lane"] for alert in scenario["test_flow_route"]["prompt_alert_bundle"]["alerts"]
+    } == {"focused_unit", "e2e_fixture"}
     commands = {command["id"]: command for command in scenario["commands"]}
     assert "simple_mode_project_inbox_flow" in commands
     assert (
@@ -100,6 +107,14 @@ def test_plan_output_lists_scenarios_actions_and_fixture_metadata(tmp_path: Path
     docker_deps = {item["id"]: item for item in docker["dependency_decisions"]}
     assert docker["execution_policy"]["requires_flags"] == ["--allow-docker"]
     assert docker["execution_policy"]["model_calls"] == "forbidden"
+    assert docker["test_flow_route"]["decision"] == "docker_fixture"
+    assert docker["test_flow_route"]["primary_lane"] == "docker_fixture"
+    assert docker["test_flow_route"]["requires_flags"] == ["--allow-docker"]
+    assert docker["test_flow_route"]["model_calls"] == "forbidden"
+    docker_alerts = docker["test_flow_route"]["prompt_alert_bundle"]["alerts"]
+    assert [alert["lane"] for alert in docker_alerts] == ["docker_fixture"]
+    assert docker_alerts[0]["severity"] == "block"
+    assert "start_docker_without_approval" in docker_alerts[0]["blocked_actions"]
     assert docker["safety"]["uses_docker_fixture"] is True
     assert docker["safety"]["calls_models"] is False
     assert docker["fixtures"][0]["kind"] == "docker_fixture"
@@ -116,6 +131,10 @@ def test_plan_output_lists_scenarios_actions_and_fixture_metadata(tmp_path: Path
     ai_deps = {item["id"]: item for item in ai_fixture["dependency_decisions"]}
     assert ai_fixture["execution_policy"]["live_ai"] == "manual_auth_unknown"
     assert ai_fixture["execution_policy"]["model_calls"] == "forbidden"
+    assert ai_fixture["test_flow_route"]["decision"] == "fixture_only"
+    assert ai_fixture["test_flow_route"]["autorun"] is True
+    assert ai_fixture["test_flow_route"]["model_calls"] == "forbidden"
+    assert ai_fixture["test_flow_route"]["prompt_alert_bundle"]["alerts"][0]["lane"] == "fixture_only"
     assert ai_fixture["safety"]["auth_status"] == "unknown"
     assert ai_fixture["safety"]["calls_models"] is False
     assert ai_fixture["fixtures"][0]["kind"] == "json_fixture"
@@ -128,6 +147,10 @@ def test_plan_output_lists_scenarios_actions_and_fixture_metadata(tmp_path: Path
     assert live_probe["execution_policy"]["lane"] == "live_ai_environment_probe"
     assert live_probe["execution_policy"]["requires_flags"] == ["--allow-live-ai"]
     assert live_probe["execution_policy"]["model_calls"] == "explicit_probe_only"
+    assert live_probe["test_flow_route"]["decision"] == "live_ai_environment_probe"
+    assert live_probe["test_flow_route"]["requires_flags"] == ["--allow-live-ai"]
+    assert live_probe["test_flow_route"]["model_calls"] == "explicit_probe_only"
+    assert live_probe["test_flow_route"]["prompt_alert_bundle"]["alerts"][0]["severity"] == "block"
     assert live_probe["safety"]["environment_probe"] is True
     assert live_probe["safety"]["calls_models"] is True
     assert live_probe["route_context"]["service_id"] == "service_router.live_ai_environment_tester"
@@ -155,6 +178,8 @@ def test_plan_output_lists_scenarios_actions_and_fixture_metadata(tmp_path: Path
     assert ruby["repository"]["commit"] == "5236d3459b8b9015e5ce21ddd0c6beb0db4081d4"
     assert ruby["repository"]["workspace_path"] == str(tmp_path / "state" / "workspaces" / "sinatra")
     assert ruby["validation"]["required_path"] == "lib/sinatra/base.rb"
+    assert ruby["test_flow_route"]["decision"] == "external_graph_fixture"
+    assert ruby["test_flow_route"]["requires_flags"] == ["--allow-network", "--allow-bootstrap"]
 
 
 def test_service_router_fixture_dependency_gating_shape(tmp_path: Path) -> None:
@@ -179,6 +204,8 @@ def test_service_router_fixture_dependency_gating_shape(tmp_path: Path) -> None:
     assert "--allow-docker" in docker_deps["docker_fixture"]["reason"]
     assert docker_report["safety"]["calls_models"] is False
     assert docker_report["execution_policy"]["model_calls"] == "forbidden"
+    assert docker_report["test_flow_route"]["decision"] == "docker_fixture"
+    assert docker_report["test_flow_route"]["prompt_alert_bundle"]["alerts"][0]["lane"] == "docker_fixture"
     assert docker_report["fixtures"][0]["kind"] == "docker_fixture"
     assert docker_report["command_summaries"] == []
 
@@ -202,6 +229,8 @@ def test_service_router_fixture_dependency_gating_shape(tmp_path: Path) -> None:
     assert ai_report["safety"]["auth_status"] == "unknown"
     assert ai_report["safety"]["calls_models"] is False
     assert ai_report["execution_policy"]["live_ai"] == "manual_auth_unknown"
+    assert ai_report["test_flow_route"]["decision"] == "fixture_only"
+    assert ai_report["test_flow_route"]["prompt_alert_bundle"]["alerts"][0]["code"] == "test_flow_fixture_only"
     assert ai_report["fixtures"][0]["calls_models"] is False
     assert ai_report["command_summaries"][0]["status"] == "passed"
 
@@ -226,6 +255,8 @@ def test_service_router_fixture_dependency_gating_shape(tmp_path: Path) -> None:
     assert "--allow-live-ai" in live_deps["live_ai_environment_probe"]["reason"]
     assert live_report["safety"]["environment_probe"] is True
     assert live_report["execution_policy"]["live_ai"] == "environment_probe"
+    assert live_report["test_flow_route"]["decision"] == "live_ai_environment_probe"
+    assert live_report["test_flow_route"]["prompt_alert_bundle"]["alerts"][0]["code"] == "test_flow_live_ai_probe"
     assert live_report["command_summaries"] == []
 
 

@@ -269,7 +269,9 @@ Hard safety rules:
 
 ## 7.1 Scenario Manager Fixture Lanes
 
-`scripts/test-scenarios.json` declares two service-router fixture lanes:
+`scripts/test-scenarios.json` declares service-router fixture lanes and the
+scenario manager surfaces the selected test-flow route in `plan` and `run`
+reports as `test_flow_route`.
 
 - `service_router_docker_fixture` is a deterministic Docker fixture lane. It is
   blocked by default and requires `--allow-docker`; after approval the manager
@@ -282,6 +284,13 @@ Hard safety rules:
 The scenario manager preserves lane metadata in `plan` and `run` reports.
 Live-AI validation remains outside this deterministic runner until project AI
 config, local CLI auth, and operator approval are verified.
+
+The `test_flow_route.prompt_alert_bundle` is intentionally low-noise: it emits
+only the alerts for lanes selected by the current scenario. Focused unit tests
+and fixture-only checks produce informational alerts. E2E fixture checks warn
+about isolation and retained evidence. Docker fixture, live-AI probe, and
+external graph fixture lanes produce blocking alerts until their explicit
+approval flags are present.
 
 ### 7.2 Live-AI Environment Probe Lane
 

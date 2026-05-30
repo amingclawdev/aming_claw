@@ -13,6 +13,106 @@ const DEFAULT_STATE_DIR = join(tmpdir(), "aming-claw-test-scenario-manager", "st
 const DEFAULT_GOVERNANCE_URL = "http://127.0.0.1:40000";
 const VALID_MODES = new Set(["doctor", "plan", "run", "report"]);
 const RUN_TERMINAL_STATUSES = new Set(["passed", "failed", "blocked", "dry_run"]);
+const TEST_FLOW_LANE_PRIORITY = [
+  "live_ai_environment_probe",
+  "docker_fixture",
+  "external_graph_fixture",
+  "e2e_fixture",
+  "fixture_only",
+  "focused_unit",
+];
+const TEST_FLOW_LANE_DEFS = {
+  focused_unit: {
+    title: "Focused unit test",
+    applies_when: "Pure deterministic local logic or contract behavior can be asserted directly.",
+    default_autorun: true,
+    required_flags: [],
+    model_calls: "forbidden",
+    side_effect_class: "local_test",
+    alert: {
+      code: "test_flow_focused_unit",
+      severity: "info",
+      message: "Use focused unit tests for deterministic local logic; do not add fixture, Docker, E2E, or live-AI weight unless the changed surface needs it.",
+      allowed_actions: ["run_focused_tests"],
+      blocked_actions: ["start_docker", "call_live_ai", "bootstrap_project"],
+    },
+  },
+  fixture_only: {
+    title: "Fixture-only test",
+    applies_when: "The test needs a realistic envelope, config, or state fixture but no external runtime, container, or model call.",
+    default_autorun: true,
+    required_flags: [],
+    model_calls: "forbidden",
+    side_effect_class: "read",
+    alert: {
+      code: "test_flow_fixture_only",
+      severity: "info",
+      message: "Use fixture-only coverage for realistic local envelopes or config/state. Model calls and external runtime work stay forbidden.",
+      allowed_actions: ["load_local_fixture", "run_deterministic_fixture_assertions"],
+      blocked_actions: ["call_live_ai", "start_docker", "mutate_governance_project_registry"],
+    },
+  },
+  e2e_fixture: {
+    title: "E2E fixture",
+    applies_when: "Dashboard/API/operator paths, graph/bootstrap/reconcile flows, or persisted governance projections are part of the behavior.",
+    default_autorun: false,
+    required_flags: [],
+    model_calls: "forbidden",
+    side_effect_class: "isolated_governance_fixture",
+    alert: {
+      code: "test_flow_e2e_fixture",
+      severity: "warning",
+      message: "Use an isolated E2E fixture when user-visible dashboard/API or governance state projection changes. Keep the project isolated and record retained artifacts.",
+      allowed_actions: ["run_isolated_e2e_fixture", "record_e2e_evidence"],
+      blocked_actions: ["mutate_primary_project_without_isolation"],
+    },
+  },
+  docker_fixture: {
+    title: "Docker fixture",
+    applies_when: "The behavior depends on container boundaries, Docker networking, install isolation, or a Docker-backed service route.",
+    default_autorun: false,
+    required_flags: ["--allow-docker"],
+    model_calls: "forbidden",
+    side_effect_class: "docker_fixture",
+    alert: {
+      code: "test_flow_docker_fixture",
+      severity: "block",
+      message: "Docker fixture routes are gated. Require --allow-docker and Docker readiness before commands; do not silently start containers or call models.",
+      allowed_actions: ["probe_docker_after_approval", "run_declared_docker_fixture_commands"],
+      blocked_actions: ["start_docker_without_approval", "call_live_ai", "hide_container_lifecycle"],
+    },
+  },
+  live_ai_environment_probe: {
+    title: "Live AI environment probe",
+    applies_when: "The goal is provider/model/CLI/auth readiness evidence, not deterministic product behavior.",
+    default_autorun: false,
+    required_flags: ["--allow-live-ai"],
+    model_calls: "explicit_probe_only",
+    side_effect_class: "live_ai_probe",
+    alert: {
+      code: "test_flow_live_ai_probe",
+      severity: "block",
+      message: "Live AI probes require explicit --allow-live-ai, sanitized evidence, and no silent quota use. Deterministic tests must use fixtures instead.",
+      allowed_actions: ["run_operator_approved_live_ai_probe", "record_sanitized_ai_runtime_evidence"],
+      blocked_actions: ["call_live_ai_from_fixture", "autorun_live_ai_probe", "store_raw_prompt_output"],
+    },
+  },
+  external_graph_fixture: {
+    title: "External graph fixture",
+    applies_when: "Graph adapter/bootstrap behavior needs a pinned external repository and governance graph validation.",
+    default_autorun: false,
+    required_flags: ["--allow-network", "--allow-bootstrap"],
+    model_calls: "forbidden",
+    side_effect_class: "governance_bootstrap",
+    alert: {
+      code: "test_flow_external_graph_fixture",
+      severity: "block",
+      message: "External graph fixtures require a pinned clean cache. Network and governance bootstrap are separately gated.",
+      allowed_actions: ["use_pinned_external_cache", "bootstrap_after_approval", "validate_graph_queries"],
+      blocked_actions: ["clone_without_allow_network", "bootstrap_without_allow_bootstrap", "use_dirty_external_cache"],
+    },
+  },
+};
 
 function nowIso() {
   return new Date().toISOString();
@@ -152,6 +252,7 @@ function normalizeScenario(scenario, index) {
   const executionPolicy = plainObject(scenario.execution_policy);
   const coverage = plainObject(scenario.coverage);
   const routeContext = plainObject(scenario.route_context);
+  const testFlowRoute = plainObject(scenario.test_flow_route);
   return {
     title: scenario.title || scenario.id,
     description: scenario.description || "",
@@ -170,6 +271,7 @@ function normalizeScenario(scenario, index) {
     execution_policy: executionPolicy,
     coverage,
     route_context: routeContext,
+    test_flow_route: testFlowRoute,
   };
 }
 
@@ -328,6 +430,148 @@ function isLiveAiEnvironmentProbeDependency(scenario, dependency) {
   return markedDependency && isLiveAiEnvironmentProbeScenario(scenario);
 }
 
+function unique(values) {
+  return [...new Set(values.filter(Boolean))];
+}
+
+function scenarioDependencyIds(scenario) {
+  return new Set((scenario.dependencies || []).map((item) => String(item.id || "")));
+}
+
+function scenarioFixtureKinds(scenario) {
+  return new Set((scenario.fixtures || []).map((item) => String(item.kind || "")));
+}
+
+function scenarioCommandText(scenario) {
+  return (scenario.commands || [])
+    .flatMap((command) => [
+      command.id || "",
+      command.cwd || "",
+      ...(Array.isArray(command.command) ? command.command : []),
+    ])
+    .map((part) => String(part || ""))
+    .join(" ");
+}
+
+function hasPytestCommand(scenario) {
+  return /\bpytest\b|python(?:\d+(?:\.\d+)?)?\s+-m\s+pytest/.test(scenarioCommandText(scenario));
+}
+
+function hasE2eCommand(scenario) {
+  return /\be2e\b|frontend\/dashboard\/scripts\/e2e-|scripts\/e2e-/.test(scenarioCommandText(scenario));
+}
+
+function inferTestFlowLanes(scenario) {
+  const lanes = [];
+  const dependencies = scenarioDependencyIds(scenario);
+  const fixtures = scenarioFixtureKinds(scenario);
+  const policyLane = String(scenario.execution_policy?.lane || "");
+  const isDocker = (
+    dependencies.has("docker_fixture")
+    || fixtures.has("docker_fixture")
+    || policyLane === "docker_fixture"
+    || scenario.safety?.uses_docker_fixture === true
+  );
+  const isLiveProbe = isLiveAiEnvironmentProbeScenario(scenario);
+  const isExternalGraph = scenario.runner === "ruby_graph";
+
+  if (isLiveProbe) lanes.push("live_ai_environment_probe");
+  if (isDocker) lanes.push("docker_fixture");
+  if (isExternalGraph) lanes.push("external_graph_fixture");
+  if (hasE2eCommand(scenario)) lanes.push("e2e_fixture");
+  if (
+    !isDocker
+    && !isLiveProbe
+    && !isExternalGraph
+    && (
+      scenario.safety?.fixture_only === true
+      || fixtures.has("json_fixture")
+      || dependencies.has("ai_structured_output_fixture")
+      || policyLane === "ai_structured_output_fixture"
+    )
+  ) {
+    lanes.push("fixture_only");
+  }
+  if (hasPytestCommand(scenario) || (!lanes.length && scenario.runner === "commands")) {
+    lanes.push("focused_unit");
+  }
+  return unique(lanes);
+}
+
+function primaryTestFlowLane(lanes) {
+  for (const candidate of TEST_FLOW_LANE_PRIORITY) {
+    if (lanes.includes(candidate)) return candidate;
+  }
+  return lanes[0] || "focused_unit";
+}
+
+function defaultAutorunForLanes(lanes) {
+  if (!lanes.length) return true;
+  return lanes.every((lane) => TEST_FLOW_LANE_DEFS[lane]?.default_autorun === true);
+}
+
+function buildTestFlowAlerts(lanes) {
+  return lanes
+    .map((lane) => {
+      const def = TEST_FLOW_LANE_DEFS[lane];
+      if (!def) return null;
+      return {
+        lane,
+        ...def.alert,
+      };
+    })
+    .filter(Boolean);
+}
+
+function buildTestFlowRoute(scenario) {
+  const configured = scenario.test_flow_route || {};
+  const inferredLanes = inferTestFlowLanes(scenario);
+  const lanes = unique(Array.isArray(configured.lanes) && configured.lanes.length ? configured.lanes : inferredLanes);
+  const primaryLane = configured.primary_lane || primaryTestFlowLane(lanes);
+  const decision = configured.decision || (lanes.length > 1 ? "mixed" : primaryLane);
+  const requiredFlags = unique([
+    ...(Array.isArray(scenario.execution_policy?.requires_flags) ? scenario.execution_policy.requires_flags : []),
+    ...lanes.flatMap((lane) => TEST_FLOW_LANE_DEFS[lane]?.required_flags || []),
+    ...(Array.isArray(configured.requires_flags) ? configured.requires_flags : []),
+  ]);
+  const evidenceIds = unique([
+    ...(scenario.evidence_requirements || []).map((item) => String(item.id || "")),
+    ...(Array.isArray(configured.evidence_ids) ? configured.evidence_ids : []),
+  ]);
+  const alerts = buildTestFlowAlerts(lanes);
+  return {
+    schema_version: "test_flow_route.v1",
+    route_id: `test-flow:${scenario.id}`,
+    source: configured.source || "scenario_manager_inference",
+    scenario_id: scenario.id,
+    decision,
+    primary_lane: primaryLane,
+    lanes,
+    lane_titles: Object.fromEntries(lanes.map((lane) => [lane, TEST_FLOW_LANE_DEFS[lane]?.title || lane])),
+    applies_when: Object.fromEntries(lanes.map((lane) => [lane, TEST_FLOW_LANE_DEFS[lane]?.applies_when || ""])),
+    autorun: typeof scenario.execution_policy?.autorun === "boolean"
+      ? scenario.execution_policy.autorun
+      : defaultAutorunForLanes(lanes),
+    requires_flags: requiredFlags,
+    model_calls: scenario.execution_policy?.model_calls || TEST_FLOW_LANE_DEFS[primaryLane]?.model_calls || "forbidden",
+    live_ai: scenario.execution_policy?.live_ai || (primaryLane === "live_ai_environment_probe" ? "environment_probe" : "disabled"),
+    side_effect_class: scenario.route_context?.side_effect_class || TEST_FLOW_LANE_DEFS[primaryLane]?.side_effect_class || "local_test",
+    fixture_kinds: [...scenarioFixtureKinds(scenario)],
+    dependency_ids: [...scenarioDependencyIds(scenario)],
+    evidence_ids: evidenceIds,
+    prompt_alert_bundle: {
+      schema_version: "prompt_alert_bundle.v1",
+      source: "test_scenario_manager",
+      role: "observer",
+      stage: "test_flow_selection",
+      noise_policy: "selected_lanes_only",
+      route_context_ref: scenario.route_context?.service_id || scenario.id,
+      alerts,
+    },
+    configured_overrides: Object.keys(configured).length ? configured : undefined,
+  };
+}
+
 function buildDependencyDecisions(scenario, options, { planning = false } = {}) {
   const decisions = [];
   for (const dependency of scenario.dependencies) {
@@ -397,6 +641,7 @@ function buildDependencyDecisions(scenario, options, { planning = false } = {}) 
 }
 
 function planScenario(scenario, options) {
+  const testFlowRoute = buildTestFlowRoute(scenario);
   const plan = {
     scenario_id: scenario.id,
     title: scenario.title,
@@ -407,6 +652,7 @@ function planScenario(scenario, options) {
     safety: scenario.safety || {},
     coverage: scenario.coverage || {},
     route_context: scenario.route_context || {},
+    test_flow_route: testFlowRoute,
     fixtures: scenario.fixtures || [],
     evidence_requirements: scenario.evidence_requirements || [],
     dependency_decisions: buildDependencyDecisions(scenario, options, { planning: true }),
@@ -449,6 +695,7 @@ function runIdFor(scenarioId, startedAt) {
 
 function baseReport(scenario, options) {
   const startedAt = nowIso();
+  const testFlowRoute = buildTestFlowRoute(scenario);
   return {
     schema_version: 1,
     run_id: runIdFor(scenario.id, startedAt),
@@ -472,6 +719,7 @@ function baseReport(scenario, options) {
     safety: scenario.safety || {},
     coverage: scenario.coverage || {},
     route_context: scenario.route_context || {},
+    test_flow_route: testFlowRoute,
     fixtures: scenario.fixtures || [],
     evidence_requirements: scenario.evidence_requirements || [],
     report_path: "",

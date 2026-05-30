@@ -1,5 +1,7 @@
 # Test Scenario Manager V1
 
+<!-- governance-hint {"binding":{"path":"scripts/test-scenarios.json","role":"config","target_module":"scripts.test-scenario-manager","target_title":"scripts.test-scenario-manager"}} -->
+
 The test scenario manager is a small reusable runner for product capability
 checks that need state, evidence, and repeatable reports. It is intentionally
 outside the governance executor path: it runs from the checkout, writes state
@@ -43,6 +45,33 @@ Useful flags:
 - `--allow-bootstrap` permits governance bootstrap HTTP calls that mutate the
   local governance project registry and graph state.
 - `--governance-url <url>` defaults to `http://127.0.0.1:40000`.
+
+## Test Flow Route
+
+`plan` and `run` reports include `test_flow_route`. This is the route-owned
+summary that tells observer, worker, and QA lanes what kind of verification is
+being selected without loading a noisy role prompt.
+
+The manager infers selected lanes from the scenario runner, dependencies,
+fixtures, execution policy, safety metadata, and commands:
+
+- `focused_unit`: deterministic local behavior can be checked with focused
+  tests, usually pytest.
+- `fixture_only`: realistic local envelopes, config, or state are needed, but
+  no external runtime, Docker, or model call is allowed.
+- `e2e_fixture`: dashboard/API/operator paths or governance state projection
+  behavior needs an isolated E2E fixture.
+- `docker_fixture`: container boundary, Docker networking, install isolation,
+  or Docker-backed service routing is part of the behavior.
+- `live_ai_environment_probe`: provider/model/CLI/auth readiness is being
+  checked with explicit operator approval.
+- `external_graph_fixture`: a pinned external repository is needed to validate
+  graph adapter/bootstrap behavior.
+
+The `prompt_alert_bundle` inside `test_flow_route` emits alerts only for the
+selected lanes. Docker and live-AI lanes are blocking alerts because they need
+explicit flags. Fixture-only and focused-unit lanes are informational alerts
+because they are deterministic and should stay local.
 
 ## Scenario Schema
 
