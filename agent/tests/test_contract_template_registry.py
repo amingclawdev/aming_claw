@@ -93,6 +93,42 @@ def test_mf_workflow_runtime_declares_route_prompt_contract_and_action_gate():
     assert route_action_event["service_route_id"] == "service.route.action_precheck"
     assert "prompt_contract_hash" in route_action_event["required_evidence_ids"]
     assert "prompt_contract_hash_present" in route_action_gate
+    assert "selected_topology" in template["route_prompt_contract"]["topology_fields"]
+    assert "required_lanes" in template["route_prompt_contract"]["topology_fields"]
+    assert "test_files" in template["route_prompt_contract"]["worker_prompt_fields"]
+    assert (
+        template["route_prompt_contract"]["topology_policy"][
+            "p0_p1_governance_routing_runtime_requires_independent_verification"
+        ]
+        is True
+    )
+    assert (
+        "independent_verification_lane_evidence_for_p0_p1_governance_routing_runtime"
+        in template["gate_registry"]["workflow.merge"]
+    )
+    assert (
+        "independent_verification_lane_evidence_for_p0_p1_governance_routing_runtime"
+        in template["gate_registry"]["backlog.close"]
+    )
+
+
+def test_mf_parallel_template_declares_route_topology_and_worker_prompt_boundary():
+    template = get_contract_template("mf_parallel.v1")
+    policy = template["route_topology_policy"]
+    worker_prompt_contract = template["worker_contract"]["worker_prompt_contract"]
+
+    assert policy["low_risk"]["selected_topology"] == "lightweight_single_lane"
+    assert policy["high_risk"]["selected_topology"] == "observer_led_parallel_lanes"
+    assert "independent_verification_lane" in policy["high_risk"]["required_lanes"]
+    assert "merge" in policy["high_risk"]["observer_authorities"]
+    assert "graph_reconcile" in policy["high_risk"]["observer_authorities"]
+    assert policy["p0_p1_governance_gate"]["requires_independent_verification_before"] == [
+        "workflow.merge",
+        "backlog.close",
+    ]
+    assert "target_files" in worker_prompt_contract["bounded_fields_only"]
+    assert "test_files" in worker_prompt_contract["bounded_fields_only"]
+    assert "observer_only_context" in worker_prompt_contract["forbidden_context_sources"]
 
 
 def test_unknown_template_id_raises_explicit_error():

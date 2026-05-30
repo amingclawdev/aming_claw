@@ -13,6 +13,7 @@
     "schema_version": "aming_route_prompt_contract.v1",
     "description": "Route-owned visible prompt context and pre-mutation action policy for observer, judger, and bounded implementation lanes.",
     "bundle_schema_version": "aming_route_prompt_alert_bundle.v1",
+    "worker_prompt_contract_schema_version": "worker_prompt_contract.v1",
     "visible_injection_manifest_schema_version": "visible_injection_manifest.v1",
     "bundle_service_id": "route.prompt_alert_bundle",
     "action_gate_service_id": "route.action_precheck",
@@ -22,6 +23,20 @@
       "route_context_hash",
       "prompt_contract_id",
       "prompt_contract_hash"
+    ],
+    "topology_fields": [
+      "selected_topology",
+      "recommended_topology",
+      "required_lanes",
+      "reason_codes",
+      "observer_authorities"
+    ],
+    "worker_prompt_fields": [
+      "target_files",
+      "test_files",
+      "acceptance_criteria",
+      "route_identity",
+      "evidence_required"
     ],
     "blocked_roles": [
       "observer",
@@ -37,7 +52,20 @@
       "run_implementation_command"
     ],
     "allowance": "bounded worker or subagent dispatch must carry matching route_context_hash, prompt_contract_id, and prompt_contract_hash; observer or judger direct mutation additionally requires an accepted matching waiver",
-    "no_raw_context_policy": "route bundle output contains compact summaries, ids, refs, and hashes only; raw prompt, hidden context, and unmanifested injection text are excluded"
+    "no_raw_context_policy": "route bundle output contains compact summaries, ids, refs, and hashes only; raw prompt, hidden context, observer-only context, and unmanifested injection text are excluded",
+    "topology_policy": {
+      "low_risk_topology": "lightweight_single_lane",
+      "high_risk_topology": "observer_led_parallel_lanes",
+      "p0_p1_governance_routing_runtime_requires_independent_verification": true,
+      "observer_authorities": [
+        "merge",
+        "redeploy_governance",
+        "graph_reconcile",
+        "backlog_close",
+        "waiver_approval",
+        "merge_queue_mutation"
+      ]
+    }
   },
   "fixture_policy": {
     "decision": "new_scenario_required",
@@ -567,7 +595,8 @@
       "source_candidate_committed",
       "subject_commit_matches_precheck_token",
       "contract_evidence_complete",
-      "implementation_and_verification_timeline_present"
+      "implementation_and_verification_timeline_present",
+      "independent_verification_lane_evidence_for_p0_p1_governance_routing_runtime"
     ],
     "workflow.merge_queue_entry": [
       "merge_queue_id_present",
@@ -603,7 +632,8 @@
       "close_ready_present",
       "merge_commit_recorded",
       "required_evidence_ids_present",
-      "subject_commit_matches_precheck_token"
+      "subject_commit_matches_precheck_token",
+      "independent_verification_lane_evidence_for_p0_p1_governance_routing_runtime"
     ]
   },
   "lane_policy": {
@@ -669,6 +699,13 @@
       "required": true,
       "phase": "pre_mutation",
       "kind": "local_precheck"
+    },
+    {
+      "id": "independent_verification_lane",
+      "required": false,
+      "phase": "verification",
+      "kind": "qa",
+      "description": "Required by merge and close prechecks when the route classifies P0/P1 governance, routing, permission, or runtime changes as observer-led parallel lanes."
     },
     {
       "id": "fixture_contract",

@@ -224,6 +224,12 @@ def _route_prompt_contract_id(payload: Mapping[str, Any]) -> str:
     prompt_contract = _nested_mapping(payload, "prompt_contract")
     route_prompt_contract = _nested_mapping(payload, "route_prompt_contract")
     route_context = _nested_mapping(payload, "route_context")
+    route_prompt_bundle = _nested_mapping(payload, "route_prompt_bundle")
+    bundle = _nested_mapping(payload, "bundle")
+    route_prompt_bundle_prompt_contract = _nested_mapping(
+        route_prompt_bundle, "prompt_contract"
+    )
+    bundle_prompt_contract = _nested_mapping(bundle, "prompt_contract")
     return _string(
         payload.get("prompt_contract_id")
         or prompt_contract.get("prompt_contract_id")
@@ -231,6 +237,12 @@ def _route_prompt_contract_id(payload: Mapping[str, Any]) -> str:
         or route_prompt_contract.get("prompt_contract_id")
         or route_prompt_contract.get("id")
         or route_context.get("prompt_contract_id")
+        or route_prompt_bundle.get("prompt_contract_id")
+        or route_prompt_bundle_prompt_contract.get("prompt_contract_id")
+        or route_prompt_bundle_prompt_contract.get("id")
+        or bundle.get("prompt_contract_id")
+        or bundle_prompt_contract.get("prompt_contract_id")
+        or bundle_prompt_contract.get("id")
     )
 
 
@@ -238,11 +250,15 @@ def _route_context_hash(payload: Mapping[str, Any]) -> str:
     prompt_contract = _nested_mapping(payload, "prompt_contract")
     route_prompt_contract = _nested_mapping(payload, "route_prompt_contract")
     route_context = _nested_mapping(payload, "route_context")
+    route_prompt_bundle = _nested_mapping(payload, "route_prompt_bundle")
+    bundle = _nested_mapping(payload, "bundle")
     return _string(
         payload.get("route_context_hash")
         or route_context.get("route_context_hash")
         or prompt_contract.get("route_context_hash")
         or route_prompt_contract.get("route_context_hash")
+        or route_prompt_bundle.get("route_context_hash")
+        or bundle.get("route_context_hash")
     )
 
 
@@ -250,11 +266,15 @@ def _route_prompt_contract_hash(payload: Mapping[str, Any]) -> str:
     prompt_contract = _nested_mapping(payload, "prompt_contract")
     route_prompt_contract = _nested_mapping(payload, "route_prompt_contract")
     route_context = _nested_mapping(payload, "route_context")
+    route_prompt_bundle = _nested_mapping(payload, "route_prompt_bundle")
+    bundle = _nested_mapping(payload, "bundle")
     return _string(
         payload.get("prompt_contract_hash")
         or prompt_contract.get("prompt_contract_hash")
         or route_context.get("prompt_contract_hash")
         or route_prompt_contract.get("prompt_contract_hash")
+        or route_prompt_bundle.get("prompt_contract_hash")
+        or bundle.get("prompt_contract_hash")
     )
 
 
@@ -279,15 +299,80 @@ def _alert_codes(value: Any) -> list[str]:
 
 
 def _route_alert_codes(payload: Mapping[str, Any]) -> list[str]:
-    route_context = _nested_mapping(payload, "route_context")
-    alerts = payload.get("route_alerts")
-    if alerts is None:
-        alerts = route_context.get("route_alerts")
-    return _alert_codes(alerts)
+    candidates = [
+        payload.get("route_alerts"),
+        payload.get("alerts"),
+    ]
+    for key in ("route_context", "route_prompt_bundle", "bundle"):
+        nested = _nested_mapping(payload, key)
+        candidates.extend([nested.get("route_alerts"), nested.get("alerts")])
+
+    codes: list[str] = []
+    seen: set[str] = set()
+    for alerts in candidates:
+        for code in _alert_codes(alerts):
+            if code and code not in seen:
+                codes.append(code)
+                seen.add(code)
+    return codes
 
 
 def _normalized_action(value: Any) -> str:
     return _string(value).lower().replace("-", "_").replace(".", "_")
+
+
+def _route_action_name(payload: Mapping[str, Any], action: str = "") -> str:
+    candidates: list[Any] = [
+        action,
+        payload.get("action"),
+        payload.get("requested_action"),
+        payload.get("tool_name"),
+    ]
+    for container in _route_identity_containers(payload):
+        candidates.extend([
+            container.get("action"),
+            container.get("requested_action"),
+            container.get("tool_name"),
+        ])
+    for candidate in candidates:
+        token = _normalized_action(candidate)
+        if token:
+            return token
+    return ""
+
+
+def _route_caller_role(payload: Mapping[str, Any]) -> str:
+    candidates: list[Any] = [
+        payload.get("caller_role"),
+        payload.get("role"),
+        payload.get("actor_role"),
+    ]
+    for container in _route_identity_containers(payload):
+        candidates.extend([
+            container.get("caller_role"),
+            container.get("role"),
+            container.get("actor_role"),
+        ])
+    for candidate in candidates:
+        token = _string(candidate).lower()
+        if token:
+            return token
+    return ""
+
+
+def _route_identity_containers(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    containers: list[Mapping[str, Any]] = []
+    route = _nested_mapping(payload, "route")
+    if route:
+        containers.append(route)
+    for key in ("route_context", "route_prompt_bundle", "bundle"):
+        nested = _nested_mapping(payload, key)
+        if nested:
+            containers.append(nested)
+            nested_route = _nested_mapping(nested, "route")
+            if nested_route:
+                containers.append(nested_route)
+    return containers
 
 
 def _accepted_waiver_matches(
@@ -451,18 +536,8 @@ def validate_route_action_gate(
     if not isinstance(payload, Mapping):
         raise MfSubagentContractError("route action gate payload must be a mapping")
     payload = dict(payload)
-    action_name = _normalized_action(
-        action
-        or payload.get("action")
-        or payload.get("requested_action")
-        or payload.get("tool_name")
-    )
-    caller_role = _string(
-        payload.get("caller_role")
-        or payload.get("role")
-        or payload.get("actor_role")
-        or _nested_mapping(payload, "route").get("caller_role")
-    ).lower()
+    action_name = _route_action_name(payload, action=action)
+    caller_role = _route_caller_role(payload)
     route_context_hash = _route_context_hash(payload)
     prompt_contract_id = _route_prompt_contract_id(payload)
     prompt_contract_hash = _route_prompt_contract_hash(payload)

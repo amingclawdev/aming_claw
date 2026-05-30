@@ -207,6 +207,7 @@ These rules are **not guidelines**. Violation constitutes a governance breach:
 | R19 | Instantiated contract gate | Parallel MF work, subagent work, dashboard/API/user-visible behavior, or any task with explicit evidence requirements | Observer MUST instantiate a source-controlled contract template such as `agent/governance/contract_templates/mf_parallel.v1.json` into `chain_trigger_json.parallel_contract` before delegation. Required evidence items MUST have stable `id` values. For `mf_sub` workers, the instance MUST include task metadata `task_id`, `parent_task_id`, `worker_role=mf_sub`, and `fence_token`; graph lookups MUST use audited `query_source=mf_subagent` with the same identity context, and timeline evidence MUST record returned graph trace ids through `payload.graph_trace_ids`, `payload.graph_query_trace_ids`, `verification.graph_trace_ids`, `verification.graph_query_trace_ids`, or `verification.contract_evidence[].graph_trace_ids`. Timeline evidence MUST reference requirement ids through `payload.requirement_id(s)`, `verification.requirement_id(s)`, or `verification.contract_evidence[].requirement_id`. `handle_backlog_close` blocks MF close until every required contract evidence id is present with a passing status. |
 | R20 | Asset binding/drift two-line model | Any doc/test/config bind, unbind, asset impact, or drift claim | Binding truth and drift observation MUST stay on separate audit lines. Binding relationship changes are source-controlled append-only commands, normally governance-hint bind/unbind events, then reconcile materializes graph secondary/test/config, file inventory effective state, asset projection, and binding events. File/hash/drift/impact state is observed DB evidence written by reconcile, gate, or workflow worker from git diff plus accepted bindings. Changed bound assets covered by contract/gate may be recorded as `not_drifted` with gate evidence; unchanged bound assets impacted by related source/config changes MUST become `suspected`/`impact_pending` until observer, user, or AI-assisted review resolves them. Do not directly hand-write trusted accepted binding rows into DB as a substitute for source-controlled binding evidence. |
 | R21 | Observer/judge no-direct-code topology gate | Governed nontrivial implementation work | Observer/judge MUST NOT directly write implementation code. When Judgment Brain is available, observer MUST run `protocol_list` as the protocol registry preflight and `judgment_plan_precheck` as the topology precheck before implementation planning. Nontrivial implementation MUST be dispatched to bounded `mf_sub`/worker lanes with target files, tests or a recorded no-test/E2E decision, worktree/fence evidence, and review evidence. The only direct observer mutation exception is tiny deterministic scope with an explicit reason, allowed files, exact dirty-scope match evidence, and observer timeline event before mutation. |
+| R22 | Route topology and independent verification gate | Route/precheck, governance/routing/runtime/backlog/permission changes | `route.prompt_alert_bundle` MUST classify work as `lightweight_single_lane` for small deterministic changes or `observer_led_parallel_lanes` for high-risk governance/routing/runtime/backlog/permission work. The bundle MUST expose `selected_topology`, `recommended_topology`, `required_lanes`, `reason_codes`, `observer_authorities`, and a bounded worker prompt contract. P0/P1 governance/routing/permission/runtime changes MUST have independent verification lane evidence before `workflow.merge` or `backlog.close` can pass. Observer remains the sole authority for merge, redeploy, graph reconcile, backlog close, waivers, and merge queue mutation. |
 
 #### R19.1 Local `mf_sub` Dispatch Gate
 
@@ -300,6 +301,33 @@ Before mutation, the observer must record the explicit reason, the allowed
 files, exact dirty-scope match evidence, and a timeline event. If the scope is
 not deterministic or the dirty scope does not exactly match the allowed files,
 dispatch a bounded worker lane instead.
+
+#### R21.2 Route Topology Selection and Worker Prompt Boundary
+
+The route layer owns the implementation topology decision. Small deterministic
+changes should stay on the low-overhead `lightweight_single_lane` path. High
+risk work touching governance, routing, runtime, backlog, permission,
+precheck, graph, merge, reconcile, waiver, or worker-fence behavior should use
+`observer_led_parallel_lanes`: observer coordinator, bounded implementation
+worker, independent verification lane, and observer merge/close gate.
+
+`route.prompt_alert_bundle` must return compact, low-noise fields:
+`selected_topology`, `recommended_topology`, `required_lanes`,
+`reason_codes`, `observer_authorities`, `verification_policy`, and
+`worker_prompt_contract`. Worker prompt contracts may include only bounded
+target/test files, acceptance criteria, route identity, selected topology, lane
+requirements, and evidence requirements. Raw prompt text, private observer
+context, hidden context packs, and unmanifested source text must stay out of
+worker-facing payloads.
+
+For P0/P1 governance, routing, permission, or runtime changes,
+`workflow.merge` and `backlog.close` must require separate independent
+verification lane evidence. Ordinary implementation `verification` evidence is
+not enough unless it is explicitly attributed to `qa`,
+`verification_worker`, or an `independent_verification`/`qa_verification`
+timeline event. Observer-only authorities stay with the observer: merge,
+governance redeploy, graph reconcile, backlog close, waiver approval, and
+merge queue mutation.
 
 ---
 

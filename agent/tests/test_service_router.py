@@ -514,6 +514,512 @@ def test_route_prompt_alert_bundle_returns_visible_hashable_context_only():
     assert "raw doc text" not in bundle_json
 
 
+def test_route_prompt_alert_bundle_selects_lightweight_single_lane_for_small_work():
+    contract = _contract(
+        service_routes=[
+            _service_route(
+                service_id="route.prompt_alert_bundle",
+                mode="preview",
+                side_effect_class="read",
+                route_id="service.route.prompt_alert_bundle",
+            )
+        ],
+        event_routes=[
+            {
+                "route_id": "event.route_prompt_context.preview",
+                "event_kind": "route.prompt_context.requested",
+                "service_route_id": "service.route.prompt_alert_bundle",
+                "enabled": True,
+            }
+        ],
+    )
+
+    result = route_event(
+        {
+            "event_id": "evt-route-small",
+            "event_kind": "route.prompt_context.requested",
+            "stage": "implementation_wait",
+            "payload": {
+                "risk_class": "small_deterministic",
+                "route_id": "route-small",
+                "stage": "implementation_wait",
+                "caller_role": "observer",
+                "content": {"summary": "Adjust a deterministic unit test fixture."},
+                "prompt_contract": {
+                    "prompt_contract_id": "rprompt-small",
+                    "target_files": ["agent/tests/test_service_router.py"],
+                    "test_files": ["agent/tests/test_service_router.py"],
+                    "acceptance_criteria": ["focused test passes"],
+                    "evidence_required": ["focused_tests"],
+                    "raw_prompt": "do not expose",
+                },
+                "observer_only_context": "private observer note",
+            },
+        },
+        contract,
+    )
+
+    bundle = result["routes"][0]["result"]["route_prompt_bundle"]
+    worker_contract = bundle["worker_prompt_contract"]
+    bundle_json = json.dumps(bundle, sort_keys=True)
+
+    assert bundle["selected_topology"] == "lightweight_single_lane"
+    assert bundle["recommended_topology"] == "single_lane.v1"
+    assert bundle["required_lanes"] == [
+        {
+            "id": "single_bounded_worker",
+            "role": "mf_sub",
+            "purpose": "perform deterministic implementation and focused verification in one bounded lane",
+        }
+    ]
+    assert bundle["reason_codes"] == ["small_deterministic"]
+    assert bundle["route"]["caller_role"] == "observer"
+    assert "observer_direct_implementation_risk" not in bundle["reason_codes"]
+    assert worker_contract["target_files"] == ["agent/tests/test_service_router.py"]
+    assert worker_contract["test_files"] == ["agent/tests/test_service_router.py"]
+    assert worker_contract["acceptance_criteria"] == ["focused test passes"]
+    assert "private observer note" not in bundle_json
+    assert "do not expose" not in bundle_json
+
+
+def test_low_risk_bundle_still_blocks_observer_direct_implementation():
+    prompt_contract = _contract(
+        service_routes=[
+            _service_route(
+                service_id="route.prompt_alert_bundle",
+                mode="preview",
+                side_effect_class="read",
+                route_id="service.route.prompt_alert_bundle",
+            )
+        ],
+        event_routes=[
+            {
+                "route_id": "event.route_prompt_context.preview",
+                "event_kind": "route.prompt_context.requested",
+                "service_route_id": "service.route.prompt_alert_bundle",
+                "enabled": True,
+            }
+        ],
+    )
+    action_contract = _contract(
+        service_routes=[
+            _service_route(
+                service_id="route.action_precheck",
+                mode="gate",
+                side_effect_class="gate",
+                route_id="service.route.action_precheck",
+                requirement_ids=["route_action_blocked"],
+            )
+        ],
+        event_routes=[
+            {
+                "route_id": "event.route_action.pre_mutation",
+                "event_kind": "route.action.requested",
+                "service_route_id": "service.route.action_precheck",
+                "enabled": True,
+            }
+        ],
+    )
+
+    prompt_result = route_event(
+        {
+            "event_id": "evt-route-small-observer",
+            "event_kind": "route.prompt_context.requested",
+            "stage": "implementation_wait",
+            "payload": {
+                "risk_class": "small_deterministic",
+                "route_id": "route-small-observer",
+                "stage": "implementation_wait",
+                "caller_role": "observer",
+                "content": {"summary": "Adjust a deterministic unit test fixture."},
+                "prompt_contract": {
+                    "prompt_contract_id": "rprompt-small-observer",
+                    "target_files": ["agent/tests/test_service_router.py"],
+                    "test_files": ["agent/tests/test_service_router.py"],
+                    "acceptance_criteria": ["focused test passes"],
+                    "evidence_required": ["focused_tests"],
+                },
+            },
+        },
+        prompt_contract,
+    )
+    bundle = prompt_result["routes"][0]["result"]["route_prompt_bundle"]
+
+    action_result = route_event(
+        {
+            "event_id": "evt-route-small-observer-action",
+            "event_kind": "route.action.requested",
+            "payload": {
+                "caller_role": "observer",
+                "action": "apply_patch",
+                "route_context_hash": bundle["route_context_hash"],
+                "prompt_contract_id": bundle["prompt_contract"]["prompt_contract_id"],
+                "prompt_contract_hash": bundle["prompt_contract_hash"],
+                "route_alerts": bundle["alerts"],
+                "version_check": {
+                    "status": "passed",
+                    "dirty": False,
+                    "dirty_files": [],
+                },
+                "graph_status": {
+                    "current_state": {"graph_stale": {"is_stale": False}}
+                },
+            },
+        },
+        action_contract,
+    )
+
+    route = action_result["routes"][0]
+    gate = route["result"]["route_action_gate"]
+    alert_codes = {alert["code"] for alert in bundle["alerts"]}
+
+    assert bundle["selected_topology"] == "lightweight_single_lane"
+    assert "observer_judger_must_not_implement" in alert_codes
+    assert action_result["decision"] == "block"
+    assert route["status"] == "route_action_policy_blocked"
+    assert gate["allowed"] is False
+    assert "observer_judger_must_not_implement" in gate["reason"]
+
+
+def test_route_action_precheck_blocks_observer_action_from_generated_bundle_shape():
+    prompt_contract = _contract(
+        service_routes=[
+            _service_route(
+                service_id="route.prompt_alert_bundle",
+                mode="preview",
+                side_effect_class="read",
+                route_id="service.route.prompt_alert_bundle",
+            )
+        ],
+        event_routes=[
+            {
+                "route_id": "event.route_prompt_context.preview",
+                "event_kind": "route.prompt_context.requested",
+                "service_route_id": "service.route.prompt_alert_bundle",
+                "enabled": True,
+            }
+        ],
+    )
+    action_contract = _contract(
+        service_routes=[
+            _service_route(
+                service_id="route.action_precheck",
+                mode="gate",
+                side_effect_class="gate",
+                route_id="service.route.action_precheck",
+                requirement_ids=["route_action_blocked"],
+            )
+        ],
+        event_routes=[
+            {
+                "route_id": "event.route_action.pre_mutation",
+                "event_kind": "route.action.requested",
+                "service_route_id": "service.route.action_precheck",
+                "enabled": True,
+            }
+        ],
+    )
+
+    prompt_result = route_event(
+        {
+            "event_id": "evt-route-generated-bundle",
+            "event_kind": "route.prompt_context.requested",
+            "stage": "implementation_wait",
+            "payload": {
+                "risk_class": "small_deterministic",
+                "route_id": "route-generated-bundle",
+                "stage": "implementation_wait",
+                "caller_role": "observer",
+                "content": {"summary": "Adjust a deterministic unit test fixture."},
+                "prompt_contract": {
+                    "prompt_contract_id": "rprompt-generated-bundle",
+                    "target_files": ["agent/tests/test_service_router.py"],
+                    "test_files": ["agent/tests/test_service_router.py"],
+                    "acceptance_criteria": ["focused test passes"],
+                    "evidence_required": ["focused_tests"],
+                },
+            },
+        },
+        prompt_contract,
+    )
+    bundle = prompt_result["routes"][0]["result"]["route_prompt_bundle"]
+
+    action_result = route_event(
+        {
+            "event_id": "evt-route-generated-bundle-action",
+            "event_kind": "route.action.requested",
+            "payload": {
+                "caller_role": "observer",
+                "action": "apply_patch",
+                "route_prompt_bundle": bundle,
+                "version_check": {
+                    "status": "passed",
+                    "dirty": False,
+                    "dirty_files": [],
+                },
+                "graph_status": {
+                    "current_state": {"graph_stale": {"is_stale": False}}
+                },
+            },
+        },
+        action_contract,
+    )
+
+    route = action_result["routes"][0]
+    gate = route["result"]["route_action_gate"]
+
+    assert action_result["decision"] == "block"
+    assert route["status"] == "route_action_policy_blocked"
+    assert gate["allowed"] is False
+    assert gate["route_context_hash"] == bundle["route_context_hash"]
+    assert gate["prompt_contract_id"] == "rprompt-generated-bundle"
+    assert gate["prompt_contract_hash"] == bundle["prompt_contract_hash"]
+    assert "observer_judger_must_not_implement" in gate["reason"]
+
+
+def test_route_action_precheck_blocks_observer_action_from_nested_bundle_role():
+    prompt_contract = _contract(
+        service_routes=[
+            _service_route(
+                service_id="route.prompt_alert_bundle",
+                mode="preview",
+                side_effect_class="read",
+                route_id="service.route.prompt_alert_bundle",
+            )
+        ],
+        event_routes=[
+            {
+                "route_id": "event.route_prompt_context.preview",
+                "event_kind": "route.prompt_context.requested",
+                "service_route_id": "service.route.prompt_alert_bundle",
+                "enabled": True,
+            }
+        ],
+    )
+    action_contract = _contract(
+        service_routes=[
+            _service_route(
+                service_id="route.action_precheck",
+                mode="gate",
+                side_effect_class="gate",
+                route_id="service.route.action_precheck",
+                requirement_ids=["route_action_blocked"],
+            )
+        ],
+        event_routes=[
+            {
+                "route_id": "event.route_action.pre_mutation",
+                "event_kind": "route.action.requested",
+                "service_route_id": "service.route.action_precheck",
+                "enabled": True,
+            }
+        ],
+    )
+
+    prompt_result = route_event(
+        {
+            "event_id": "evt-route-nested-role-bundle",
+            "event_kind": "route.prompt_context.requested",
+            "stage": "implementation_wait",
+            "payload": {
+                "risk_class": "small_deterministic",
+                "route_id": "route-nested-role-bundle",
+                "stage": "implementation_wait",
+                "caller_role": "observer",
+                "content": {"summary": "Adjust a deterministic unit test fixture."},
+                "prompt_contract": {
+                    "prompt_contract_id": "rprompt-nested-role-bundle",
+                    "target_files": ["agent/tests/test_service_router.py"],
+                    "test_files": ["agent/tests/test_service_router.py"],
+                    "acceptance_criteria": ["focused test passes"],
+                    "evidence_required": ["focused_tests"],
+                },
+            },
+        },
+        prompt_contract,
+    )
+    bundle = prompt_result["routes"][0]["result"]["route_prompt_bundle"]
+
+    action_result = route_event(
+        {
+            "event_id": "evt-route-nested-role-bundle-action",
+            "event_kind": "route.action.requested",
+            "payload": {
+                "action": "apply_patch",
+                "route_prompt_bundle": bundle,
+                "version_check": {
+                    "status": "passed",
+                    "dirty": False,
+                    "dirty_files": [],
+                },
+                "graph_status": {
+                    "current_state": {"graph_stale": {"is_stale": False}}
+                },
+            },
+        },
+        action_contract,
+    )
+
+    route = action_result["routes"][0]
+    gate = route["result"]["route_action_gate"]
+
+    assert bundle["route"]["caller_role"] == "observer"
+    assert action_result["decision"] == "block"
+    assert route["status"] == "route_action_policy_blocked"
+    assert gate["allowed"] is False
+    assert gate["route_context_hash"] == bundle["route_context_hash"]
+    assert gate["prompt_contract_id"] == "rprompt-nested-role-bundle"
+    assert gate["prompt_contract_hash"] == bundle["prompt_contract_hash"]
+    assert "observer_judger_must_not_implement" in gate["reason"]
+
+
+def test_route_prompt_alert_bundle_selects_parallel_lanes_for_high_risk_route_work():
+    contract = _contract(
+        service_routes=[
+            _service_route(
+                service_id="route.prompt_alert_bundle",
+                mode="preview",
+                side_effect_class="read",
+                route_id="service.route.prompt_alert_bundle",
+            )
+        ],
+        event_routes=[
+            {
+                "route_id": "event.route_prompt_context.preview",
+                "event_kind": "route.prompt_context.requested",
+                "service_route_id": "service.route.prompt_alert_bundle",
+                "enabled": True,
+            }
+        ],
+    )
+
+    result = route_event(
+        {
+            "event_id": "evt-route-high",
+            "event_kind": "route.prompt_context.requested",
+            "stage": "dispatch",
+            "payload": {
+                "priority": "P1",
+                "route_id": "route-high",
+                "stage": "dispatch",
+                "caller_role": "observer",
+                "content": {
+                    "summary": "Change governance route precheck and permission runtime behavior."
+                },
+                "target_files": [
+                    "agent/governance/service_router.py",
+                    "agent/governance/precheck_service.py",
+                    "agent/governance/service_registry.py",
+                ],
+                "test_files": [
+                    "agent/tests/test_service_router.py",
+                    "agent/tests/test_precheck_service.py",
+                ],
+                "acceptance_criteria": ["independent verification required"],
+                "evidence_required": ["focused_tests", "independent_verification_lane"],
+            },
+        },
+        contract,
+    )
+
+    bundle = result["routes"][0]["result"]["route_prompt_bundle"]
+    lane_ids = {lane["id"] for lane in bundle["required_lanes"]}
+    alert_codes = {alert["code"] for alert in bundle["alerts"]}
+
+    assert bundle["selected_topology"] == "observer_led_parallel_lanes"
+    assert bundle["recommended_topology"] == "mf_parallel.v1"
+    assert {
+        "observer_coordinator",
+        "bounded_implementation_worker",
+        "independent_verification_lane",
+        "observer_merge_close_gate",
+    }.issubset(lane_ids)
+    assert {"priority_p1", "governance_routing_runtime_surface"}.issubset(
+        set(bundle["reason_codes"])
+    )
+    assert bundle["verification_policy"]["independent_verification_required"] is True
+    assert "merge" in bundle["observer_authorities"]
+    assert "redeploy_governance" in bundle["observer_authorities"]
+    assert "independent_verification_required" in alert_codes
+
+
+def test_route_prompt_alert_bundle_merges_topology_alerts_with_custom_alerts():
+    contract = _contract(
+        service_routes=[
+            _service_route(
+                service_id="route.prompt_alert_bundle",
+                mode="preview",
+                side_effect_class="read",
+                route_id="service.route.prompt_alert_bundle",
+            )
+        ],
+        event_routes=[
+            {
+                "route_id": "event.route_prompt_context.preview",
+                "event_kind": "route.prompt_context.requested",
+                "service_route_id": "service.route.prompt_alert_bundle",
+                "enabled": True,
+            }
+        ],
+    )
+
+    result = route_event(
+        {
+            "event_id": "evt-route-custom-alerts",
+            "event_kind": "route.prompt_context.requested",
+            "stage": "close_gate",
+            "payload": {
+                "priority": "P1",
+                "route_id": "route-custom-alerts",
+                "stage": "close_gate",
+                "caller_role": "observer",
+                "content": {"summary": "Close governance routing runtime work."},
+                "route_alerts": [
+                    {
+                        "code": "independent_verification_required",
+                        "severity": "info",
+                        "applies_to": ["observer"],
+                    },
+                    {
+                        "code": "observer_only_privileged_authorities",
+                        "severity": "info",
+                        "applies_to": ["observer"],
+                    },
+                    {
+                        "code": "custom_operator_note",
+                        "severity": "info",
+                        "applies_to": ["observer"],
+                    }
+                ],
+                "target_files": ["agent/governance/service_registry.py"],
+                "acceptance_criteria": ["custom alerts do not suppress topology alerts"],
+                "evidence_required": ["independent_verification_lane"],
+            },
+        },
+        contract,
+    )
+
+    bundle = result["routes"][0]["result"]["route_prompt_bundle"]
+    alerts_by_code = {alert["code"]: alert for alert in bundle["alerts"]}
+
+    assert bundle["selected_topology"] == "observer_led_parallel_lanes"
+    assert "custom_operator_note" in alerts_by_code
+    assert alerts_by_code["independent_verification_required"]["severity"] == "block"
+    assert "merge_without_independent_verification" in alerts_by_code[
+        "independent_verification_required"
+    ]["blocked_actions"]
+    assert "close_without_independent_verification" in alerts_by_code[
+        "independent_verification_required"
+    ]["blocked_actions"]
+    assert alerts_by_code["observer_only_privileged_authorities"]["severity"] == "block"
+    assert "worker_merge" in alerts_by_code[
+        "observer_only_privileged_authorities"
+    ]["blocked_actions"]
+    assert "worker_backlog_close" in alerts_by_code[
+        "observer_only_privileged_authorities"
+    ]["blocked_actions"]
+
+
 def test_route_action_precheck_route_allows_bounded_worker_action():
     contract = _contract(
         service_routes=[

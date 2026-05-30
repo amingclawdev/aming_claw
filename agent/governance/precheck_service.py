@@ -11,6 +11,12 @@ from pathlib import Path
 import subprocess
 from typing import Any, Callable
 
+from agent.governance.service_registry import (
+    INDEPENDENT_VERIFICATION_EVIDENCE_IDS,
+    OBSERVER_LED_PARALLEL_TOPOLOGY,
+    classify_route_topology,
+)
+
 
 PRECHECK_RESULT_SCHEMA_VERSION = "mf_workflow_precheck_result.v1"
 
@@ -364,6 +370,9 @@ def _merge_gate(
     source_commit = observed_source_head or subject_source_commit
     errors.extend(_token_errors(subject, current_commit=source_commit))
     missing_evidence = _missing_required_evidence(subject, include_close_ready=False)
+    topology_policy = _topology_policy(subject)
+    independent_verification_required = _independent_verification_required(topology_policy)
+    independent_verification_present = _independent_verification_present(subject)
 
     if main_git["error"]:
         errors.append("main_git_unavailable")
@@ -385,6 +394,8 @@ def _merge_gate(
         errors.append("contract_evidence_incomplete")
     if not _has_timeline_kind(subject.get("timeline_evidence"), {"implementation", "verification"}):
         errors.append("missing_implementation_or_verification_timeline")
+    if independent_verification_required and not independent_verification_present:
+        errors.append("missing_independent_verification_lane_evidence")
 
     return {
         "schema_version": PRECHECK_RESULT_SCHEMA_VERSION,
@@ -399,6 +410,9 @@ def _merge_gate(
         "subject_source_commit": subject_source_commit,
         "observed_source_head": observed_source_head,
         "missing_required_evidence": missing_evidence,
+        "topology_policy": topology_policy,
+        "independent_verification_required": independent_verification_required,
+        "independent_verification_evidence_present": independent_verification_present,
         "timeline_evidence_present": _has_timeline_kind(
             subject.get("timeline_evidence"),
             {"implementation", "verification"},
@@ -659,6 +673,9 @@ def _close_gate(
     current_commit = _text(subject.get("merge_commit") or subject.get("source_commit"))
     errors.extend(_token_errors(subject, current_commit=current_commit))
     missing_evidence = _missing_required_evidence(subject, include_close_ready=True)
+    topology_policy = _topology_policy(subject)
+    independent_verification_required = _independent_verification_required(topology_policy)
+    independent_verification_present = _independent_verification_present(subject)
 
     if not _text(subject.get("merge_commit")):
         errors.append("missing_merge_commit")
@@ -671,6 +688,8 @@ def _close_gate(
         errors.append("mf_timeline_precheck_incomplete")
     if missing_evidence:
         errors.append("required_evidence_ids_missing")
+    if independent_verification_required and not independent_verification_present:
+        errors.append("missing_independent_verification_lane_evidence")
 
     return {
         "schema_version": PRECHECK_RESULT_SCHEMA_VERSION,
@@ -681,6 +700,9 @@ def _close_gate(
         "warnings": _dedupe(warnings),
         "merge_commit": _text(subject.get("merge_commit")),
         "missing_required_evidence": missing_evidence,
+        "topology_policy": topology_policy,
+        "independent_verification_required": independent_verification_required,
+        "independent_verification_evidence_present": independent_verification_present,
         "close_ready_present": _has_timeline_kind(subject.get("timeline_evidence"), {"close_ready"}),
         "mf_timeline_precheck_compatible": _has_timeline_kind(
             subject.get("timeline_evidence"),
@@ -914,6 +936,191 @@ def _missing_required_evidence(
         required = [item for item in required if item != "close_ready"]
     present = _present_required_evidence_ids(subject)
     return sorted(item for item in required if item not in present)
+
+
+def _topology_policy(subject: Mapping[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    contract = subject.get("contract")
+    if isinstance(contract, Mapping):
+        for key in (
+            "priority",
+            "selected_topology",
+            "recommended_topology",
+            "topology",
+            "target_files",
+            "test_files",
+            "changed_files",
+            "owned_files",
+        ):
+            if key in contract:
+                payload[key] = contract[key]
+        route_policy = contract.get("route_topology_policy")
+        if isinstance(route_policy, Mapping):
+            payload.update({
+                key: value
+                for key, value in route_policy.items()
+                if key
+                in {
+                    "priority",
+                    "selected_topology",
+                    "recommended_topology",
+                    "topology",
+                    "target_files",
+                    "test_files",
+                    "changed_files",
+                    "owned_files",
+                    "risk_class",
+                }
+            })
+    for key in (
+        "priority",
+        "selected_topology",
+        "recommended_topology",
+        "topology",
+        "target_files",
+        "test_files",
+        "changed_files",
+        "owned_files",
+        "risk_class",
+        "summary",
+        "task_summary",
+        "title",
+    ):
+        if key in subject:
+            payload[key] = subject[key]
+    if "changed_files" not in payload:
+        source_git = subject.get("source_git")
+        if isinstance(source_git, Mapping):
+            payload["changed_files"] = source_git.get("dirty_files")
+    return classify_route_topology(payload)
+
+
+def _independent_verification_required(topology_policy: Mapping[str, Any]) -> bool:
+    return (
+        bool(topology_policy.get("independent_verification_required"))
+        or _text(topology_policy.get("selected_topology")) == OBSERVER_LED_PARALLEL_TOPOLOGY
+    )
+
+
+def _independent_verification_present(subject: Mapping[str, Any]) -> bool:
+    if _has_pass_evidence(subject.get("independent_verification_evidence")):
+        return True
+    if _independent_contract_evidence_present(subject.get("contract_evidence")):
+        return True
+    if _independent_contract_evidence_present(subject.get("route_evidence")):
+        return True
+    for event in _iter_mappings(subject.get("timeline_evidence")):
+        if not _evidence_passed(event):
+            continue
+        kind = _text(event.get("event_kind") or event.get("kind")).lower()
+        if kind in {"independent_verification", "qa_verification"}:
+            return True
+        inherited_identity = _independent_verification_identity(event)
+        if kind == "verification" and inherited_identity:
+            return True
+        for key in ("payload", "verification", "artifact_refs"):
+            container = _mapping(event.get(key))
+            if _independent_contract_evidence_present(
+                container.get("contract_evidence"),
+                inherited_identity=inherited_identity,
+            ):
+                return True
+            route_evidence = _mapping(container.get("route_evidence"))
+            if _independent_contract_evidence_present(
+                route_evidence,
+                inherited_identity=inherited_identity,
+            ):
+                return True
+    return False
+
+
+def _independent_contract_evidence_present(
+    value: Any,
+    *,
+    inherited_identity: bool = False,
+) -> bool:
+    for item in _iter_evidence_mappings(value):
+        item_identity = inherited_identity or _independent_verification_identity(item)
+        if _independent_contract_evidence_present(
+            item.get("contract_evidence"),
+            inherited_identity=item_identity,
+        ):
+            return True
+        route_evidence = _mapping(item.get("route_evidence"))
+        if route_evidence and _independent_contract_evidence_present(
+            route_evidence,
+            inherited_identity=item_identity,
+        ):
+            return True
+        if not _evidence_passed(item):
+            continue
+        if not _evidence_ids_from_mapping(item).intersection(
+            INDEPENDENT_VERIFICATION_EVIDENCE_IDS
+        ):
+            continue
+        if item_identity:
+            return True
+    return False
+
+
+def _iter_evidence_mappings(value: Any) -> list[Mapping[str, Any]]:
+    if isinstance(value, Mapping):
+        if (
+            _evidence_ids_from_mapping(value)
+            or "status" in value
+            or "decision" in value
+            or "passed" in value
+            or "contract_evidence" in value
+            or "route_evidence" in value
+        ):
+            return [value]
+        return [item for item in value.values() if isinstance(item, Mapping)]
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [item for item in value if isinstance(item, Mapping)]
+    return []
+
+
+def _evidence_ids_from_mapping(value: Mapping[str, Any]) -> set[str]:
+    ids: set[str] = set()
+    for key in ("id", "requirement_id", "contract_requirement_id", "evidence_id"):
+        token = _text(value.get(key))
+        if token:
+            ids.add(token)
+    for key in ("ids", "requirement_ids", "contract_requirement_ids", "evidence_ids"):
+        ids.update(_string_list(value.get(key)))
+    return ids
+
+
+def _evidence_passed(value: Mapping[str, Any]) -> bool:
+    status = _text(value.get("status") or value.get("decision")).lower()
+    return bool(value.get("passed")) or status in PASS_STATUSES
+
+
+def _independent_verification_identity(value: Mapping[str, Any]) -> bool:
+    role = _text(
+        value.get("role") or value.get("actor") or value.get("worker_role")
+    ).lower()
+    lane = _text(
+        value.get("lane_id") or value.get("lane") or value.get("lane_name")
+    ).lower()
+    kind = _text(value.get("event_kind") or value.get("kind")).lower()
+    source = _text(value.get("source") or value.get("evidence_source")).lower()
+    independent_roles = {"qa", "independent_verification", "verification_worker"}
+    independent_lanes = {
+        "qa",
+        "qa_lane",
+        "qa_verification",
+        "independent_verification",
+        "independent_verification_lane",
+        "verification_lane",
+    }
+    independent_kinds = {"independent_verification", "qa_verification"}
+    return (
+        role in independent_roles
+        or lane in independent_lanes
+        or kind in independent_kinds
+        or source in independent_lanes
+    )
 
 
 def _required_evidence_ids(subject: Mapping[str, Any]) -> list[str]:

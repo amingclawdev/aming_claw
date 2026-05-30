@@ -54,11 +54,21 @@ def test_mf_parallel_template_requires_subagent_fence_and_graph_trace_contract()
             "worker_role",
             "fence_token",
             "graph_queries",
+            "route_identity",
+            "selected_topology",
+            "recommended_topology",
             "target_files",
+            "test_files",
             "test_commands",
             "review_evidence",
         }
     )
+
+    worker_prompt_contract = worker_contract["worker_prompt_contract"]
+    assert "target_files" in worker_prompt_contract["bounded_fields_only"]
+    assert "test_files" in worker_prompt_contract["bounded_fields_only"]
+    assert "route_identity" in worker_prompt_contract["bounded_fields_only"]
+    assert "observer_only_context" in worker_prompt_contract["forbidden_context_sources"]
 
     runtime_identity = worker_contract["runtime_identity"]
     assert runtime_identity["worker_role"] == "mf_sub"

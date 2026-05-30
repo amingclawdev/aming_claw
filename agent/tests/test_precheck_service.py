@@ -660,6 +660,158 @@ def test_close_gate_recognizes_service_route_contract_evidence_from_timeline(
     assert allowed["evidence"]["missing_required_evidence"] == []
 
 
+def test_p1_governance_route_work_requires_independent_verification_before_merge_and_close(
+    tmp_path: Path,
+) -> None:
+    contract = load_workflow_contract()
+    fixture = create_runtime_fixture(tmp_path)
+    source_commit = commit_worker_candidate(fixture)
+    token = make_precheck_token(source_commit)
+
+    merge_subject = fixture.merge_subject(
+        contract,
+        source_commit=source_commit,
+        precheck_token=token,
+    )
+    merge_subject.update(
+        {
+            "priority": "P1",
+            "changed_files": ["agent/governance/service_router.py"],
+            "task_summary": "Change governance route precheck permission behavior.",
+        }
+    )
+
+    blocked_merge = run_precheck(
+        "workflow.merge",
+        CONTRACT_ID,
+        "merge_gate",
+        merge_subject,
+        "pytest",
+    )
+
+    assert blocked_merge["decision"] == "block"
+    assert "missing_independent_verification_lane_evidence" in blocked_merge["evidence"][
+        "errors"
+    ]
+    assert blocked_merge["evidence"]["topology_policy"]["selected_topology"] == (
+        "observer_led_parallel_lanes"
+    )
+
+    merge_subject["contract_evidence"].append("independent_verification_lane")
+    bare_string_merge = run_precheck(
+        "workflow.merge",
+        CONTRACT_ID,
+        "merge_gate",
+        merge_subject,
+        "pytest",
+    )
+    assert bare_string_merge["decision"] == "block"
+    assert "missing_independent_verification_lane_evidence" in bare_string_merge[
+        "evidence"
+    ]["errors"]
+    assert (
+        bare_string_merge["evidence"]["independent_verification_evidence_present"]
+        is False
+    )
+
+    merge_subject["contract_evidence"].append(
+        {
+            "id": "independent_verification_lane",
+            "status": "passed",
+            "role": "qa",
+            "lane_id": "independent_verification_lane",
+        }
+    )
+    allowed_merge_with_lane_evidence = run_precheck(
+        "workflow.merge",
+        CONTRACT_ID,
+        "merge_gate",
+        merge_subject,
+        "pytest",
+    )
+    assert allowed_merge_with_lane_evidence["decision"] == "allow"
+    assert (
+        allowed_merge_with_lane_evidence["evidence"][
+            "independent_verification_evidence_present"
+        ]
+        is True
+    )
+
+    merge_subject["independent_verification_evidence"] = {
+        "status": "passed",
+        "lane_id": "independent_verification_lane",
+    }
+    allowed_merge = run_precheck(
+        "workflow.merge",
+        CONTRACT_ID,
+        "merge_gate",
+        merge_subject,
+        "pytest",
+    )
+    assert allowed_merge["decision"] == "allow"
+    assert allowed_merge["evidence"]["independent_verification_evidence_present"] is True
+
+    close_subject = fixture.close_subject(
+        contract,
+        merge_commit=source_commit,
+        precheck_token=token,
+    )
+    close_subject.update(
+        {
+            "priority": "P1",
+            "changed_files": ["agent/governance/precheck_service.py"],
+            "task_summary": "Close high-risk governance runtime route work.",
+        }
+    )
+
+    blocked_close = run_precheck(
+        "backlog.close",
+        CONTRACT_ID,
+        "close_gate",
+        close_subject,
+        "pytest",
+    )
+    assert blocked_close["decision"] == "block"
+    assert "missing_independent_verification_lane_evidence" in blocked_close[
+        "evidence"
+    ]["errors"]
+
+    close_subject["contract_evidence"].append("independent_verification_lane")
+    bare_string_close = run_precheck(
+        "backlog.close",
+        CONTRACT_ID,
+        "close_gate",
+        close_subject,
+        "pytest",
+    )
+    assert bare_string_close["decision"] == "block"
+    assert "missing_independent_verification_lane_evidence" in bare_string_close[
+        "evidence"
+    ]["errors"]
+    assert (
+        bare_string_close["evidence"]["independent_verification_evidence_present"]
+        is False
+    )
+
+    close_subject["timeline_evidence"].append(
+        {
+            "event_kind": "qa_verification",
+            "status": "passed",
+            "event_id": "tl-independent-verify",
+            "actor": "qa",
+        }
+    )
+    allowed_close = run_precheck(
+        "backlog.close",
+        CONTRACT_ID,
+        "close_gate",
+        close_subject,
+        "pytest",
+    )
+    assert allowed_close["decision"] == "allow"
+    assert allowed_close["evidence"]["independent_verification_evidence_present"] is True
+
+
 def _result_contract_fields_present(result: dict[str, object]) -> bool:
     required = {
         "precheck_run_id",

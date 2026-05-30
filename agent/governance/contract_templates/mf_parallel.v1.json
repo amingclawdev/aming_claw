@@ -18,6 +18,57 @@
     "merged",
     "rejected"
   ],
+  "route_topology_policy": {
+    "schema_version": "route_topology_policy.v1",
+    "classification_service_id": "route.prompt_alert_bundle",
+    "low_risk": {
+      "selected_topology": "lightweight_single_lane",
+      "recommended_topology": "single_lane.v1",
+      "reason_codes": [
+        "small_deterministic"
+      ],
+      "required_lanes": [
+        "single_bounded_worker"
+      ]
+    },
+    "high_risk": {
+      "selected_topology": "observer_led_parallel_lanes",
+      "recommended_topology": "mf_parallel.v1",
+      "reason_codes": [
+        "priority_p0",
+        "priority_p1",
+        "governance_routing_runtime_surface",
+        "governance_routing_runtime_terms",
+        "cross_module_change",
+        "observer_direct_implementation_risk"
+      ],
+      "required_lanes": [
+        "observer_coordinator",
+        "bounded_implementation_worker",
+        "independent_verification_lane",
+        "observer_merge_close_gate"
+      ],
+      "observer_authorities": [
+        "merge",
+        "redeploy_governance",
+        "graph_reconcile",
+        "backlog_close",
+        "waiver_approval",
+        "merge_queue_mutation"
+      ]
+    },
+    "p0_p1_governance_gate": {
+      "requires_independent_verification_before": [
+        "workflow.merge",
+        "backlog.close"
+      ],
+      "required_evidence_ids": [
+        "independent_verification",
+        "independent_verification_lane",
+        "independent_verification_evidence"
+      ]
+    }
+  },
   "observer_contract": {
     "mode": "observer_only",
     "observer_direct_code": false,
@@ -100,8 +151,12 @@
       "parent_task_id",
       "worker_role",
       "fence_token",
+      "route_identity",
+      "selected_topology",
+      "recommended_topology",
       "owned_files",
       "target_files",
+      "test_files",
       "test_commands",
       "responsibility",
       "required_evidence",
@@ -111,6 +166,26 @@
       "gate_alignment",
       "final_output"
     ],
+    "worker_prompt_contract": {
+      "schema_version": "worker_prompt_contract.v1",
+      "bounded_fields_only": [
+        "target_files",
+        "test_files",
+        "acceptance_criteria",
+        "route_identity",
+        "evidence_required",
+        "selected_topology",
+        "recommended_topology",
+        "required_lanes"
+      ],
+      "forbidden_context_sources": [
+        "observer_only_context",
+        "raw_private_memory",
+        "hidden_context",
+        "unmanifested_prompt_text"
+      ],
+      "description": "Worker-facing prompts receive bounded files, acceptance criteria, route identity, topology, lane, and evidence requirements only. Observer-only context stays with the observer lane."
+    },
     "nontrivial_implementation": {
       "default_topology": "dispatch_to_bounded_worker_lane",
       "required_lane_evidence": [
