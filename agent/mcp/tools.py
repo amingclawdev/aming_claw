@@ -1552,6 +1552,25 @@ class ToolDispatcher:
                 or result.get("project_root")
                 or self._workspace
             )
+            governance_runtime = result.get("governance_runtime")
+            if not isinstance(governance_runtime, dict):
+                governance_runtime = {}
+            governance_root = str(governance_runtime.get("project_root") or "")
+            root_source = str(result.get("target_project_root_source") or "")
+            external_target_root = bool(
+                has_target_root
+                and (
+                    (
+                        governance_root
+                        and os.path.realpath(workspace) != os.path.realpath(governance_root)
+                    )
+                    or (
+                        not governance_root
+                        and pid != "aming-claw"
+                        and root_source in {"explicit_project", "registered_project"}
+                    )
+                )
+            )
             try:
                 head = subprocess.check_output(
                     ["git", "rev-parse", "HEAD"],
@@ -1599,13 +1618,30 @@ class ToolDispatcher:
                     )
                 if has_target_root and governance_head and governance_head != head:
                     result["target_synced_with_governance"] = False
-                    result["ok"] = False
-                    result["message"] = (
-                        (result.get("message", "") + "; " if result.get("message") else "")
-                        + f"governance synced HEAD ({governance_head}) differs from MCP workspace HEAD ({head})"
-                    )
+                    result["governance_sync_diagnostics"] = {
+                        "mismatch": True,
+                        "governance_synced_head": governance_head,
+                        "target_head": head,
+                        "target_project_root": workspace,
+                        "external_target_root": external_target_root,
+                        "affects_ok": not external_target_root,
+                    }
+                    if not external_target_root:
+                        result["ok"] = False
+                        result["message"] = (
+                            (result.get("message", "") + "; " if result.get("message") else "")
+                            + f"governance synced HEAD ({governance_head}) differs from MCP workspace HEAD ({head})"
+                        )
                 elif has_target_root and governance_head:
                     result["target_synced_with_governance"] = True
+                    result["governance_sync_diagnostics"] = {
+                        "mismatch": False,
+                        "governance_synced_head": governance_head,
+                        "target_head": head,
+                        "target_project_root": workspace,
+                        "external_target_root": external_target_root,
+                        "affects_ok": False,
+                    }
             except Exception:
                 pass  # fail-open if git unavailable
             return result

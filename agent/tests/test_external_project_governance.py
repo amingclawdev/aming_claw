@@ -282,11 +282,34 @@ def test_external_project_version_runtime_and_preflight_use_registered_root(tmp_
     assert server_version["governance_runtime"]["chain_version"] != server_version["target_project_version"]["chain_version"]
     assert server_version["target_synced_with_governance"] is True
 
+    stale_governance_sync_version = dict(server_version)
+    stale_governance_sync_version["ok"] = True
+    stale_governance_sync_version["governance_synced_head"] = governance_head
+    stale_governance_sync_version["target_synced_with_governance"] = False
+    stale_governance_sync_version["message"] = (
+        f"governance synced HEAD ({governance_head}) differs from target HEAD ({external_head})"
+    )
+    stale_governance_sync_version["target_project_version"] = dict(
+        server_version["target_project_version"],
+        synced_with_governance=False,
+        governance_synced_head=governance_head,
+        legacy_project_version=dict(
+            server_version["legacy_project_version"],
+            git_head=governance_head,
+            synced_with_target=False,
+        ),
+    )
+    stale_governance_sync_version["legacy_project_version"] = dict(
+        server_version["legacy_project_version"],
+        git_head=governance_head,
+        synced_with_target=False,
+    )
+
     def api(method: str, path: str, data: dict | None = None) -> dict:
         if path == "/api/health":
             return {"status": "ok", "version": governance_short}
         if path == f"/api/version-check/{project_id}":
-            return dict(server_version)
+            return dict(stale_governance_sync_version)
         return {"ok": True, "method": method, "path": path, "data": data}
 
     dispatcher = ToolDispatcher(
@@ -294,15 +317,27 @@ def test_external_project_version_runtime_and_preflight_use_registered_root(tmp_
         worker_pool=None,
         service_mgr=None,
         manager_api_fn=_ManagerRecorder(governance_short).api,
-        workspace=str(_repo_root()),
+        workspace=str(project),
     )
 
     mcp_version = dispatcher.dispatch("version_check", {"project_id": project_id})
     assert mcp_version["mcp_workspace_root"] == str(project.resolve())
+    assert mcp_version["ok"] is True
     assert mcp_version["head"] == external_head
     assert mcp_version["target_head"] == external_head
     assert mcp_version["target_project_root"] == str(project.resolve())
     assert mcp_version["mcp_workspace_head"] != governance_head
+    assert mcp_version["target_project_version"]["head"] == external_head
+    assert mcp_version["governance_synced_head"] == governance_head
+    assert mcp_version["target_synced_with_governance"] is False
+    assert mcp_version["governance_sync_diagnostics"] == {
+        "mismatch": True,
+        "governance_synced_head": governance_head,
+        "target_head": external_head,
+        "target_project_root": str(project.resolve()),
+        "external_target_root": True,
+        "affects_ok": False,
+    }
 
     runtime = dispatcher.dispatch("runtime_status", {"project_id": project_id})
     assert runtime["target_project_version"]["project_root"] == str(project.resolve())

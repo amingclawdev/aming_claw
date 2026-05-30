@@ -233,9 +233,44 @@ def check_version(
 # 3. Graph check — orphan nodes, pending without active tasks
 # ---------------------------------------------------------------------------
 
+def _graph_governance_preflight_details(conn, project_id: str) -> dict:
+    """Return graph_status-compatible details used for the graph decision."""
+    from . import graph_snapshot_store as store
+    from . import server as governance_server
+
+    status = store.graph_governance_status(conn, project_id)
+    pending_rows = list(status.get("pending_scope_reconcile") or [])
+    _operation, graph_stale = governance_server._graph_stale_scope_operation(
+        project_id,
+        status=status,
+        pending_rows=pending_rows,
+    )
+    active_graph_commit = str(
+        graph_stale.get("active_graph_commit")
+        or status.get("graph_snapshot_commit")
+        or ""
+    )
+    target_head = str(graph_stale.get("head_commit") or "")
+    is_stale = bool(graph_stale.get("is_stale"))
+    pending_count = int(status.get("pending_scope_reconcile_count") or len(pending_rows))
+    graph_state = "stale" if is_stale else "current"
+    if not target_head:
+        graph_state = "unknown"
+    return {
+        "active_snapshot_id": str(status.get("active_snapshot_id") or ""),
+        "active_graph_commit": active_graph_commit,
+        "target_head": target_head,
+        "graph_stale": is_stale,
+        "graph_state": graph_state,
+        "pending_scope_reconcile_count": pending_count,
+    }
+
+
 def check_graph(conn, project_id: str) -> dict:
-    """Check for orphan or stuck nodes in the acceptance graph."""
+    """Check for orphan/stuck acceptance nodes and stale graph reconcile state."""
     try:
+        graph_details = _graph_governance_preflight_details(conn, project_id)
+
         # Pending nodes
         pending = conn.execute(
             "SELECT node_id FROM node_state WHERE project_id=? AND verify_status='pending'",
@@ -264,15 +299,26 @@ def check_graph(conn, project_id: str) -> dict:
 
         orphan_pending = [n for n in pending_ids if n not in active_nodes]
 
+        details = {
+            "pending_count": len(pending_ids),
+            **graph_details,
+        }
+        if graph_details.get("graph_stale"):
+            details["reason"] = "active_graph_stale"
+            return _fail(details)
+        if graph_details.get("pending_scope_reconcile_count", 0) > 0:
+            details["reason"] = "pending_scope_reconcile"
+            return _warn(details)
         if not pending_ids:
-            return _pass({"pending_count": 0})
+            return _pass(details)
         elif orphan_pending:
-            return _warn({
-                "pending_count": len(pending_ids),
+            details.update({
                 "orphan_pending": orphan_pending,
             })
+            return _warn(details)
         else:
-            return _pass({"pending_count": len(pending_ids), "all_have_active_tasks": True})
+            details["all_have_active_tasks"] = True
+            return _pass(details)
     except Exception as e:
         return _fail({"error": str(e)})
 

@@ -188,6 +188,68 @@ class TestCheckGraph(unittest.TestCase):
         result = check_graph(self.conn, self.pid)
         self.assertEqual(result["status"], "pass")
 
+    def test_fails_for_external_project_pending_scope_and_stale_snapshot(self):
+        import governance.preflight as preflight
+        from governance import graph_snapshot_store as store
+        from governance import server
+
+        external_pid = "judgment-brain"
+        old_project_root = server._graph_governance_project_root
+        old_git_head = server._git_head_commit
+        old_changed_paths = server._git_changed_paths_between
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                server._graph_governance_project_root = lambda *_args, **_kwargs: root
+                server._git_head_commit = lambda _root: "head-commit"
+                server._git_changed_paths_between = (
+                    lambda _root, _base, _head, limit=None: ["src/service.py"]
+                )
+
+                snapshot = store.create_graph_snapshot(
+                    self.conn,
+                    external_pid,
+                    snapshot_id="scope-old-active",
+                    commit_sha="old-commit",
+                    snapshot_kind="full",
+                    graph_json={"deps_graph": {"nodes": [], "edges": []}},
+                )
+                store.activate_graph_snapshot(self.conn, external_pid, snapshot["snapshot_id"])
+                for commit in [
+                    "range-1",
+                    "range-2",
+                    "range-3",
+                    "range-4",
+                    "head-commit",
+                ]:
+                    store.queue_pending_scope_reconcile(
+                        self.conn,
+                        external_pid,
+                        commit_sha=commit,
+                        parent_commit_sha="old-commit",
+                    )
+                self.conn.commit()
+
+                graph_status = store.graph_governance_status(self.conn, external_pid)
+                result = preflight.check_graph(self.conn, external_pid)
+        finally:
+            server._graph_governance_project_root = old_project_root
+            server._git_head_commit = old_git_head
+            server._git_changed_paths_between = old_changed_paths
+
+        self.assertEqual(graph_status["pending_scope_reconcile_count"], 5)
+        self.assertEqual(result["status"], "fail")
+        self.assertEqual(result["details"]["pending_scope_reconcile_count"], 5)
+        self.assertEqual(
+            result["details"]["pending_scope_reconcile_count"],
+            graph_status["pending_scope_reconcile_count"],
+        )
+        self.assertEqual(result["details"]["active_graph_commit"], "old-commit")
+        self.assertEqual(result["details"]["target_head"], "head-commit")
+        self.assertTrue(result["details"]["graph_stale"])
+        self.assertEqual(result["details"]["graph_state"], "stale")
+        self.assertEqual(result["details"]["reason"], "active_graph_stale")
+
 
 class TestCheckCoverage(unittest.TestCase):
     def test_returns_result(self):
