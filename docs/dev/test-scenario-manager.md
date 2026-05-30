@@ -45,6 +45,71 @@ Useful flags:
 - `--allow-bootstrap` permits governance bootstrap HTTP calls that mutate the
   local governance project registry and graph state.
 - `--governance-url <url>` defaults to `http://127.0.0.1:40000`.
+- `--project-root <path>` points at an external governed project that owns
+  source-controlled test route declarations.
+- `--route-manifest <path>` loads an external test route manifest. The alias
+  `--test-route-manifest <path>` is accepted for governance wording.
+
+When `--project-root` is provided without an explicit manifest path, the manager
+auto-discovers the first existing source-controlled manifest at:
+
+```text
+<project-root>/.aming-claw/test-routes.json
+<project-root>/.aming-claw-test-routes.json
+<project-root>/aming-claw-test-routes.json
+```
+
+The external manifest schema is versioned as `schema_version: 1` and has a
+top-level `project_id` plus `routes[]`. Each route materializes as a normal
+scenario merged with `scripts/test-scenarios.json`; duplicate ids are rejected.
+Routes use the same runner, dependency, fixture, command, and evidence shapes
+as built-in scenarios, with additional registration fields:
+
+```json
+{
+  "schema_version": 1,
+  "project_id": "target-project",
+  "routes": [
+    {
+      "id": "target.fixture.route",
+      "title": "Target fixture route",
+      "lane": "fixture_only",
+      "runner": "commands",
+      "lifecycle": "stable",
+      "side_effect_class": "read",
+      "commands": [
+        {"id": "metadata", "cwd": "external_project", "command": ["{node}", "-e", "console.log('ok')"]}
+      ],
+      "dependencies": [],
+      "fixtures": [],
+      "evidence_requirements": []
+    }
+  ]
+}
+```
+
+Every materialized external route includes `route_registration` in `plan` and
+`run` reports, and the same object is nested under
+`test_flow_route.route_registration`:
+
+```json
+{
+  "source": "external_project_manifest",
+  "project_id": "target-project",
+  "project_root": "/path/to/target-project",
+  "manifest_path": "/path/to/target-project/.aming-claw/test-routes.json",
+  "manifest_hash": "sha256:<manifest-bytes>",
+  "route_id": "target.fixture.route",
+  "trust_level": "source_controlled",
+  "lifecycle": "stable",
+  "side_effect_class": "read"
+}
+```
+
+For external manifest routes, command `cwd` values of `external_project` and
+`project` resolve to `project_root`. Built-in repo scenarios keep their current
+behavior: `repo` and unspecified cwd resolve to this repository, and `project`
+falls back to this repository unless route registration names an external root.
 
 ## Test Flow Route
 
@@ -72,6 +137,14 @@ The `prompt_alert_bundle` inside `test_flow_route` emits alerts only for the
 selected lanes. Docker and live-AI lanes are blocking alerts because they need
 explicit flags. Fixture-only and focused-unit lanes are informational alerts
 because they are deterministic and should stay local.
+
+External manifests may declare `lane` explicitly. That lane is treated as the
+route owner decision for `test_flow_route.decision`, `primary_lane`, alerts,
+default autorun, model-call policy, and side-effect class. This is intentional:
+route alerts are a compact safety contract for observer/worker handoff, not a
+command-name heuristic. A fixture-only external route with no pytest or E2E
+command still reports `fixture_only`, `model_calls: forbidden`, and
+`autorun: true`.
 
 ## Scenario Schema
 

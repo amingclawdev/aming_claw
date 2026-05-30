@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -11,6 +11,11 @@ const REPO_ROOT = resolve(SCRIPT_DIR, "..");
 const DEFAULT_REGISTRY = join(SCRIPT_DIR, "test-scenarios.json");
 const DEFAULT_STATE_DIR = join(tmpdir(), "aming-claw-test-scenario-manager", "state");
 const DEFAULT_GOVERNANCE_URL = "http://127.0.0.1:40000";
+const EXTERNAL_ROUTE_MANIFEST_CANDIDATES = [
+  join(".aming-claw", "test-routes.json"),
+  ".aming-claw-test-routes.json",
+  "aming-claw-test-routes.json",
+];
 const VALID_MODES = new Set(["doctor", "plan", "run", "report"]);
 const RUN_TERMINAL_STATUSES = new Set(["passed", "failed", "blocked", "dry_run"]);
 const TEST_FLOW_LANE_PRIORITY = [
@@ -133,6 +138,8 @@ function parseArgs(argv) {
     stateDir: DEFAULT_STATE_DIR,
     cacheDir: "",
     registry: DEFAULT_REGISTRY,
+    projectRoot: "",
+    routeManifest: "",
     governanceUrl: DEFAULT_GOVERNANCE_URL,
     scenario: "",
     runId: "",
@@ -160,6 +167,8 @@ function parseArgs(argv) {
     if (key === "stateDir") options.stateDir = resolve(value);
     else if (key === "cacheDir") options.cacheDir = resolve(value);
     else if (key === "registry") options.registry = resolve(value);
+    else if (key === "projectRoot") options.projectRoot = resolve(value);
+    else if (key === "routeManifest" || key === "testRouteManifest") options.routeManifest = value;
     else if (key === "backend") options.governanceUrl = value.replace(/\/+$/, "");
     else if (key === "governanceUrl") options.governanceUrl = value.replace(/\/+$/, "");
     else if (key === "scenario") options.scenario = value;
@@ -178,6 +187,11 @@ function parseArgs(argv) {
   options.stateDir = resolve(options.stateDir);
   options.cacheDir = resolve(options.cacheDir || join(options.stateDir, "workspaces"));
   options.registry = resolve(options.registry);
+  if (options.routeManifest) {
+    options.routeManifest = isAbsolute(options.routeManifest)
+      ? options.routeManifest
+      : resolve(options.projectRoot || process.cwd(), options.routeManifest);
+  }
   return { mode, options };
 }
 
@@ -185,7 +199,7 @@ function readJsonFile(path) {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
-function loadRegistry(registryPath) {
+function loadRegistry(registryPath, options = {}) {
   const raw = readJsonFile(registryPath);
   if (raw.schema_version !== 1) {
     throw new Error(`unsupported registry schema_version ${raw.schema_version}`);
@@ -193,8 +207,11 @@ function loadRegistry(registryPath) {
   if (!Array.isArray(raw.scenarios)) {
     throw new Error("registry.scenarios must be an array");
   }
+  const externalRoutes = loadExternalRouteManifest(options);
   const seen = new Set();
-  const scenarios = raw.scenarios.map((scenario, index) => normalizeScenario(scenario, index));
+  const scenarios = [...raw.scenarios, ...externalRoutes.scenarios].map((scenario, index) => (
+    normalizeScenario(scenario, index)
+  ));
   for (const scenario of scenarios) {
     if (seen.has(scenario.id)) throw new Error(`duplicate scenario id ${scenario.id}`);
     seen.add(scenario.id);
@@ -203,8 +220,170 @@ function loadRegistry(registryPath) {
     schema_version: raw.schema_version,
     registry_path: registryPath,
     scenario_count: scenarios.length,
+    external_route_manifest: externalRoutes.manifest,
     scenarios,
     byId: new Map(scenarios.map((scenario) => [scenario.id, scenario])),
+  };
+}
+
+function discoverRouteManifest(projectRoot) {
+  for (const candidate of EXTERNAL_ROUTE_MANIFEST_CANDIDATES) {
+    const manifestPath = join(projectRoot, candidate);
+    if (existsSync(manifestPath)) return manifestPath;
+  }
+  return "";
+}
+
+function inferProjectRootFromManifest(manifestPath) {
+  const parent = dirname(manifestPath);
+  if (basename(parent) === ".aming-claw") return dirname(parent);
+  return parent;
+}
+
+function fileSha256Hex(raw) {
+  return crypto.createHash("sha256").update(raw).digest("hex");
+}
+
+function resolveRouteManifest(options) {
+  if (options.routeManifest) {
+    if (!existsSync(options.routeManifest)) {
+      throw new Error(`route manifest not found: ${options.routeManifest}`);
+    }
+    return options.routeManifest;
+  }
+  if (!options.projectRoot) return "";
+  const manifestPath = discoverRouteManifest(options.projectRoot);
+  if (manifestPath) return manifestPath;
+  throw new Error(
+    `no route manifest found under ${options.projectRoot}; looked for ${EXTERNAL_ROUTE_MANIFEST_CANDIDATES.join(", ")}`,
+  );
+}
+
+function loadExternalRouteManifest(options) {
+  const manifestPath = resolveRouteManifest(options);
+  if (!manifestPath) return { manifest: null, scenarios: [] };
+
+  const rawText = readFileSync(manifestPath, "utf8");
+  const manifest = JSON.parse(rawText);
+  if (manifest.schema_version !== 1) {
+    throw new Error(`unsupported route manifest schema_version ${manifest.schema_version}`);
+  }
+  if (!manifest.project_id || typeof manifest.project_id !== "string") {
+    throw new Error("route manifest requires string project_id");
+  }
+  if (!Array.isArray(manifest.routes)) {
+    throw new Error("route manifest routes must be an array");
+  }
+
+  const projectRoot = resolve(options.projectRoot || inferProjectRootFromManifest(manifestPath));
+  const manifestMeta = {
+    source: "external_project_manifest",
+    project_id: manifest.project_id,
+    project_root: projectRoot,
+    manifest_path: manifestPath,
+    manifest_hash: `sha256:${fileSha256Hex(rawText)}`,
+    trust_level: "source_controlled",
+  };
+  return {
+    manifest: {
+      ...manifestMeta,
+      route_count: manifest.routes.length,
+      discovered: !options.routeManifest && Boolean(options.projectRoot),
+    },
+    scenarios: manifest.routes.map((route, index) => materializeExternalRoute(route, index, manifestMeta)),
+  };
+}
+
+function materializeExternalRoute(route, index, manifestMeta) {
+  if (!route || typeof route !== "object" || Array.isArray(route)) {
+    throw new Error(`route manifest route at index ${index} must be an object`);
+  }
+  if (!route.id || typeof route.id !== "string") {
+    throw new Error(`route manifest route at index ${index} requires string id`);
+  }
+  if (!route.title || typeof route.title !== "string") {
+    throw new Error(`route manifest route ${route.id} requires string title`);
+  }
+  if (!route.runner || typeof route.runner !== "string") {
+    throw new Error(`route manifest route ${route.id} requires string runner`);
+  }
+  const runner = String(route.runner);
+  const lane = String(route.lane || route.execution_policy?.lane || "");
+  if (!lane) {
+    throw new Error(`route manifest route ${route.id} requires lane`);
+  }
+  if (lane && !TEST_FLOW_LANE_DEFS[lane]) {
+    throw new Error(`route manifest route ${route.id} has unsupported lane ${lane}`);
+  }
+  const primaryLane = lane || "focused_unit";
+  const sideEffectClass = String(
+    route.side_effect_class
+    || route.route_context?.side_effect_class
+    || TEST_FLOW_LANE_DEFS[primaryLane]?.side_effect_class
+    || "local_test",
+  );
+  const lifecycle = String(route.lifecycle || "");
+  const routeRegistration = {
+    ...manifestMeta,
+    route_id: route.id,
+    lifecycle,
+    side_effect_class: sideEffectClass,
+  };
+  const executionPolicy = { ...plainObject(route.execution_policy) };
+  if (lane && !executionPolicy.lane) executionPolicy.lane = lane;
+  if (Array.isArray(route.requires_flags) && !executionPolicy.requires_flags) {
+    executionPolicy.requires_flags = route.requires_flags;
+  }
+  if (route.model_calls && !executionPolicy.model_calls) executionPolicy.model_calls = route.model_calls;
+  if (!executionPolicy.model_calls) {
+    executionPolicy.model_calls = TEST_FLOW_LANE_DEFS[primaryLane]?.model_calls || "forbidden";
+  }
+  if (typeof route.autorun === "boolean" && typeof executionPolicy.autorun !== "boolean") {
+    executionPolicy.autorun = route.autorun;
+  }
+  const routeContext = {
+    ...plainObject(route.route_context),
+    side_effect_class: sideEffectClass,
+  };
+  const testFlowRoute = {
+    ...plainObject(route.test_flow_route),
+    source: "external_project_manifest",
+    route_registration: routeRegistration,
+  };
+  if (lane) {
+    testFlowRoute.lanes = [lane];
+    testFlowRoute.primary_lane = lane;
+    testFlowRoute.decision = lane;
+  }
+  const safety = { ...plainObject(route.safety) };
+  if (primaryLane === "fixture_only") {
+    safety.fixture_only = safety.fixture_only ?? true;
+  }
+  if (executionPolicy.model_calls === "forbidden") {
+    safety.calls_models = safety.calls_models ?? false;
+  }
+  return {
+    ...route,
+    id: route.id,
+    title: route.title || route.id,
+    description: route.description || "",
+    project_id: manifestMeta.project_id,
+    target_project: route.target_project || manifestMeta.project_id,
+    target_ref: route.target_ref || "HEAD",
+    runner,
+    dependencies: Array.isArray(route.dependencies) ? route.dependencies : [],
+    commands: Array.isArray(route.commands) ? route.commands : [],
+    fixtures: Array.isArray(route.fixtures) ? route.fixtures : [],
+    evidence_requirements: Array.isArray(route.evidence_requirements) ? route.evidence_requirements : [],
+    lifecycle,
+    side_effect_class: sideEffectClass,
+    metadata: plainObject(route.metadata),
+    external_project_root: manifestMeta.project_root,
+    route_registration: routeRegistration,
+    execution_policy: executionPolicy,
+    safety,
+    route_context: routeContext,
+    test_flow_route: testFlowRoute,
   };
 }
 
@@ -253,6 +432,7 @@ function normalizeScenario(scenario, index) {
   const coverage = plainObject(scenario.coverage);
   const routeContext = plainObject(scenario.route_context);
   const testFlowRoute = plainObject(scenario.test_flow_route);
+  const routeRegistration = plainObject(scenario.route_registration);
   return {
     title: scenario.title || scenario.id,
     description: scenario.description || "",
@@ -272,6 +452,7 @@ function normalizeScenario(scenario, index) {
     coverage,
     route_context: routeContext,
     test_flow_route: testFlowRoute,
+    route_registration: routeRegistration,
   };
 }
 
@@ -299,8 +480,9 @@ function expandCommand(command) {
   return command.map((part) => expandToken(String(part)));
 }
 
-function resolveCwd(cwd, externalWorkspace = "") {
+function resolveCwd(cwd, externalWorkspace = "", externalProjectRoot = "") {
   if (!cwd || cwd === "repo") return REPO_ROOT;
+  if (cwd === "external_project" || cwd === "project") return externalProjectRoot || externalWorkspace || REPO_ROOT;
   if (cwd === "external_workspace") return externalWorkspace || REPO_ROOT;
   return isAbsolute(cwd) ? cwd : resolve(REPO_ROOT, cwd);
 }
@@ -466,6 +648,7 @@ function inferTestFlowLanes(scenario) {
   const dependencies = scenarioDependencyIds(scenario);
   const fixtures = scenarioFixtureKinds(scenario);
   const policyLane = String(scenario.execution_policy?.lane || "");
+  if (TEST_FLOW_LANE_DEFS[policyLane]) lanes.push(policyLane);
   const isDocker = (
     dependencies.has("docker_fixture")
     || fixtures.has("docker_fixture")
@@ -525,6 +708,11 @@ function buildTestFlowAlerts(lanes) {
 
 function buildTestFlowRoute(scenario) {
   const configured = scenario.test_flow_route || {};
+  const scenarioRouteRegistration = plainObject(scenario.route_registration);
+  const configuredRouteRegistration = plainObject(configured.route_registration);
+  const routeRegistration = Object.keys(scenarioRouteRegistration).length
+    ? scenarioRouteRegistration
+    : (Object.keys(configuredRouteRegistration).length ? configuredRouteRegistration : undefined);
   const inferredLanes = inferTestFlowLanes(scenario);
   const lanes = unique(Array.isArray(configured.lanes) && configured.lanes.length ? configured.lanes : inferredLanes);
   const primaryLane = configured.primary_lane || primaryTestFlowLane(lanes);
@@ -556,6 +744,7 @@ function buildTestFlowRoute(scenario) {
     model_calls: scenario.execution_policy?.model_calls || TEST_FLOW_LANE_DEFS[primaryLane]?.model_calls || "forbidden",
     live_ai: scenario.execution_policy?.live_ai || (primaryLane === "live_ai_environment_probe" ? "environment_probe" : "disabled"),
     side_effect_class: scenario.route_context?.side_effect_class || TEST_FLOW_LANE_DEFS[primaryLane]?.side_effect_class || "local_test",
+    route_registration: routeRegistration,
     fixture_kinds: [...scenarioFixtureKinds(scenario)],
     dependency_ids: [...scenarioDependencyIds(scenario)],
     evidence_ids: evidenceIds,
@@ -642,6 +831,7 @@ function buildDependencyDecisions(scenario, options, { planning = false } = {}) 
 
 function planScenario(scenario, options) {
   const testFlowRoute = buildTestFlowRoute(scenario);
+  const externalProjectRoot = scenario.route_registration?.project_root || scenario.external_project_root || "";
   const plan = {
     scenario_id: scenario.id,
     title: scenario.title,
@@ -652,6 +842,7 @@ function planScenario(scenario, options) {
     safety: scenario.safety || {},
     coverage: scenario.coverage || {},
     route_context: scenario.route_context || {},
+    route_registration: scenario.route_registration || {},
     test_flow_route: testFlowRoute,
     fixtures: scenario.fixtures || [],
     evidence_requirements: scenario.evidence_requirements || [],
@@ -662,6 +853,7 @@ function planScenario(scenario, options) {
     plan.commands = scenario.commands.map((command) => ({
       id: command.id,
       cwd: command.cwd || "repo",
+      resolved_cwd: resolveCwd(command.cwd || "repo", "", externalProjectRoot),
       command: sanitizeCommand(expandCommand(command.command)),
       env: sanitizeEnv(command.env),
       timeout_ms: command.timeout_ms || 0,
@@ -719,6 +911,7 @@ function baseReport(scenario, options) {
     safety: scenario.safety || {},
     coverage: scenario.coverage || {},
     route_context: scenario.route_context || {},
+    route_registration: scenario.route_registration || {},
     test_flow_route: testFlowRoute,
     fixtures: scenario.fixtures || [],
     evidence_requirements: scenario.evidence_requirements || [],
@@ -824,7 +1017,7 @@ function writeRunState(options, report) {
 
 async function runCommand(commandSpec, options, report, externalWorkspace = "") {
   const command = expandCommand(commandSpec.command);
-  const cwd = resolveCwd(commandSpec.cwd || "repo", externalWorkspace);
+  const cwd = resolveCwd(commandSpec.cwd || "repo", externalWorkspace, commandSpec.external_project_root || "");
   const summary = {
     id: commandSpec.id,
     cwd,
@@ -958,7 +1151,8 @@ async function probeBackendHealth(options, timeoutMs = 1000) {
 
 async function runCommandsScenario(scenario, options) {
   const report = baseReport(scenario, options);
-  report.target_commit = gitOutput(REPO_ROOT, ["rev-parse", scenario.target_ref || "HEAD"]);
+  const externalProjectRoot = scenario.route_registration?.project_root || scenario.external_project_root || "";
+  report.target_commit = gitOutput(externalProjectRoot || REPO_ROOT, ["rev-parse", scenario.target_ref || "HEAD"]);
   report.dependency_decisions = buildDependencyDecisions(scenario, options);
   if (!options.dryRun) {
     const blocked = report.dependency_decisions.find((decision) => decision.status === "blocked" && decision.required !== false);
@@ -972,7 +1166,7 @@ async function runCommandsScenario(scenario, options) {
     }
   }
   for (const command of scenario.commands) {
-    const result = await runCommand(command, options, report);
+    const result = await runCommand({ ...command, external_project_root: externalProjectRoot }, options, report);
     if (!options.dryRun && result.status !== "passed") {
       return finishReport(report, "failed");
     }
@@ -1366,6 +1560,7 @@ async function doctor(registry, options) {
       schema_version: registry.schema_version,
       scenario_count: registry.scenario_count,
       scenario_ids: registry.scenarios.map((scenario) => scenario.id),
+      external_route_manifest: registry.external_route_manifest,
     },
     paths: {
       repo_root: REPO_ROOT,
@@ -1383,6 +1578,7 @@ function plan(registry, options) {
     ok: true,
     mode: "plan",
     selected_count: selected.length,
+    external_route_manifest: registry.external_route_manifest,
     scenarios: selected.map((scenario) => planScenario(scenario, options)),
   };
 }
@@ -1436,7 +1632,7 @@ function printHuman(result) {
 
 async function main() {
   const { mode, options } = parseArgs(process.argv.slice(2));
-  const registry = loadRegistry(options.registry);
+  const registry = loadRegistry(options.registry, options);
   let result;
   if (mode === "doctor") {
     result = await doctor(registry, options);

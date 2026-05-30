@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -33,6 +34,24 @@ def _run_manager(*args: str, check: bool = True) -> subprocess.CompletedProcess[
 
 def _json(result: subprocess.CompletedProcess[str]) -> dict:
     return json.loads(result.stdout)
+
+
+def _write_route_manifest(project_root: Path, routes: list[dict], manifest_path: Path | None = None) -> Path:
+    if manifest_path is None:
+        manifest_path = project_root / ".aming-claw" / "test-routes.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "project_id": "external-demo",
+                "routes": routes,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return manifest_path
 
 
 def test_doctor_json_reports_backend_blocker_without_failing_hard(tmp_path: Path) -> None:
@@ -180,6 +199,181 @@ def test_plan_output_lists_scenarios_actions_and_fixture_metadata(tmp_path: Path
     assert ruby["validation"]["required_path"] == "lib/sinatra/base.rb"
     assert ruby["test_flow_route"]["decision"] == "external_graph_fixture"
     assert ruby["test_flow_route"]["requires_flags"] == ["--allow-network", "--allow-bootstrap"]
+
+
+def test_plan_loads_external_manifest_route_with_registration_metadata(tmp_path: Path) -> None:
+    project_root = tmp_path / "external-project"
+    project_root.mkdir()
+    manifest_path = _write_route_manifest(
+        project_root,
+        [
+            {
+                "id": "external_dashboard_route",
+                "title": "External dashboard route",
+                "lane": "e2e_fixture",
+                "runner": "commands",
+                "lifecycle": "manual_review",
+                "side_effect_class": "isolated_governance_fixture",
+                "commands": [
+                    {
+                        "id": "metadata_only",
+                        "cwd": "external_project",
+                        "command": ["{node}", "-e", "console.log('external metadata ok')"],
+                    }
+                ],
+                "dependencies": [],
+                "fixtures": [{"id": "external-fixture", "kind": "json_fixture"}],
+                "evidence_requirements": [{"id": "registration_evidence", "kind": "route_registration"}],
+            }
+        ],
+    )
+    result = _run_manager(
+        "plan",
+        "--scenario",
+        "external_dashboard_route",
+        "--json",
+        "--state-dir",
+        str(tmp_path / "state"),
+        "--project-root",
+        str(project_root),
+    )
+    payload = _json(result)
+    [scenario] = payload["scenarios"]
+    registration = scenario["route_registration"]
+    expected_hash = "sha256:" + hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+
+    assert payload["selected_count"] == 1
+    assert scenario["target_project"] == "external-demo"
+    assert registration == scenario["test_flow_route"]["route_registration"]
+    assert registration["source"] == "external_project_manifest"
+    assert registration["project_id"] == "external-demo"
+    assert registration["project_root"] == str(project_root)
+    assert registration["manifest_path"] == str(manifest_path)
+    assert registration["manifest_hash"] == expected_hash
+    assert registration["route_id"] == "external_dashboard_route"
+    assert registration["trust_level"] == "source_controlled"
+    assert registration["lifecycle"] == "manual_review"
+    assert registration["side_effect_class"] == "isolated_governance_fixture"
+    assert scenario["test_flow_route"]["decision"] == "e2e_fixture"
+    assert scenario["test_flow_route"]["primary_lane"] == "e2e_fixture"
+    assert scenario["test_flow_route"]["lanes"] == ["e2e_fixture"]
+    assert scenario["test_flow_route"]["prompt_alert_bundle"]["alerts"][0]["lane"] == "e2e_fixture"
+    assert scenario["commands"][0]["resolved_cwd"] == str(project_root)
+
+
+def test_run_executes_external_manifest_commands_in_project_root(tmp_path: Path) -> None:
+    project_root = tmp_path / "external-project"
+    project_root.mkdir()
+    (project_root / "marker.txt").write_text("external cwd marker\n", encoding="utf-8")
+    manifest_path = _write_route_manifest(
+        project_root,
+        [
+            {
+                "id": "external_cwd_route",
+                "title": "External cwd route",
+                "lane": "focused_unit",
+                "runner": "commands",
+                "lifecycle": "local",
+                "side_effect_class": "local_test",
+                "commands": [
+                    {
+                        "id": "external_project_cwd",
+                        "cwd": "external_project",
+                        "command": [
+                            "{node}",
+                            "-e",
+                            "const fs=require('node:fs'); if(!fs.existsSync('marker.txt')) process.exit(7); console.log(process.cwd());",
+                        ],
+                    },
+                    {
+                        "id": "project_cwd_alias",
+                        "cwd": "project",
+                        "command": [
+                            "{node}",
+                            "-e",
+                            "const fs=require('node:fs'); if(!fs.existsSync('marker.txt')) process.exit(8); console.log(process.cwd());",
+                        ],
+                    },
+                ],
+                "dependencies": [],
+                "fixtures": [],
+                "evidence_requirements": [{"id": "cwd_evidence", "kind": "command_summary"}],
+            }
+        ],
+        project_root / "aming-claw-test-routes.json",
+    )
+    result = _run_manager(
+        "run",
+        "--scenario",
+        "external_cwd_route",
+        "--json",
+        "--state-dir",
+        str(tmp_path / "state"),
+        "--project-root",
+        str(project_root),
+        "--test-route-manifest",
+        str(manifest_path),
+    )
+    payload = _json(result)
+    [report] = payload["reports"]
+
+    assert report["status"] == "passed"
+    assert report["route_registration"]["source"] == "external_project_manifest"
+    assert report["route_registration"]["manifest_path"] == str(manifest_path)
+    assert report["route_registration"]["project_root"] == str(project_root)
+    assert report["test_flow_route"]["route_registration"] == report["route_registration"]
+    assert [summary["status"] for summary in report["command_summaries"]] == ["passed", "passed"]
+    assert [summary["cwd"] for summary in report["command_summaries"]] == [str(project_root), str(project_root)]
+    assert all(str(project_root) in summary["stdout_tail"] for summary in report["command_summaries"])
+
+
+def test_external_fixture_only_manifest_lane_controls_route_without_pytest_or_e2e(tmp_path: Path) -> None:
+    project_root = tmp_path / "external-project"
+    project_root.mkdir()
+    _write_route_manifest(
+        project_root,
+        [
+            {
+                "id": "external_fixture_only_route",
+                "title": "External fixture-only route",
+                "lane": "fixture_only",
+                "runner": "commands",
+                "lifecycle": "stable",
+                "side_effect_class": "read",
+                "commands": [
+                    {
+                        "id": "metadata_only",
+                        "cwd": "external_project",
+                        "command": ["{node}", "-e", "console.log('fixture metadata ok')"],
+                    }
+                ],
+                "dependencies": [],
+                "fixtures": [{"id": "config-fixture", "kind": "json_fixture"}],
+                "evidence_requirements": [{"id": "fixture_policy", "kind": "test_flow_route"}],
+            }
+        ],
+    )
+    result = _run_manager(
+        "plan",
+        "--scenario",
+        "external_fixture_only_route",
+        "--json",
+        "--state-dir",
+        str(tmp_path / "state"),
+        "--project-root",
+        str(project_root),
+    )
+    payload = _json(result)
+    [scenario] = payload["scenarios"]
+    route = scenario["test_flow_route"]
+
+    assert route["decision"] == "fixture_only"
+    assert route["primary_lane"] == "fixture_only"
+    assert route["lanes"] == ["fixture_only"]
+    assert route["model_calls"] == "forbidden"
+    assert route["autorun"] is True
+    assert route["prompt_alert_bundle"]["alerts"][0]["code"] == "test_flow_fixture_only"
+    assert scenario["execution_policy"]["model_calls"] == "forbidden"
 
 
 def test_service_router_fixture_dependency_gating_shape(tmp_path: Path) -> None:

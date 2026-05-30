@@ -328,6 +328,22 @@ dashboard. Store provider, model, role, command shape, status, duration, and
 redacted diagnostics; do not store raw prompts, completions, API keys, bearer
 tokens, session tokens, or unredacted stderr/stdout from provider CLIs.
 
+### 7.3 External Project Test Route Manifests
+
+External project test governance uses source-controlled route manifests rather
+than hidden prompts or ad hoc runner state. The scenario manager loads
+`schema_version: 1` manifests from the external project root, materializes each
+route as a normal scenario, and records `route_registration` evidence in
+`plan` and `run` reports: manifest path, `sha256` hash, project id, project
+root, route id, lifecycle, trust level, and side-effect class.
+
+The manifest lane is authoritative for `test_flow_route` and
+`prompt_alert_bundle`, so observers can see whether a route is focused-unit,
+fixture-only, E2E, Docker, live-AI, or external-graph governed without loading
+private route prompts. Commands declared with `cwd: external_project` or
+`cwd: project` run from the external project root; repo-owned routes keep their
+existing repo cwd behavior.
+
 ## 8. API Sketch
 
 Read configuration:
