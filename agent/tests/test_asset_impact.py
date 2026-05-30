@@ -662,13 +662,13 @@ def test_backlog_close_impact_check_surfaces_changed_orphan_skill_doc() -> None:
         "deps_graph": {
             "nodes": [
                 {
-                    "id": "L7.judgment",
+                    "id": "L7.external_protocol",
                     "layer": "L7",
-                    "title": "Judgment Brain MCP",
+                    "title": "External Protocol MCP",
                     "kind": "feature",
-                    "primary": ["scripts/judgment_brain_mcp.py"],
+                    "primary": ["scripts/external_protocol_mcp.py"],
                     "secondary": [],
-                    "test": ["tests/test_judgment_brain_mcp.py"],
+                    "test": ["tests/test_external_protocol_mcp.py"],
                     "metadata": {},
                 }
             ],
@@ -678,21 +678,21 @@ def test_backlog_close_impact_check_surfaces_changed_orphan_skill_doc() -> None:
     store.create_graph_snapshot(
         conn,
         PID,
-        snapshot_id="scope-judgment-brain",
-        commit_sha="c-jb",
+        snapshot_id="scope-external-protocol",
+        commit_sha="c-ext",
         snapshot_kind="scope",
         graph_json=graph,
         file_inventory=[
             {
-                "path": "scripts/judgment_brain_mcp.py",
+                "path": "scripts/external_protocol_mcp.py",
                 "file_kind": "source",
                 "scan_status": "clustered",
                 "graph_status": "mapped",
-                "attached_node_ids": ["L7.judgment"],
-                "mapped_node_ids": ["L7.judgment"],
+                "attached_node_ids": ["L7.external_protocol"],
+                "mapped_node_ids": ["L7.external_protocol"],
             },
             {
-                "path": "skills/judgment-brain/SKILL.md",
+                "path": "skills/external-protocol/SKILL.md",
                 "file_kind": "doc",
                 "scan_status": "orphan",
                 "graph_status": "unmapped",
@@ -706,19 +706,19 @@ def test_backlog_close_impact_check_surfaces_changed_orphan_skill_doc() -> None:
                 "file_hash": "sha256:old",
             },
             {
-                "path": "config/judgment-brain.yaml",
+                "path": "config/external-protocol.yaml",
                 "file_kind": "config",
                 "scan_status": "pending_decision",
                 "graph_status": "pending_decision",
                 "file_hash": "sha256:cfg",
             },
             {
-                "path": "tests/test_judgment_brain_mcp.py",
+                "path": "tests/test_external_protocol_mcp.py",
                 "file_kind": "test",
                 "scan_status": "secondary_attached",
                 "graph_status": "attached",
-                "attached_node_ids": ["L7.judgment"],
-                "mapped_node_ids": ["L7.judgment"],
+                "attached_node_ids": ["L7.external_protocol"],
+                "mapped_node_ids": ["L7.external_protocol"],
             },
         ],
         notes=json.dumps({"pending_scope_reconcile": {}}),
@@ -726,32 +726,32 @@ def test_backlog_close_impact_check_surfaces_changed_orphan_skill_doc() -> None:
     store.index_graph_snapshot(
         conn,
         PID,
-        "scope-judgment-brain",
+        "scope-external-protocol",
         nodes=graph["deps_graph"]["nodes"],
         edges=[],
     )
     store.activate_graph_snapshot(
         conn,
         PID,
-        "scope-judgment-brain",
+        "scope-external-protocol",
         actor="test",
         auto_rebuild_projection=False,
     )
     upsert_asset_projection_rows(
         conn,
         project_id=PID,
-        snapshot_id="scope-judgment-brain",
-        commit_sha="c-jb",
+        snapshot_id="scope-external-protocol",
+        commit_sha="c-ext",
         asset_kind="test",
         rows=[
             {
-                "path": "tests/test_judgment_brain_mcp.py",
+                "path": "tests/test_external_protocol_mcp.py",
                 "file_kind": "test",
                 "binding_status": "accepted",
                 "accepted_bindings": [
                     {
-                        "node_id": "L7.judgment",
-                        "title": "Judgment Brain MCP",
+                        "node_id": "L7.external_protocol",
+                        "title": "External Protocol MCP",
                         "role": "test",
                         "source": "test_coverage",
                     }
@@ -764,16 +764,16 @@ def test_backlog_close_impact_check_surfaces_changed_orphan_skill_doc() -> None:
     record_scope_asset_impacts(
         conn,
         PID,
-        snapshot_id="scope-judgment-brain",
+        snapshot_id="scope-external-protocol",
         commit_sha="c-close",
         scope_graph_delta={
-            "updated_nodes": ["L7.judgment"],
+            "updated_nodes": ["L7.external_protocol"],
             "file_inventory_delta": {
                 "hash_changed_files": [
-                    "scripts/judgment_brain_mcp.py",
-                    "skills/judgment-brain/SKILL.md",
+                    "scripts/external_protocol_mcp.py",
+                    "skills/external-protocol/SKILL.md",
                 ],
-                "impacted_files": ["scripts/judgment_brain_mcp.py"],
+                "impacted_files": ["scripts/external_protocol_mcp.py"],
             },
         },
         asset_kind="test",
@@ -783,11 +783,11 @@ def test_backlog_close_impact_check_surfaces_changed_orphan_skill_doc() -> None:
     check = build_backlog_close_impact_check(
         conn,
         PID,
-        snapshot_id="scope-judgment-brain",
+        snapshot_id="scope-external-protocol",
         commit_sha="c-close",
         changed_files=[
-            "scripts/judgment_brain_mcp.py",
-            "skills/judgment-brain/SKILL.md",
+            "scripts/external_protocol_mcp.py",
+            "skills/external-protocol/SKILL.md",
         ],
         actor="test",
     )
@@ -800,7 +800,7 @@ def test_backlog_close_impact_check_surfaces_changed_orphan_skill_doc() -> None:
     assert check["historical_orphan_pending_warning_only_by_kind"] == {"doc": 1, "test": 0, "config": 1}
     assert check["coverage_claim_allowed_by_kind"]["doc"] is False
     assert check["coverage_claim_allowed_by_kind"]["test"] is False
-    assert check["changed_untrusted_assets_sample"][0]["path"] == "skills/judgment-brain/SKILL.md"
+    assert check["changed_untrusted_assets_sample"][0]["path"] == "skills/external-protocol/SKILL.md"
     assert "not trusted impact-scope coverage" in " ".join(check["required_actions"])
     assert "warning-only" in " ".join(check["warnings"])
 

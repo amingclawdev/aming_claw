@@ -84,14 +84,15 @@
       ],
       "description": "Observer/judge coordinates intent, topology, dispatch, review, merge, reconcile, and close decisions. Governed nontrivial implementation is performed by bounded worker lanes, not by the same observer."
     },
-    "judgment_preflight": {
-      "when_judgment_brain_available": true,
-      "protocol_registry_preflight": {
-        "tool": "protocol_list",
+    "route_preflight": {
+      "local_provider_optional": true,
+      "provider_boundary": "Private provider names and provider-specific tool names live only in local runtime config or evidence refs, not in source-controlled Aming prompts or templates.",
+      "provider_registry_preflight": {
+        "service_id": "route.provider_registry_preflight",
         "required_before": "implementation_planning"
       },
       "topology_precheck": {
-        "tool": "judgment_plan_precheck",
+        "service_id": "route.topology_precheck",
         "required_before": "implementation_planning",
         "records": [
           "precheck_run_id",
@@ -106,7 +107,7 @@
     "responsibilities": [
       "clarify_requirements",
       "check_runtime_graph_backlog",
-      "run_protocol_registry_preflight",
+      "run_route_provider_registry_preflight",
       "run_topology_precheck",
       "write_backlog_and_contract",
       "start_agents_when_requested_or_contract_approved",

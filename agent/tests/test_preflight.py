@@ -193,7 +193,7 @@ class TestCheckGraph(unittest.TestCase):
         from governance import graph_snapshot_store as store
         from governance import server
 
-        external_pid = "judgment-brain"
+        external_pid = "external-plugin"
         old_project_root = server._graph_governance_project_root
         old_git_head = server._git_head_commit
         old_changed_paths = server._git_changed_paths_between

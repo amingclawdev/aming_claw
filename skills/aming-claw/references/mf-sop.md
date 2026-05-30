@@ -14,9 +14,10 @@ Canonical source: `docs/governance/manual-fix-sop.md`. This file is only the sho
    experiments.
    - Observer/judge is a no-direct-code coordinator for governed nontrivial
      implementation work; it does not directly write implementation code.
-   - When Judgment Brain is available, run `protocol_list` as the protocol
-     registry preflight and `judgment_plan_precheck` as the topology precheck
-     before implementation planning.
+   - If a local route/precheck provider is configured, resolve it through
+     Aming-owned route/precheck contracts and record provider id, version, and
+     hash evidence; source-controlled Aming skills must not name private
+     provider systems or provider-specific tool names.
    - Dispatch nontrivial implementation to bounded `mf_sub`/worker lanes with
      target files, tests or a recorded no-test/E2E decision, worktree/fence
      evidence, and review evidence.

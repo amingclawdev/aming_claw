@@ -135,13 +135,26 @@ def test_mf_parallel_template_exposes_observer_no_direct_code_boundary() -> None
     )
     assert "direct_implementation_code" in observer_contract["default_forbidden_actions"]
 
-    judgment_preflight = observer_contract["judgment_preflight"]
-    assert judgment_preflight["when_judgment_brain_available"] is True
-    assert judgment_preflight["protocol_registry_preflight"]["tool"] == "protocol_list"
-    assert judgment_preflight["topology_precheck"]["tool"] == "judgment_plan_precheck"
-    assert judgment_preflight["topology_precheck"]["required_before"] == (
+    route_preflight = observer_contract["route_preflight"]
+    assert route_preflight["local_provider_optional"] is True
+    assert "provider_boundary" in route_preflight
+    assert route_preflight["provider_registry_preflight"]["service_id"] == (
+        "route.provider_registry_preflight"
+    )
+    assert route_preflight["topology_precheck"]["service_id"] == "route.topology_precheck"
+    assert route_preflight["topology_precheck"]["required_before"] == (
         "implementation_planning"
     )
+    template_text = template_path.read_text(encoding="utf-8")
+    private_provider_terms = (
+        "Judg" + "ment " + "Brain",
+        "judg" + "ment-brain",
+        "judg" + "ment_brain",
+        "judg" + "ment_plan_precheck",
+        "when_" + "judg" + "ment_brain_available",
+        "protocol_" + "list",
+    )
+    assert not any(term in template_text for term in private_provider_terms)
 
     exception_policy = observer_contract["direct_mutation_exception_policy"]
     assert exception_policy["schema_version"] == OBSERVER_DIRECT_MUTATION_SCHEMA_VERSION

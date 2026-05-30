@@ -370,28 +370,28 @@ def test_graph_governance_asset_inbox_relation_drift_and_proposal_contract(conn)
 
 
 def test_backlog_close_response_includes_asset_drift_summary_for_changed_orphan_doc(conn, monkeypatch):
-    graph = _graph("L7.judgment")
-    graph["deps_graph"]["nodes"][0]["title"] = "Judgment Brain MCP"
-    graph["deps_graph"]["nodes"][0]["primary"] = ["scripts/judgment_brain_mcp.py"]
+    graph = _graph("L7.external_protocol")
+    graph["deps_graph"]["nodes"][0]["title"] = "External Protocol MCP"
+    graph["deps_graph"]["nodes"][0]["primary"] = ["scripts/external_protocol_mcp.py"]
     graph["deps_graph"]["nodes"][0]["secondary"] = []
     snapshot = store.create_graph_snapshot(
         conn,
         PID,
-        snapshot_id="close-impact-jb",
-        commit_sha="c-jb-base",
+        snapshot_id="close-impact-external-protocol",
+        commit_sha="c-ext-base",
         snapshot_kind="scope",
         graph_json=graph,
         file_inventory=[
             {
-                "path": "scripts/judgment_brain_mcp.py",
+                "path": "scripts/external_protocol_mcp.py",
                 "file_kind": "source",
                 "scan_status": "clustered",
                 "graph_status": "mapped",
-                "attached_node_ids": ["L7.judgment"],
-                "mapped_node_ids": ["L7.judgment"],
+                "attached_node_ids": ["L7.external_protocol"],
+                "mapped_node_ids": ["L7.external_protocol"],
             },
             {
-                "path": "skills/judgment-brain/SKILL.md",
+                "path": "skills/external-protocol/SKILL.md",
                 "file_kind": "doc",
                 "scan_status": "orphan",
                 "graph_status": "unmapped",
@@ -443,8 +443,8 @@ def test_backlog_close_response_includes_asset_drift_summary_for_changed_orphan_
                 "bypass_timeline_gate": True,
                 "timeline_bypass_reason": "Unit test focuses on close impact output contract.",
                 "changed_files": [
-                    "scripts/judgment_brain_mcp.py",
-                    "skills/judgment-brain/SKILL.md",
+                    "scripts/external_protocol_mcp.py",
+                    "skills/external-protocol/SKILL.md",
                 ],
             },
         )
@@ -456,7 +456,7 @@ def test_backlog_close_response_includes_asset_drift_summary_for_changed_orphan_
     assert check["impacted_node_count"] == 1
     assert check["changed_untrusted_asset_counts_by_kind"]["doc"] == 1
     assert check["coverage_claim_allowed_by_kind"]["doc"] is False
-    assert check["changed_untrusted_assets_sample"][0]["path"] == "skills/judgment-brain/SKILL.md"
+    assert check["changed_untrusted_assets_sample"][0]["path"] == "skills/external-protocol/SKILL.md"
     assert "not trusted impact-scope coverage" in " ".join(check["required_actions"])
 
 

@@ -385,7 +385,7 @@ closed.
 Personal judgment is still valuable. In Aming Claw, it belongs below the
 authoritative layers.
 
-A private judgment system can store:
+A private operator memory store can store:
 
 - recurring product instincts;
 - architecture preferences;
@@ -477,4 +477,3 @@ Avoid leading with `contract-bound alerts` for non-expert audiences. Use
 Avoid making "memory is bad" the public claim. The defensible position is:
 
 > Memory is useful, but it is not the authority layer.
-
