@@ -46,6 +46,9 @@ def test_version_check_contains_runtime_fields_with_row():
     assert "gov_runtime_version" in result
     assert "sm_runtime_version" in result
     assert "runtime_match" in result
+    assert "project_root" in result
+    assert "target_project_version" in result
+    assert "governance_runtime" in result
     assert isinstance(result["runtime_match"], bool)
 
 
@@ -61,6 +64,8 @@ def test_version_check_contains_runtime_fields_no_row():
     assert "gov_runtime_version" in result
     assert "sm_runtime_version" in result
     assert "runtime_match" in result
+    assert "target_project_version" in result
+    assert "governance_runtime" in result
 
 
 def test_runtime_match_with_full_chain_short_runtime():

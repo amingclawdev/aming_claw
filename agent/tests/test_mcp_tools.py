@@ -576,6 +576,8 @@ def test_mcp_runtime_status_aggregates_governance_and_manager():
     assert status["governance"]["status"] == "ok"
     assert status["manager"]["ok"] is True
     assert status["version_check"]["runtime_match"] is True
+    assert status["target_project_version"]["head"] == "abc1234"
+    assert status["governance_runtime"]["runtime_match"] is True
     assert governance.calls == [
         ("GET", "/api/health", None),
         ("GET", "/api/version-check/aming-claw", None),
@@ -644,10 +646,13 @@ def test_mcp_version_check_preserves_governance_and_workspace_heads(monkeypatch)
         if path == "/api/version-check/aming-claw":
             return {
                 "ok": False,
-                "head": "gov-old",
+                "head": "target-old",
+                "target_head": "target-old",
+                "target_project_root": ".",
+                "governance_synced_head": "gov-old",
                 "chain_version": "chain-old",
                 "dirty": False,
-                "message": "HEAD (gov-old) != CHAIN_VERSION (chain-old)",
+                "message": "HEAD (target-old) != CHAIN_VERSION (chain-old)",
             }
         return {"ok": True}
 
@@ -665,8 +670,10 @@ def test_mcp_version_check_preserves_governance_and_workspace_heads(monkeypatch)
 
     result = dispatcher.dispatch("version_check", {"project_id": "aming-claw"})
 
-    assert result["head"] == "workspace-new"
+    assert result["head"] == "target-old"
+    assert result["target_head"] == "target-old"
     assert result["mcp_workspace_head"] == "workspace-new"
+    assert result["mcp_workspace_probe"]["head"] == "workspace-new"
     assert result["governance_synced_head"] == "gov-old"
     assert "MCP workspace HEAD (workspace-new) != CHAIN_VERSION (chain-old)" in result["message"]
     assert "governance synced HEAD (gov-old) differs from MCP workspace HEAD (workspace-new)" in result["message"]
@@ -692,7 +699,7 @@ def test_mcp_version_check_governance_offline_preserves_workspace_head(monkeypat
     assert result["mcp_loaded"] is True
     assert result["recommended_action"] == "start_governance"
     assert result["mcp_workspace_head"] == "workspace-new"
-    assert result["head"] == "workspace-new"
+    assert "head" not in result
     assert "MCP server is loaded" in result["message"]
 
 

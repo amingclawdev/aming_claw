@@ -482,6 +482,26 @@ def get_project(project_id: str) -> dict | None:
     return projects["projects"].get(project_id)
 
 
+def resolve_project_root(
+    project_id: str,
+    explicit_root: str | Path | None = None,
+    *,
+    fallback_self: bool = True,
+) -> Path | None:
+    """Resolve the registered workspace root for a governed project."""
+    if explicit_root:
+        return Path(explicit_root).resolve()
+
+    normalized = _normalize_project_id(project_id or "")
+    entry = get_project(normalized) or get_project(project_id)
+    if entry and entry.get("workspace_path"):
+        return Path(entry["workspace_path"]).resolve()
+
+    if fallback_self and normalized == "aming-claw":
+        return Path(__file__).resolve().parents[2]
+    return None
+
+
 def list_projects() -> list[dict]:
     projects = _load_projects()
     result = []

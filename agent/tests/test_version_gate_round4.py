@@ -480,6 +480,7 @@ class TestVersionGateRound4(unittest.TestCase):
         ctx.get_project_id.return_value = "aming-claw"
 
         with mock.patch.object(gov_server, "get_connection", return_value=conn), \
+             mock.patch.object(gov_server.project_service, "get_project", return_value=None), \
              mock.patch.object(gov_server, "_utc_now", return_value="2026-04-20T00:00:00Z"):
             result = gov_server.handle_version_check(ctx)
 
@@ -508,6 +509,7 @@ class TestVersionGateRound4(unittest.TestCase):
         ctx.get_project_id.return_value = "aming-claw"
 
         with mock.patch.object(gov_server, "get_connection", return_value=conn), \
+             mock.patch.object(gov_server.project_service, "get_project", return_value=None), \
              mock.patch.object(gov_server, "_utc_now", return_value="2026-04-20T00:00:00Z"):
             result = gov_server.handle_version_check(ctx)
 
@@ -552,6 +554,7 @@ class TestVersionGateRound4(unittest.TestCase):
         ctx.get_project_id.return_value = "aming-claw"
 
         with mock.patch.object(gov_server, "get_connection", return_value=conn_srv), \
+             mock.patch.object(gov_server.project_service, "get_project", return_value=None), \
              mock.patch.object(gov_server, "_utc_now", return_value="2026-04-20T00:00:00Z"):
             srv_result = gov_server.handle_version_check(ctx)
 

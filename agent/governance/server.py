@@ -24,7 +24,7 @@ if _agent_dir not in sys.path:
     sys.path.insert(0, _agent_dir)
 
 from .errors import GovernanceError, ValidationError
-from .dirty_worktree import filter_dirty_files
+from .dirty_worktree import filter_dirty_files, parse_git_porcelain_paths
 import logging
 import sqlite3
 import time
@@ -3497,13 +3497,9 @@ def _graph_governance_project_root(project_id: str, body: dict) -> Path:
         or body.get("repo_root")
         or ""
     )
-    if raw:
-        return Path(str(raw)).resolve()
-    for project in project_service.list_projects():
-        if project.get("project_id") == project_id and project.get("workspace_path"):
-            return Path(project["workspace_path"]).resolve()
-    if project_id == "aming-claw":
-        return Path(__file__).resolve().parents[2]
+    root = project_service.resolve_project_root(project_id, raw, fallback_self=True)
+    if root is not None:
+        return root
     from .errors import ValidationError
     raise ValidationError("project_root or workspace_path is required")
 
@@ -16103,8 +16099,9 @@ def handle_preflight_check(ctx: RequestContext):
     project_id = ctx.get_project_id()
     auto_fix = ctx.query.get("auto_fix", "false").lower() == "true"
     from .preflight import run_preflight
+    root = project_service.resolve_project_root(project_id, fallback_self=True)
     with DBContext(project_id) as conn:
-        return run_preflight(conn, project_id, auto_fix=auto_fix)
+        return run_preflight(conn, project_id, auto_fix=auto_fix, project_root=root)
 
 
 @route("GET", "/api/wf/{project_id}/node/{node_id}")
@@ -17286,19 +17283,50 @@ def handle_version_check(ctx: RequestContext):
     """
     pid = ctx.get_project_id()
     conn = get_connection(pid)
+    body_raw = getattr(ctx, "body", {}) or {}
+    body = body_raw if isinstance(body_raw, dict) else {}
+    self_root = Path(__file__).resolve().parents[2]
+    raw_root = (
+        body.get("project_root")
+        or body.get("workspace_path")
+        or body.get("repo_root")
+        or ""
+    )
+    if raw_root:
+        target_root = Path(str(raw_root)).resolve()
+        root_source = "explicit_project"
+    else:
+        project_entry = project_service.get_project(pid)
+        if project_entry and project_entry.get("workspace_path"):
+            target_root = Path(str(project_entry["workspace_path"])).resolve()
+            root_source = "registered_project"
+        elif pid == "aming-claw":
+            target_root = self_root
+            root_source = "self_fallback"
+        else:
+            target_root = self_root
+            root_source = "governance_fallback"
+    live_target_authoritative = root_source in {"explicit_project", "registered_project"}
 
-    # Derive trailer state (best-effort, non-blocking)
-    trailer_state = None
+    def _prefix_match(left: str, right: str) -> bool:
+        return bool(left and right and (left.startswith(right) or right.startswith(left)))
+
+    # Derive target-project trailer/HEAD state from the registered workspace.
+    target_state = None
     try:
         from .chain_trailer import get_chain_state
-        trailer_state = get_chain_state()
+        target_state = get_chain_state(cwd=str(target_root))
     except Exception as e:
-        log.debug("version-check: chain_trailer unavailable: %s", e)
+        log.debug("version-check: target chain_trailer unavailable: %s", e)
+
+    target_head = _git_output(target_root, ["rev-parse", "HEAD"])
+    target_head_short = _git_output(target_root, ["rev-parse", "--short", "HEAD"])
 
     row = conn.execute(
         "SELECT chain_version, updated_at, git_head, dirty_files, git_synced_at "
         "FROM project_version WHERE project_id=?", (pid,)
     ).fetchone()
+    row_chain_for_runtime = (row["chain_version"] or "") if row else ""
 
     # Runtime version baking — detect stale-process-after-deploy
     gov_runtime = ""
@@ -17318,85 +17346,155 @@ def handle_version_check(ctx: RequestContext):
     except Exception as e:
         log.debug("version-check: sm runtime_version unavailable: %s", e)
 
+    governance_state = None
+    try:
+        from .chain_trailer import get_chain_state
+        governance_state = get_chain_state(cwd=str(self_root))
+    except Exception as e:
+        log.debug("version-check: governance chain_trailer unavailable: %s", e)
+    governance_chain_version = (
+        (governance_state or {}).get("chain_sha")
+        or (governance_state or {}).get("version")
+        or (row_chain_for_runtime if target_root == self_root else "")
+        or get_server_version()
+    )
+
     if not row:
-        source = trailer_state["source"] if trailer_state else "none"
-        version = trailer_state["version"] if trailer_state else "unknown"
-        runtime_match = bool(gov_runtime and (gov_runtime.startswith(version) or version.startswith(gov_runtime))
-                             and sm_runtime and (sm_runtime.startswith(version) or version.startswith(sm_runtime)))
-        return {
-            "ok": True, "project_id": pid,
-            "head": version if trailer_state else "unknown",
-            "governance_synced_head": "",
-            "trailer_head": trailer_state.get("version", "") if trailer_state else "",
-            "chain_version": version if trailer_state else "(not set)",
-            "dirty": trailer_state["dirty"] if trailer_state else False,
-            "dirty_files": trailer_state["dirty_files"] if trailer_state else [],
-            "source": source,
-            "message": "Project not initialized" + (f" (trailer source: {source})" if trailer_state else ""),
-            "generated_at": _utc_now(), "project_version": version if trailer_state else "unknown",
-            "gov_runtime_version": gov_runtime,
-            "sm_runtime_version": sm_runtime,
-            "runtime_match": runtime_match,
-        }
-
-    # R1/R2: Trailer-priority chain_ver. When trailer source='trailer', the git
-    # log--first-parent trailer is authoritative (auto_chain._gate_version_check
-    # uses chain_state.chain_sha for the same reason). Fall back to DB row
-    # otherwise (preserves prior behavior, including post-deploy DB sync state).
-    if trailer_state and trailer_state.get("source") == "trailer":
-        chain_ver = trailer_state.get("version", "") or trailer_state.get("chain_sha", "")
+        row_chain = ""
+        row_updated_at = ""
+        synced_head = ""
+        synced_dirty_files = []
+        git_synced = ""
     else:
-        chain_ver = row["chain_version"]
-    git_head = row["git_head"] or ""
-    dirty_files_raw = json.loads(row["dirty_files"] or "[]")
-    # B31: apply shared dirty-worktree filter (same policy as auto_chain/scope reconcile)
-    dirty_files = filter_dirty_files(dirty_files_raw)
-    git_synced = row["git_synced_at"] or ""
+        row_chain = row["chain_version"] or ""
+        row_updated_at = row["updated_at"] or ""
+        synced_head = row["git_head"] or ""
+        synced_dirty_files = filter_dirty_files(json.loads(row["dirty_files"] or "[]"))
+        git_synced = row["git_synced_at"] or ""
 
-    # Determine source: prefer trailer if available
-    source = "db"
-    if trailer_state:
-        source = trailer_state["source"]  # 'trailer' or 'head'
-        # Merge trailer dirty_files with DB dirty_files (union, filtered)
-        if trailer_state.get("dirty_files"):
-            trailer_dirty = filter_dirty_files(trailer_state["dirty_files"])
-            for f in trailer_dirty:
-                if f not in dirty_files:
-                    dirty_files.append(f)
+    target_chain_version = (
+        (target_state or {}).get("chain_sha")
+        or (target_state or {}).get("version")
+        or (target_head_short if live_target_authoritative else "")
+        or ""
+    )
+    trailer_source = (target_state or {}).get("source") or ""
+    if live_target_authoritative:
+        source = trailer_source or ("git" if target_head else "none")
+        dirty_files = filter_dirty_files((target_state or {}).get("dirty_files") or [])
+        if target_state is None:
+            dirty_files = filter_dirty_files(
+                parse_git_porcelain_paths(_git_output(target_root, ["status", "--porcelain"]))
+            )
+        # Target-root git evidence is authoritative.  The project_version row is
+        # retained as legacy sync evidence, but it must not replace the target repo.
+        chain_ver = target_chain_version or "(not set)"
+        git_head = target_head
+    else:
+        use_fallback_trailer = trailer_source == "trailer" and root_source == "governance_fallback"
+        if use_fallback_trailer:
+            source = "trailer"
+        elif trailer_source and root_source == "governance_fallback":
+            source = trailer_source
+        else:
+            source = "db" if row else (trailer_source or "none")
+        dirty_files = list(synced_dirty_files)
+        if use_fallback_trailer:
+            chain_ver = target_chain_version or row_chain or "(not set)"
+        else:
+            chain_ver = row_chain or target_chain_version or "(not set)"
+        git_head = synced_head or (
+            (target_state or {}).get("version", "") if trailer_source == "trailer" else ""
+        )
+        target_head_short = git_head[:7] if git_head else ""
+    target_dirty = bool(dirty_files)
+    target_synced_with_governance = bool(synced_head and git_head and _prefix_match(synced_head, git_head))
 
     # Compare
-    ok = True
+    ok = bool(git_head and chain_ver and chain_ver != "(not set)")
     parts = []
 
     if not git_head:
-        parts.append("Executor has not synced git status yet")
-    elif not (git_head.startswith(chain_ver) or chain_ver.startswith(git_head)):
+        parts.append("Target git HEAD is unavailable")
+    elif not _prefix_match(git_head, chain_ver):
         ok = False
         parts.append(f"HEAD ({git_head}) != CHAIN_VERSION ({chain_ver})")
     if dirty_files:
         ok = False
         parts.append(f"{len(dirty_files)} uncommitted files")
+    if not row:
+        parts.append("Project version row is not initialized")
+    elif not synced_head:
+        parts.append("Executor has not synced git status yet")
+    elif synced_head and not target_synced_with_governance:
+        parts.append(f"governance synced HEAD ({synced_head}) differs from target HEAD ({git_head})")
 
-    runtime_match = bool(gov_runtime and (gov_runtime.startswith(chain_ver) or chain_ver.startswith(gov_runtime))
-                         and sm_runtime and (sm_runtime.startswith(chain_ver) or chain_ver.startswith(sm_runtime)))
+    runtime_match = bool(
+        _prefix_match(gov_runtime, governance_chain_version)
+        and _prefix_match(sm_runtime, governance_chain_version)
+    )
+    legacy_project_version = {
+        "chain_version": row_chain,
+        "updated_at": row_updated_at,
+        "git_head": synced_head,
+        "dirty_files": synced_dirty_files,
+        "git_synced_at": git_synced,
+        "synced_with_target": target_synced_with_governance,
+    }
+    target_project_version = {
+        "project_id": pid,
+        "project_root": str(target_root),
+        "head": git_head or "unknown",
+        "head_short": target_head_short,
+        "chain_version": chain_ver,
+        "dirty": target_dirty,
+        "dirty_files": dirty_files,
+        "source": source,
+        "synced_with_governance": target_synced_with_governance,
+        "governance_synced_head": synced_head,
+        "git_synced_at": git_synced,
+        "legacy_project_version": legacy_project_version,
+    }
+    governance_runtime = {
+        "project_root": str(self_root),
+        "chain_version": governance_chain_version,
+        "gov_runtime_version": gov_runtime,
+        "sm_runtime_version": sm_runtime,
+        "runtime_match": runtime_match,
+    }
     return {
         "ok": ok,
         "project_id": pid,
-        "head": git_head or (trailer_state["version"] if trailer_state else "unknown"),
-        "governance_synced_head": git_head,
-        "trailer_head": trailer_state.get("version", "") if trailer_state else "",
+        "head": git_head or "unknown",
+        "target_head": git_head or "unknown",
+        "target_head_short": target_head_short,
+        "project_root": str(target_root),
+        "target_project_root": str(target_root),
+        "target_project_root_source": root_source,
+        "target_project_version": target_project_version,
+        "target_chain_version": chain_ver,
+        "target_synced_with_governance": target_synced_with_governance,
+        "target_dirty": target_dirty,
+        "target_dirty_files": dirty_files,
+        "governance_synced_head": synced_head,
+        "governance_synced_dirty_files": synced_dirty_files,
+        "trailer_head": (target_state or {}).get("version", ""),
         "chain_version": chain_ver,
-        "chain_updated_at": row["updated_at"],
-        "dirty": bool(dirty_files),
+        "chain_updated_at": row_updated_at,
+        "dirty": target_dirty,
         "dirty_files": dirty_files,
         "git_synced_at": git_synced,
         "source": source,
         "message": "; ".join(parts),
         "generated_at": _utc_now(),
         "project_version": chain_ver,
+        "legacy_project_version": legacy_project_version,
+        "governance_chain_version": governance_chain_version,
         "gov_runtime_version": gov_runtime,
         "sm_runtime_version": sm_runtime,
+        "runtime_scope": "governance",
         "runtime_match": runtime_match,
+        "governance_runtime": governance_runtime,
     }
 
 

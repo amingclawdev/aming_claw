@@ -196,6 +196,19 @@ class TestCheckCoverage(unittest.TestCase):
         if result["status"] == "warn":
             self.assertIn("unmapped_files", result["details"])
 
+    def test_external_project_without_code_doc_map_skips_internal_scan(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "src").mkdir()
+            (root / "src" / "service.py").write_text("def run():\n    return 1\n", encoding="utf-8")
+
+            result = check_coverage("external-project", project_root=root)
+
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(result["details"]["reason"], "no_code_doc_map_for_external_project")
+        self.assertEqual(result["details"]["project_root"], str(root.resolve()))
+        self.assertNotIn("unmapped_files", result["details"])
+
 
 class TestCheckQueue(unittest.TestCase):
     def setUp(self):

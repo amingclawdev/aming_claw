@@ -67,11 +67,15 @@ def _prefix_match(left: str, right: str) -> bool:
     return left.startswith(right) or right.startswith(left)
 
 
-def _git_head_short() -> str:
+def _default_repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _git_head_short(repo_root_path: str | os.PathLike | None = None) -> str:
     try:
         import subprocess
 
-        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        repo_root = Path(repo_root_path).resolve() if repo_root_path else _default_repo_root()
         proc = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
             cwd=repo_root,
@@ -84,11 +88,12 @@ def _git_head_short() -> str:
         return ""
 
 
-def _chain_state_from_git() -> dict | None:
+def _chain_state_from_git(repo_root_path: str | os.PathLike | None = None) -> dict | None:
     try:
         from .chain_trailer import get_chain_state
 
-        return get_chain_state()
+        root = str(Path(repo_root_path).resolve()) if repo_root_path else None
+        return get_chain_state(cwd=root)
     except Exception as exc:
         log.debug("preflight version: chain_trailer unavailable: %s", exc)
         return None
@@ -134,7 +139,13 @@ def _check_version_db_legacy(row) -> dict:
     return _fail(issues)
 
 
-def check_version(conn, project_id: str, *, prefer_trailer: bool | None = None) -> dict:
+def check_version(
+    conn,
+    project_id: str,
+    *,
+    prefer_trailer: bool | None = None,
+    project_root: str | os.PathLike | None = None,
+) -> dict:
     """Verify chain state against git HEAD.
 
     The auto-chain version gate treats git trailers as the effective source of
@@ -155,14 +166,18 @@ def check_version(conn, project_id: str, *, prefer_trailer: bool | None = None) 
             )
 
         if prefer_trailer:
-            trailer_state = _chain_state_from_git()
+            trailer_state = (
+                _chain_state_from_git(project_root)
+                if project_root
+                else _chain_state_from_git()
+            )
             if trailer_state:
                 chain_ver = (
                     trailer_state.get("chain_sha")
                     or trailer_state.get("version")
                     or ""
                 )
-                git_head = _git_head_short()
+                git_head = _git_head_short(project_root) if project_root else _git_head_short()
                 source = trailer_state.get("source", "trailer")
                 issues = {}
                 if chain_ver and git_head and not _prefix_match(git_head, chain_ver):
@@ -171,22 +186,29 @@ def check_version(conn, project_id: str, *, prefer_trailer: bool | None = None) 
                         "git_head": git_head,
                         "source": source,
                     }
+                    if project_root:
+                        issues["version_mismatch"]["project_root"] = str(Path(project_root).resolve())
                     return _fail(issues)
 
                 dirty_files = trailer_state.get("dirty_files") or []
                 if dirty_files:
-                    return _warn({
+                    details = {
                         "dirty_files": dirty_files,
                         "chain_version": chain_ver,
                         "git_head": git_head,
                         "source": source,
-                    })
+                    }
+                    if project_root:
+                        details["project_root"] = str(Path(project_root).resolve())
+                    return _warn(details)
 
                 details = {
                     "chain_version": chain_ver,
                     "git_head": git_head,
                     "source": source,
                 }
+                if project_root:
+                    details["project_root"] = str(Path(project_root).resolve())
                 if row:
                     legacy_chain = row["chain_version"] if hasattr(row, "keys") else row[0]
                     legacy_head = row["git_head"] if hasattr(row, "keys") else row[1]
@@ -259,7 +281,52 @@ def check_graph(conn, project_id: str) -> dict:
 # 4. Coverage check — CODE_DOC_MAP completeness
 # ---------------------------------------------------------------------------
 
-def check_coverage(project_id: str = None) -> dict:
+def _is_internal_project_root(project_root: str | os.PathLike | None) -> bool:
+    if not project_root:
+        return True
+    try:
+        return Path(project_root).resolve() == _default_repo_root()
+    except Exception:
+        return False
+
+
+def _target_python_files(project_root: Path) -> list[str]:
+    noise_dirs = {
+        ".git",
+        ".hg",
+        ".svn",
+        ".worktrees",
+        ".claude",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".venv",
+        "build",
+        "dist",
+        "node_modules",
+        "runtime",
+        "shared-volume",
+        ".aming-claw/cache",
+        ".aming-claw/sessions",
+        ".aming-claw/baselines",
+        ".aming-claw/logs",
+    }
+    files: list[str] = []
+    for path in sorted(project_root.rglob("*.py")):
+        try:
+            rel = path.relative_to(project_root).as_posix()
+        except ValueError:
+            continue
+        parts = rel.split("/")
+        if any("/".join(parts[:idx]) in noise_dirs for idx in range(1, len(parts) + 1)):
+            continue
+        if path.name == "__init__.py" or path.name.startswith("test_"):
+            continue
+        files.append(rel)
+    return files
+
+
+def check_coverage(project_id: str = None, project_root: str | os.PathLike | None = None) -> dict:
     """Scan governance/*.py and agent/*.py for CODE_DOC_MAP gaps.
 
     Uses project-specific code_doc_map.json when *project_id* is given,
@@ -268,39 +335,60 @@ def check_coverage(project_id: str = None) -> dict:
     try:
         from .impact_analyzer import _load_project_code_doc_map
 
-        code_doc_map = _load_project_code_doc_map(project_id)
+        root = Path(project_root).resolve() if project_root else None
+        is_internal = _is_internal_project_root(root)
+        code_doc_map = _load_project_code_doc_map(
+            project_id,
+            project_root=root,
+            fallback_to_builtin=is_internal,
+        )
+        if not code_doc_map and not is_internal:
+            return _pass({
+                "skipped": True,
+                "reason": "no_code_doc_map_for_external_project",
+                "project_root": str(root) if root else "",
+            })
 
-        # Find the agent directory
-        agent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        gov_dir = os.path.join(agent_dir, "governance")
+        if root and not is_internal:
+            scan_files = _target_python_files(root)
+            if not scan_files:
+                return _pass({
+                    "skipped": True,
+                    "reason": "no_target_python_files",
+                    "project_root": str(root),
+                })
+        else:
+            # Find the agent directory
+            agent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            gov_dir = os.path.join(agent_dir, "governance")
 
-        # Noise directories to exclude from unmapped scan (R4)
-        _NOISE_DIRS = {
-            "docs/dev/scratch", ".worktrees", ".claude/worktrees",
-            "node_modules", "runtime", ".venv", "shared-volume/codex-tasks",
-        }
+            # Noise directories to exclude from unmapped scan (R4)
+            _NOISE_DIRS = {
+                "docs/dev/scratch", ".worktrees", ".claude/worktrees",
+                "node_modules", "runtime", ".venv", "shared-volume/codex-tasks",
+            }
 
-        # Collect all .py files that should be mapped
-        scan_files = []
+            # Collect all .py files that should be mapped
+            scan_files = []
 
-        # governance/*.py (exclude __init__, __pycache__, tests)
-        for f in sorted(os.listdir(gov_dir)):
-            if f.endswith(".py") and f != "__init__.py" and not f.startswith("test_"):
-                rel = f"agent/governance/{f}"
-                scan_files.append(rel)
+            # governance/*.py (exclude __init__, __pycache__, tests)
+            for f in sorted(os.listdir(gov_dir)):
+                if f.endswith(".py") and f != "__init__.py" and not f.startswith("test_"):
+                    rel = f"agent/governance/{f}"
+                    scan_files.append(rel)
 
-        # agent/*.py (key files only, not all)
-        for f in sorted(os.listdir(agent_dir)):
-            if f.endswith(".py") and f != "__init__.py" and not f.startswith("test_"):
-                rel = f"agent/{f}"
-                scan_files.append(rel)
+            # agent/*.py (key files only, not all)
+            for f in sorted(os.listdir(agent_dir)):
+                if f.endswith(".py") and f != "__init__.py" and not f.startswith("test_"):
+                    rel = f"agent/{f}"
+                    scan_files.append(rel)
 
         # Check which files are covered by code_doc_map
         mapped_patterns = set(code_doc_map.keys())
         unmapped = []
         for sf in scan_files:
             # Skip noise directories (R4)
-            if any(sf.startswith(nd) for nd in _NOISE_DIRS):
+            if is_internal and any(sf.startswith(nd) for nd in _NOISE_DIRS):
                 continue
             covered = False
             for pattern in mapped_patterns:
@@ -311,13 +399,19 @@ def check_coverage(project_id: str = None) -> dict:
                 unmapped.append(sf)
 
         if not unmapped:
-            return _pass({"mapped_files": len(scan_files)})
+            details = {"mapped_files": len(scan_files)}
+            if root:
+                details["project_root"] = str(root)
+            return _pass(details)
         else:
-            return _warn({
+            details = {
                 "mapped_files": len(scan_files) - len(unmapped),
                 "total_files": len(scan_files),
                 "unmapped_files": unmapped,
-            })
+            }
+            if root:
+                details["project_root"] = str(root)
+            return _warn(details)
     except Exception as e:
         return _fail({"error": str(e)})
 
@@ -397,12 +491,18 @@ def check_queue(conn, project_id: str) -> dict:
 # 6. Batch worktree check — stale batch worktrees are reported, never deleted
 # ---------------------------------------------------------------------------
 
-def check_batch_worktrees(conn, project_id: str) -> dict:
+def check_batch_worktrees(
+    conn,
+    project_id: str,
+    project_root: str | os.PathLike | None = None,
+) -> dict:
     """Report stale .worktrees entries not referenced by active batch metadata."""
     try:
         from .batch_jobs import report_stale_worktrees
 
-        details = report_stale_worktrees(conn, project_id, repo_root_path=".")
+        root = Path(project_root).resolve() if project_root else Path(".").resolve()
+        details = report_stale_worktrees(conn, project_id, repo_root_path=root)
+        details.setdefault("project_root", str(root))
         if details.get("stale_count"):
             return _warn(details)
         return _pass(details)
@@ -653,7 +753,12 @@ def _auto_fix_queue(conn, project_id: str, stuck_tasks: list) -> list:
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def run_preflight(conn, project_id: str, auto_fix: bool = False) -> dict:
+def run_preflight(
+    conn,
+    project_id: str,
+    auto_fix: bool = False,
+    project_root: str | os.PathLike | None = None,
+) -> dict:
     """Run all pre-flight checks.
 
     Args:
@@ -668,16 +773,27 @@ def run_preflight(conn, project_id: str, auto_fix: bool = False) -> dict:
     warnings = []
     blockers = []
     auto_fixed = []
+    resolved_root = None
+    try:
+        from . import project_service
+
+        resolved_root = project_service.resolve_project_root(
+            project_id,
+            project_root,
+            fallback_self=True,
+        )
+    except Exception as exc:
+        log.debug("preflight: project root unavailable for %s: %s", project_id, exc)
 
     # Run all checks independently
     checks["system"] = check_system(conn)
-    checks["version"] = check_version(conn, project_id)
+    checks["version"] = check_version(conn, project_id, project_root=resolved_root)
     checks["graph"] = check_graph(conn, project_id)
-    checks["coverage"] = check_coverage(project_id)
+    checks["coverage"] = check_coverage(project_id, project_root=resolved_root)
     checks["queue"] = check_queue(conn, project_id)
-    checks["batch_worktrees"] = check_batch_worktrees(conn, project_id)
+    checks["batch_worktrees"] = check_batch_worktrees(conn, project_id, project_root=resolved_root)
     checks["plugin_update_state"] = check_plugin_update_state()
-    checks["pending_governance_hints"] = check_pending_governance_hints()
+    checks["pending_governance_hints"] = check_pending_governance_hints(resolved_root)
 
     # Collect warnings and blockers
     for name, result in checks.items():
@@ -731,6 +847,7 @@ def run_preflight(conn, project_id: str, auto_fix: bool = False) -> dict:
     return {
         "ok": ok,
         "project_id": project_id,
+        "project_root": str(resolved_root) if resolved_root else "",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "checks": checks,
         "blockers": blockers,

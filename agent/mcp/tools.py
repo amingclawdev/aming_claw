@@ -1369,6 +1369,34 @@ class ToolDispatcher:
                 "version_check": version,
                 "recommended_actions": [],
             }
+            if isinstance(version, dict):
+                target_version = version.get("target_project_version")
+                if not isinstance(target_version, dict):
+                    target_version = {
+                        "project_id": pid,
+                        "project_root": version.get("project_root") or version.get("target_project_root", ""),
+                        "head": version.get("target_head") or version.get("head", ""),
+                        "chain_version": version.get("target_chain_version") or version.get("chain_version", ""),
+                        "dirty": bool(version.get("target_dirty", version.get("dirty", False))),
+                        "dirty_files": version.get("target_dirty_files") or version.get("dirty_files", []),
+                        "synced_with_governance": bool(version.get("target_synced_with_governance", False)),
+                        "governance_synced_head": version.get("governance_synced_head", ""),
+                        "git_synced_at": version.get("git_synced_at", ""),
+                    }
+                governance_runtime = version.get("governance_runtime")
+                if not isinstance(governance_runtime, dict):
+                    governance_runtime = {
+                        "chain_version": version.get("governance_chain_version", ""),
+                        "gov_runtime_version": version.get("gov_runtime_version", ""),
+                        "sm_runtime_version": version.get("sm_runtime_version", ""),
+                        "runtime_match": bool(version.get("runtime_match", False)),
+                    }
+                status["target_project_version"] = target_version
+                status["governance_runtime"] = {
+                    "health_version": governance.get("version", "") if isinstance(governance, dict) else "",
+                    **governance_runtime,
+                }
+                status["governance_runtime_version"] = status["governance_runtime"]
             if governance.get("governance_online") is False:
                 status["recommended_actions"].append("start_governance")
             elif governance.get("status") != "ok":
@@ -1514,33 +1542,49 @@ class ToolDispatcher:
             pid = args["project_id"]
             # Get chain_version from governance DB
             result = _governance_offline_hint(self._api("GET", f"/api/version-check/{pid}"))
-            governance_head = str(result.get("head") or "")
+            governance_head = str(result.get("governance_synced_head") or "")
             if governance_head:
                 result.setdefault("governance_synced_head", governance_head)
             # Enrich with git dirty check (MCP runs on host, has git)
-            import subprocess, os
-            workspace = os.environ.get("CODEX_WORKSPACE",
-                os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+            has_target_root = bool(result.get("target_project_root") or result.get("project_root"))
+            workspace = str(
+                result.get("target_project_root")
+                or result.get("project_root")
+                or self._workspace
+            )
             try:
                 head = subprocess.check_output(
                     ["git", "rev-parse", "HEAD"],
                     cwd=workspace, timeout=5
                 ).decode().strip()
+                result["mcp_workspace_root"] = workspace
                 result["mcp_workspace_head"] = head
-                result["head"] = head
                 dirty = subprocess.check_output(
                     ["git", "diff", "--name-only"],
                     cwd=workspace, timeout=5
                 ).decode().strip()
+                probe = {
+                    "root": workspace,
+                    "head": head,
+                    "dirty": bool(dirty),
+                    "dirty_files": [f for f in dirty.splitlines() if f.strip()],
+                }
+                result["mcp_workspace_probe"] = probe
+                if has_target_root:
+                    result.setdefault("target_head", head)
+                    result.setdefault("head", result.get("target_head") or head)
                 if dirty:
-                    result["dirty"] = True
-                    result["dirty_files"] = [f for f in dirty.splitlines() if f.strip()]
-                    result["ok"] = False
-                    result["message"] = (result.get("message", "") + "; " if result.get("message") else "") + f"{len(result['dirty_files'])} uncommitted files"
+                    if has_target_root:
+                        result["target_dirty"] = True
+                        result["target_dirty_files"] = probe["dirty_files"]
+                        result["dirty"] = True
+                        result["dirty_files"] = probe["dirty_files"]
+                        result["ok"] = False
+                        result["message"] = (result.get("message", "") + "; " if result.get("message") else "") + f"{len(probe['dirty_files'])} uncommitted files"
                 # Also check HEAD vs chain_version
                 # B35: normalize short/full hash mismatch — short is a prefix of full.
-                chain_ver = result.get("chain_version", "")
-                if (chain_ver and chain_ver != "(not set)"
+                chain_ver = result.get("target_chain_version") or result.get("chain_version", "")
+                if (has_target_root and chain_ver and chain_ver != "(not set)"
                     and not (head.startswith(chain_ver) or chain_ver.startswith(head))):
                     result["ok"] = False
                     commits = subprocess.check_output(
@@ -1553,11 +1597,15 @@ class ToolDispatcher:
                         + f"MCP workspace HEAD ({head}) != CHAIN_VERSION ({chain_ver}); "
                         + f"{len(commits)} manual commits"
                     )
-                if governance_head and governance_head != head:
+                if has_target_root and governance_head and governance_head != head:
+                    result["target_synced_with_governance"] = False
+                    result["ok"] = False
                     result["message"] = (
                         (result.get("message", "") + "; " if result.get("message") else "")
                         + f"governance synced HEAD ({governance_head}) differs from MCP workspace HEAD ({head})"
                     )
+                elif has_target_root and governance_head:
+                    result["target_synced_with_governance"] = True
             except Exception:
                 pass  # fail-open if git unavailable
             return result

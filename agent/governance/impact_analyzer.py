@@ -7,6 +7,9 @@ Also provides code→doc relationship inference: when code files change,
 affected documentation files are surfaced so gates can enforce doc updates.
 """
 
+import os
+from pathlib import Path
+
 from .enums import VerifyStatus, VerifyLevel
 from .models import FileHitPolicy, PropagationPolicy, VerificationPolicy, ImpactAnalysisRequest
 
@@ -285,30 +288,44 @@ def get_related_docs(changed_files: list[str]) -> set[str]:
     return docs
 
 
-def _load_project_code_doc_map(project_id: str = None) -> dict:
+def _load_project_code_doc_map(
+    project_id: str = None,
+    *,
+    project_root: str | os.PathLike | None = None,
+    fallback_to_builtin: bool = True,
+) -> dict:
     """Load project-specific code_doc_map.json if available, else return CODE_DOC_MAP.
 
     When code_doc_map.json exists in the project's governance data dir,
     it is used instead of the hardcoded CODE_DOC_MAP (R6, AC5).
     """
+    candidates = []
     if project_id:
         try:
-            import os as _os
-            from pathlib import Path as _Path
             # Try to find governance data dir
             try:
                 from .db import _governance_root
-                cdm_path = _governance_root() / project_id / "code_doc_map.json"
+                candidates.append(_governance_root() / project_id / "code_doc_map.json")
             except Exception:
-                cdm_path = None
-
+                pass
+        except Exception:
+            pass
+    if project_root:
+        root = Path(project_root).resolve()
+        candidates.extend([
+            root / "code_doc_map.json",
+            root / ".aming-claw" / "code_doc_map.json",
+        ])
+    for cdm_path in candidates:
+        try:
             if cdm_path and cdm_path.exists():
                 import json as _json
                 with open(str(cdm_path), "r", encoding="utf-8") as f:
-                    return _json.load(f)
+                    payload = _json.load(f)
+                return payload if isinstance(payload, dict) else {}
         except Exception:
             pass
-    return CODE_DOC_MAP
+    return CODE_DOC_MAP if fallback_to_builtin else {}
 
 
 class ImpactAnalyzer:
