@@ -347,7 +347,7 @@ It proves seven route decisions:
 | `fixture_only_route_runs` | passes with `model_calls: forbidden` | deterministic fixture work should not call a model |
 | `dashboard_mock_ai_playwright_route_declared` | declares the Playwright mock-AI dashboard lane | browser evidence can use fixed mock AI inputs without provider calls |
 | `docker_route_blocks_without_approval` | blocks without `--allow-docker` | container boundaries require explicit operator approval |
-| `mock_ai_docker_route_blocks_without_approval` | blocks AI-related Docker validation without approval | Docker AI checks stay gated and use fixed structured mock output |
+| `mock_ai_docker_route_blocks_without_approval` | blocks AI-related Docker validation without approval | Docker AI checks stay gated, then run fixed structured mock output inside a no-network container after approval |
 | `live_ai_route_blocks_without_approval` | blocks without `--allow-live-ai` | live provider checks must not spend quota silently |
 | `external_project_registers_fixture_route` | records external project root and manifest hash | external project routes are source-controlled target evidence |
 | `route_prompt_bundle_is_hashable_and_low_noise` | exposes route/prompt hashes and no raw context | context injection is visible, scoped, and auditable |

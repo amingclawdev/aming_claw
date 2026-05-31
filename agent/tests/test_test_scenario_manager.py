@@ -183,6 +183,15 @@ def test_plan_output_lists_scenarios_actions_and_fixture_metadata(tmp_path: Path
     assert mock_docker["fixtures"][0]["kind"] == "docker_fixture"
     assert mock_docker["fixtures"][1]["kind"] == "json_fixture"
     assert mock_docker_deps["docker_fixture"]["status"] == "planned"
+    assert "docker image inspect" in " ".join(mock_docker_deps["docker_fixture"]["command"])
+    mock_docker_commands = {command["id"]: command for command in mock_docker["commands"]}
+    container_command = mock_docker_commands["mock_ai_docker_no_credential_structured_output"]["command"]
+    assert container_command[:2] == ["sh", "-lc"]
+    assert "docker run" in container_command[2]
+    assert "--network none" in container_command[2]
+    assert "--pull=never" in container_command[2]
+    assert "--entrypoint node" in container_command[2]
+    assert "runtime: \"docker\"" in container_command[2]
     docker_deps = {item["id"]: item for item in docker["dependency_decisions"]}
     assert docker["execution_policy"]["requires_flags"] == ["--allow-docker"]
     assert docker["execution_policy"]["model_calls"] == "forbidden"

@@ -40,7 +40,7 @@ The JSON report contains seven proof cases:
 | `fixture_only_route_runs` | `fixture_only` passes with `model_calls: forbidden` | Contract + process |
 | `dashboard_mock_ai_playwright_route_declared` | Playwright mock-AI dashboard lane is declared with `model_calls: mocked` | Process + contract |
 | `docker_route_blocks_without_approval` | Docker route is blocked without `--allow-docker` | Constraint |
-| `mock_ai_docker_route_blocks_without_approval` | AI-related Docker route is gated and uses fixed mock output only | Constraint + contract |
+| `mock_ai_docker_route_blocks_without_approval` | AI-related Docker route is gated, then runs fixed mock output inside a no-network container after approval | Constraint + contract |
 | `live_ai_route_blocks_without_approval` | Live-AI route is blocked without `--allow-live-ai` | Constraint |
 | `external_project_registers_fixture_route` | External manifest route passes and records manifest hash | Relationship / impact + contract |
 | `route_prompt_bundle_is_hashable_and_low_noise` | Prompt bundle has route/prompt hashes and no raw context leak | Contract + constraint |
@@ -81,6 +81,20 @@ The Docker and live-AI routes should fail closed without operator approval:
   "command_summaries": []
 }
 ```
+
+When the operator explicitly approves Docker, the mock-AI Docker route uses a
+preloaded local image and refuses implicit pulls:
+
+```bash
+node scripts/test-scenario-manager.mjs run \
+  --scenario mock_ai_docker_fixture \
+  --allow-docker \
+  --json
+```
+
+The structured-output proof runs inside `docker run --network none
+--pull=never`, clears AI credential env vars, and emits `runtime: "docker"` and
+`calls_models: false`.
 
 The dashboard mock-AI route is browser-verifiable without provider calls:
 

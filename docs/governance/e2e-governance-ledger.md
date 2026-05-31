@@ -284,9 +284,10 @@ reports as `test_flow_route`.
   runs Playwright with a mocked governance API and fixed mock-AI timeline input
   so dashboard evidence cards can be checked without provider calls.
 - `mock_ai_docker_fixture` is an AI-related Docker lane. It is blocked by
-  default, requires `--allow-docker`, clears AI credential env vars in the
-  fixture command, and records fixed structured mock output instead of calling
-  a live model.
+  default, requires `--allow-docker`, checks that the configured local image is
+  already present, runs with `--pull=never`, clears AI credential env vars
+  inside a `--network none` container, and records fixed structured mock output
+  instead of calling a live model.
 
 The scenario manager preserves lane metadata in `plan` and `run` reports.
 Live-AI validation remains outside this deterministic runner until project AI

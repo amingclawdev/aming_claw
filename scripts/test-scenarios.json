@@ -407,19 +407,18 @@
           "kind": "command",
           "command": "{node}",
           "required": true,
-          "remediation": "Install Node.js so the mock-AI Docker metadata check can run after Docker approval."
+          "remediation": "Install Node.js so the scenario manager tests can inspect this route metadata."
         },
         {
           "id": "docker_fixture",
           "kind": "capability",
           "command": [
-            "docker",
-            "info",
-            "--format",
-            "{{json .ServerVersion}}"
+            "sh",
+            "-lc",
+            "docker image inspect \"${AMING_CLAW_MOCK_AI_DOCKER_IMAGE:-aming-claw-install-audit-codex:latest}\" >/dev/null"
           ],
           "required": true,
-          "remediation": "Re-run with --allow-docker only after approving Docker fixture setup for this isolated AI boundary lane."
+          "remediation": "Re-run with --allow-docker only after approving Docker fixture setup and preloading AMING_CLAW_MOCK_AI_DOCKER_IMAGE, defaulting to aming-claw-install-audit-codex:latest. The route uses --pull=never and must not fetch images during smoke."
         }
       ],
       "execution_policy": {
@@ -464,7 +463,7 @@
           "kind": "docker_fixture",
           "deterministic": true,
           "calls_models": false,
-          "description": "Docker-gated lane metadata for fixed mock-AI output with credentials cleared from the fixture command environment."
+          "description": "Docker-gated lane metadata for fixed mock-AI output with credentials cleared inside a --network none container."
         },
         {
           "id": "mock-ai-structured-output-envelope",
@@ -496,7 +495,8 @@
           "fields": [
             "schema_version",
             "source",
-            "calls_models"
+            "calls_models",
+            "runtime"
           ]
         },
         {
@@ -520,12 +520,12 @@
           "timeout_ms": 30000
         },
         {
-          "id": "mock_ai_no_credential_structured_output",
+          "id": "mock_ai_docker_no_credential_structured_output",
           "cwd": "repo",
           "command": [
-            "{node}",
-            "-e",
-            "const assert = require('node:assert/strict'); const envelope = {schema_version: 1, source: 'mock_ai_docker_fixture', calls_models: false, payload: {observer_alert_acknowledged: true, recommendation: 'qa_pass'}}; assert.equal(process.env.OPENAI_API_KEY || '', ''); assert.equal(process.env.ANTHROPIC_API_KEY || '', ''); assert.equal(envelope.calls_models, false); console.log(JSON.stringify(envelope));"
+            "sh",
+            "-lc",
+            "image=\"${AMING_CLAW_MOCK_AI_DOCKER_IMAGE:-aming-claw-install-audit-codex:latest}\"; docker run --rm --network none --pull=never --env OPENAI_API_KEY= --env ANTHROPIC_API_KEY= --env AMING_CLAW_LIVE_AI=0 --env AMING_CLAW_MODEL_CALLS=mocked --env AMING_CLAW_DOCKER_IMAGE=\"$image\" --entrypoint node \"$image\" -e 'const assert = require(\"node:assert/strict\"); const envelope = {schema_version: 1, source: \"mock_ai_docker_fixture\", runtime: \"docker\", image: process.env.AMING_CLAW_DOCKER_IMAGE, network: \"none\", calls_models: false, payload: {observer_alert_acknowledged: true, recommendation: \"qa_pass\"}}; assert.equal(process.env.OPENAI_API_KEY || \"\", \"\"); assert.equal(process.env.ANTHROPIC_API_KEY || \"\", \"\"); assert.equal(process.env.AMING_CLAW_LIVE_AI, \"0\"); assert.equal(process.env.AMING_CLAW_MODEL_CALLS, \"mocked\"); assert.equal(envelope.calls_models, false); console.log(JSON.stringify(envelope));'"
           ],
           "env": {
             "OPENAI_API_KEY": "",
