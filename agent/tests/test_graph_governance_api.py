@@ -101,6 +101,30 @@ def _route_waiver(action: str, *, task_id: str = "", backlog_id: str = "") -> di
     return waiver
 
 
+def _route_token(
+    action: str,
+    *,
+    project_id: str = PID,
+    task_id: str = "",
+    backlog_id: str = "",
+) -> dict:
+    scope = {"project_id": project_id}
+    if task_id:
+        scope["task_id"] = task_id
+    if backlog_id:
+        scope["backlog_id"] = backlog_id
+    return {
+        "route_context_hash": f"sha256:test-route-context-{action}",
+        "prompt_contract_id": f"prompt-contract-{action}",
+        "prompt_contract_hash": f"sha256:test-prompt-contract-{action}",
+        "caller_role": "observer",
+        "allowed_action": action,
+        "scope": scope,
+        "expires_at": "2999-01-01T00:00:00Z",
+        "evidence_refs": [f"timeline:test-route-token-{action}"],
+    }
+
+
 def _bare_handler():
     handler = object.__new__(server.GovernanceHandler)
     handler.path = "/api/health"
@@ -160,6 +184,89 @@ def _graph(node_id: str = "L7.1") -> dict:
             ],
         }
     }
+
+
+def test_project_bootstrap_requires_route_token_or_waiver(conn, monkeypatch):
+    def fail_bootstrap(**_kwargs):
+        raise AssertionError("bootstrap_project must not run without route gate evidence")
+
+    monkeypatch.setattr(server.project_service, "bootstrap_project", fail_bootstrap)
+
+    with pytest.raises(GovernanceError, match="route_token"):
+        server.handle_project_bootstrap(
+            _ctx(
+                {},
+                method="POST",
+                body={
+                    "workspace_path": "/tmp/bootstrap-demo",
+                    "project_id": "bootstrap-demo",
+                },
+            )
+        )
+
+
+def test_project_bootstrap_route_waiver_allows_and_records_gate(conn, monkeypatch):
+    observed = {}
+
+    def fake_bootstrap_project(**kwargs):
+        observed.update(kwargs)
+        return {
+            "project_id": "bootstrap-demo",
+            "graph_stats": {"node_count": 1, "edge_count": 0, "layers": {}},
+        }
+
+    monkeypatch.setattr(server.project_service, "bootstrap_project", fake_bootstrap_project)
+
+    status, payload = server.handle_project_bootstrap(
+        _ctx(
+            {},
+            method="POST",
+            body={
+                "workspace_path": "/tmp/bootstrap-demo",
+                "project_id": "bootstrap-demo",
+                "route_waiver": {
+                    **_route_waiver("project_bootstrap"),
+                    "project_id": "bootstrap-demo",
+                },
+            },
+        )
+    )
+
+    assert status == 200
+    assert observed["workspace_path"] == "/tmp/bootstrap-demo"
+    assert payload["route_token_gate"]["decision"] == "route_waiver"
+    event = conn.execute(
+        "SELECT event_type, project_id FROM task_timeline_events ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert event["event_type"] == "route_token_gate.project_bootstrap"
+    assert event["project_id"] == "bootstrap-demo"
+
+
+def test_project_bootstrap_route_token_allows_project_scope(conn, monkeypatch):
+    monkeypatch.setattr(
+        server.project_service,
+        "bootstrap_project",
+        lambda **_kwargs: {"project_id": "bootstrap-token-demo", "graph_stats": {}},
+    )
+
+    status, payload = server.handle_project_bootstrap(
+        _ctx(
+            {},
+            method="POST",
+            body={
+                "workspace_path": "/tmp/bootstrap-token-demo",
+                "project_id": "bootstrap-token-demo",
+                "route_token": _route_token(
+                    "project_bootstrap",
+                    project_id="bootstrap-token-demo",
+                ),
+            },
+        )
+    )
+
+    assert status == 200
+    assert payload["route_token_gate"]["decision"] == "route_token"
+    assert payload["route_token_gate"]["scope"]["project_id"] == "bootstrap-token-demo"
 
 
 def _activate_basic_graph(conn, snapshot_id: str = "full-query-test") -> None:
@@ -9532,6 +9639,22 @@ def test_managed_ref_bootstrap_api_applies_supplied_refs(conn, monkeypatch):
         lambda _ctx, _conn, _action: {"role": "observer"},
     )
 
+    with pytest.raises(GovernanceError, match="route_token"):
+        server.handle_graph_governance_managed_ref_bootstrap(
+            _ctx(
+                {"project_id": PID},
+                method="POST",
+                body={
+                    "target_ref": "refs/heads/main",
+                    "target_head_commit": "M0",
+                    "refs": [
+                        {"ref_name": "refs/heads/main", "ref_head_commit": "M0"},
+                    ],
+                    "evidence": {"source": "operator_dry_run_accept"},
+                },
+            )
+        )
+
     status, payload = server.handle_graph_governance_managed_ref_bootstrap(
         _ctx(
             {"project_id": PID},
@@ -9550,15 +9673,21 @@ def test_managed_ref_bootstrap_api_applies_supplied_refs(conn, monkeypatch):
                     {"ref_name": "refs/heads/codex/task-1", "ref_head_commit": "C1"},
                 ],
                 "evidence": {"source": "operator_dry_run_accept"},
+                "route_waiver": _route_waiver("managed_ref_bootstrap"),
                 "now_iso": "2026-05-17T11:20:00Z",
             },
         )
     )
 
     assert status == 201
+    assert payload["route_token_gate"]["decision"] == "route_waiver"
     assert payload["applied_count"] == 1
     assert payload["skipped_count"] == 2
     assert payload["refs"][0]["ref_name"] == "refs/heads/release/1.x"
+    event = conn.execute(
+        "SELECT event_type FROM task_timeline_events ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert event["event_type"] == "route_token_gate.managed_ref_bootstrap"
     listed = server.handle_graph_governance_managed_refs(_ctx({"project_id": PID}))
     assert listed["refs"][0]["ref_name"] == "refs/heads/release/1.x"
     assert listed["refs"][0]["evidence"]["source"] == "operator_dry_run_accept"

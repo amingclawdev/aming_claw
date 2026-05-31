@@ -69,7 +69,12 @@ as the default operator path.
   deliberately small page, and `backlog_get` for full detail of one row.
 - `backlog_get`: inspect the selected row.
 - `backlog_upsert`: create/update a row before code or doc mutations.
-- `backlog_close`: close with commit evidence.
+- `backlog_close`: close with commit evidence. Protected closes must include
+  either a public-safe `route_token` payload (`route_context_hash`,
+  `prompt_contract_id`, `caller_role`, `allowed_action`, `scope.project_id`,
+  `expires_at`, and `evidence_refs`) or an explicit `route_waiver` /
+  `route_token_waiver` with manual-fix/same-worktree reason and timeline
+  evidence.
 - `task_timeline_append`: append observer/agent execution evidence during MF
   work. For close-gate evidence use `event_kind=implementation`,
   `event_kind=verification`, and `event_kind=close_ready` with

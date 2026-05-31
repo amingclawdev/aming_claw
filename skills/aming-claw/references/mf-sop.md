@@ -183,6 +183,10 @@ Canonical source: `docs/governance/manual-fix-sop.md`. This file is only the sho
    - `task_timeline_append` with `event_kind=close_ready` after commit,
      redeploy/reconcile/version checks are complete;
    - run `mf_timeline_precheck` before `backlog_close`.
+   - when using MCP `backlog_close`, pass the route-token gate evidence:
+     either `route_token` with route context / prompt contract / scope /
+     expiry / evidence refs, or an explicit `route_waiver` with reason and
+     timeline evidence.
 
 ## Commit
 

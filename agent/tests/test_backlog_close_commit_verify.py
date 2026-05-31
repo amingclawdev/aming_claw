@@ -31,6 +31,19 @@ def _make_ctx(bug_id="BUG-001", commit="abc123", project_id="test-proj"):
     return ctx
 
 
+def _valid_route_token(action="backlog_close", bug_id="BUG-001", project_id="test-proj"):
+    return {
+        "route_context_hash": "sha256:test-route-context",
+        "prompt_contract_id": "prompt-contract-backlog-close",
+        "prompt_contract_hash": "sha256:test-prompt-contract",
+        "caller_role": "observer",
+        "allowed_action": action,
+        "scope": {"project_id": project_id, "backlog_id": bug_id},
+        "expires_at": "2999-01-01T00:00:00Z",
+        "evidence_refs": ["timeline:test-route-token-backlog-close"],
+    }
+
+
 @pytest.fixture
 def _mock_db():
     """Patch get_connection so SELECT returns a row and UPDATE/commit succeed."""
@@ -84,6 +97,23 @@ def test_backlog_close_without_route_token_or_waiver_is_blocked(_mock_subprocess
 
     assert exc_info.value.code == "route_token_required"
     assert exc_info.value.status == 422
+
+
+@patch("agent.governance.server.subprocess.run")
+def test_backlog_close_accepts_valid_route_token(_mock_subprocess, _mock_db, _mock_audit):
+    """Protected backlog_close accepts public route-token evidence through the HTTP body."""
+    from agent.governance.server import handle_backlog_close
+
+    _mock_subprocess.return_value = MagicMock(returncode=0)
+    ctx = _make_ctx(commit="abc123")
+    ctx.body.pop("route_waiver")
+    ctx.body["route_token"] = _valid_route_token()
+
+    result = handle_backlog_close(ctx)
+
+    assert result["ok"] is True
+    assert result["route_token_gate"]["decision"] == "route_token"
+    assert result["route_token_gate"]["scope"]["backlog_id"] == "BUG-001"
 
 
 @patch("agent.governance.server.subprocess.run")

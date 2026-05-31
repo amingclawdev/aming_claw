@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from agent.mcp.server import AmingClawMCP
+from agent.mcp.tools import ToolDispatcher
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -80,6 +81,80 @@ def test_mcp_stdio_tools_list_does_not_require_redis_or_governance():
     assert stderr == ""
     names = {tool["name"] for tool in responses[0]["result"]["tools"]}
     assert {"health", "manager_health", "graph_query", "backlog_upsert"}.issubset(names)
+
+
+def test_mcp_stdio_backlog_close_schema_exposes_route_gate_fields():
+    responses, stderr, returncode = _run_mcp_probe([
+        {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+    ])
+
+    assert returncode == 0
+    assert stderr == ""
+    tools = responses[0]["result"]["tools"]
+    backlog_close = next(tool for tool in tools if tool["name"] == "backlog_close")
+    properties = backlog_close["inputSchema"]["properties"]
+    assert "route_token" in properties
+    assert "route_waiver" in properties
+    assert "route_token_waiver" in properties
+
+
+def test_mcp_backlog_close_forwards_route_gate_payloads():
+    calls = []
+
+    def fake_api(method: str, path: str, data: dict | None = None):
+        calls.append((method, path, data))
+        return {"ok": True}
+
+    dispatcher = ToolDispatcher(
+        api_fn=fake_api,
+        worker_pool=None,
+        manager_api_fn=fake_api,
+        workspace=str(ROOT),
+    )
+    route_token = {
+        "route_context_hash": "sha256:test-route",
+        "prompt_contract_id": "prompt-contract",
+        "caller_role": "observer",
+        "allowed_action": "backlog_close",
+        "scope": {"project_id": "aming-claw", "backlog_id": "BUG-ROUTE"},
+        "expires_at": "2999-01-01T00:00:00Z",
+        "evidence_refs": ["timeline:event-1"],
+    }
+    route_waiver = {
+        "accepted": True,
+        "waiver_type": "manual_fix",
+        "allowed_action": "backlog_close",
+        "project_id": "aming-claw",
+        "backlog_id": "BUG-ROUTE",
+        "reason": "Unit test supplies explicit route waiver evidence.",
+        "timeline_evidence": {"event_id": "event-2"},
+    }
+
+    result = dispatcher.dispatch(
+        "backlog_close",
+        {
+            "project_id": "aming-claw",
+            "bug_id": "BUG-ROUTE",
+            "commit": "abc123",
+            "actor": "observer",
+            "route_token": route_token,
+            "route_waiver": route_waiver,
+        },
+    )
+
+    assert result == {"ok": True}
+    assert calls == [
+        (
+            "POST",
+            "/api/backlog/aming-claw/BUG-ROUTE/close",
+            {
+                "commit": "abc123",
+                "actor": "observer",
+                "route_token": route_token,
+                "route_waiver": route_waiver,
+            },
+        )
+    ]
 
 
 def test_mcp_stdio_resources_expose_skill_and_context_without_governance():

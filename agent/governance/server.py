@@ -965,6 +965,20 @@ def handle_init(ctx: RequestContext):
 # --- Project ---
 
 
+def _bootstrap_route_gate_project_id(body: dict, workspace_path: str) -> str:
+    """Infer the target project id before bootstrap mutates governance state."""
+    config_override = body.get("config_override") if isinstance(body, dict) else {}
+    if not isinstance(config_override, dict):
+        config_override = {}
+    raw = (
+        body.get("project_id")
+        or config_override.get("project_id")
+        or body.get("project_name")
+        or Path(workspace_path).name
+    )
+    return project_service._normalize_project_id(str(raw or ""))
+
+
 @route("POST", "/api/project/bootstrap")
 def handle_project_bootstrap(ctx: RequestContext):
     """Bootstrap a project from workspace (R1).
@@ -981,6 +995,12 @@ def handle_project_bootstrap(ctx: RequestContext):
     workspace_path = ctx.body.get("workspace_path", "").strip()
     if not workspace_path:
         return 400, {"error": "workspace_path is required"}
+    project_id = _bootstrap_route_gate_project_id(ctx.body, workspace_path)
+    route_gate = _require_route_token_mutation_gate(
+        ctx,
+        action="project_bootstrap",
+        project_id=project_id,
+    )
 
     try:
         result = project_service.bootstrap_project(
@@ -990,6 +1010,15 @@ def handle_project_bootstrap(ctx: RequestContext):
             scan_depth=ctx.body.get("scan_depth", 3),
             exclude_patterns=ctx.body.get("exclude_patterns"),
         )
+        pid = str(result.get("project_id") or project_id or "").strip()
+        if pid:
+            conn = get_connection(pid)
+            try:
+                _record_route_token_gate_event(conn, pid, route_gate)
+                conn.commit()
+            finally:
+                conn.close()
+        result["route_token_gate"] = route_gate
         return 200, result
     except Exception as e:
         return 400, {"error": str(e)}
@@ -5191,6 +5220,10 @@ def handle_graph_governance_managed_ref_bootstrap(ctx: RequestContext):
     conn = get_connection(project_id)
     try:
         _require_graph_governance_operator(ctx, conn, "graph-governance.managed-refs.bootstrap")
+        route_gate = _require_route_token_mutation_gate(
+            ctx,
+            action="managed_ref_bootstrap",
+        )
         refs, discovery = _managed_ref_bootstrap_refs_from_body(project_id, body)
         plan = build_managed_ref_bootstrap_plan(
             conn,
@@ -5211,9 +5244,11 @@ def handle_graph_governance_managed_ref_bootstrap(ctx: RequestContext):
                 actor=str(body.get("actor") or "api"),
                 now_iso=str(body.get("now_iso") or ""),
             )
+            _record_route_token_gate_event(conn, project_id, route_gate)
             conn.commit()
         return 201, {
             **result,
+            "route_token_gate": route_gate,
             "discovery": discovery,
         }
     finally:
@@ -16625,6 +16660,7 @@ def _require_route_token_mutation_gate(
     ctx: RequestContext,
     *,
     action: str,
+    project_id: str | None = None,
     backlog_id: str = "",
     task_id: str = "",
     metadata: dict | None = None,
@@ -16638,7 +16674,7 @@ def _require_route_token_mutation_gate(
         return validate_route_token_mutation_gate(
             _body_with_metadata_route_gate(ctx.body or {}, metadata),
             action=action,
-            project_id=ctx.get_project_id(),
+            project_id=project_id if project_id is not None else ctx.get_project_id(),
             backlog_id=backlog_id,
             task_id=task_id,
         )
