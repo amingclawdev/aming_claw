@@ -943,6 +943,159 @@
       ]
     },
     {
+      "id": "gated_live_ai_observer_route_demo",
+      "title": "Gated live observer route timeline demo",
+      "description": "Separate operator-gated live observer route demo. Without --allow-live-ai it fails closed; with approval it runs a deterministic local harness that emits sanitized timeline-shaped observer evidence without provider calls or raw prompt output.",
+      "target_project": "aming-claw",
+      "target_ref": "HEAD",
+      "runner": "commands",
+      "dependencies": [
+        {
+          "id": "node",
+          "kind": "command",
+          "command": "{node}",
+          "required": true,
+          "remediation": "Install Node.js so the deterministic live observer route harness can run."
+        },
+        {
+          "id": "live_ai_observer_route",
+          "kind": "capability",
+          "mode": "deterministic_observer_route",
+          "required": true,
+          "remediation": "Re-run with --allow-live-ai only after approving the gated live observer route demo. This harness records operator-approved/manual evidence and does not call a provider."
+        }
+      ],
+      "execution_policy": {
+        "lane": "live_observer_route_demo",
+        "autorun": false,
+        "requires_flags": [
+          "--allow-live-ai"
+        ],
+        "live_ai": "operator_approved_manual",
+        "model_calls": "deterministic_test_harness",
+        "route": "observer",
+        "default_without_flag": "blocked"
+      },
+      "safety": {
+        "fixture_only": false,
+        "live_ai": true,
+        "environment_probe": false,
+        "deterministic_test_harness": true,
+        "calls_models": false,
+        "requires_human_approval": true,
+        "redacts_prompt_output": true,
+        "silent_quota_use": false,
+        "live_ai_observer_route": true
+      },
+      "coverage": {
+        "areas": [
+          "live_observer_route_demo",
+          "route_context_evidence",
+          "timeline_audit",
+          "prompt_redaction",
+          "test_flow_route"
+        ],
+        "test_files": [
+          "agent/tests/test_test_scenario_manager.py"
+        ]
+      },
+      "route_context": {
+        "service_id": "observer.live_ai_route_demo",
+        "event_kind": "observer.live_ai_route_demo.requested",
+        "mode": "deterministic_observer_route",
+        "route": "observer",
+        "side_effect_class": "observer_route_timeline"
+      },
+      "test_flow_route": {
+        "source": "scenario_registry",
+        "decision": "live_observer_route_demo",
+        "primary_lane": "live_observer_route_demo",
+        "lanes": [
+          "live_observer_route_demo"
+        ],
+        "evidence_ids": [
+          "route_alert_ack",
+          "ordered_step_outputs",
+          "final_drift_prompt",
+          "live_ai_operator_approval",
+          "no_raw_prompt_output"
+        ]
+      },
+      "fixtures": [
+        {
+          "id": "gated-live-observer-route-harness",
+          "kind": "deterministic_live_observer_harness",
+          "deterministic": true,
+          "calls_models": false,
+          "script": "scripts/live-ai-observer-route-demo.mjs",
+          "description": "Local deterministic harness that emits route alert acknowledgement, ordered observer step outputs, final drift prompt evidence, and sanitized operator-approved/manual route metadata."
+        }
+      ],
+      "evidence_requirements": [
+        {
+          "id": "route_alert_ack",
+          "kind": "timeline_event",
+          "event_type": "route_alert_ack",
+          "expected_status": "acknowledged"
+        },
+        {
+          "id": "ordered_step_outputs",
+          "kind": "timeline_order",
+          "field": "timeline.seq",
+          "expected": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ]
+        },
+        {
+          "id": "final_drift_prompt",
+          "kind": "timeline_event",
+          "event_type": "final_drift_prompt",
+          "expected_status": "shown"
+        },
+        {
+          "id": "live_ai_operator_approval",
+          "kind": "safety_metadata",
+          "field": "live_ai.approval",
+          "expected": "operator-approved/manual"
+        },
+        {
+          "id": "no_raw_prompt_output",
+          "kind": "redaction",
+          "field": "observer_evidence.no_raw_prompt_output",
+          "expected": true
+        }
+      ],
+      "commands": [
+        {
+          "id": "gated_live_ai_observer_route_timeline",
+          "cwd": "repo",
+          "command": [
+            "{node}",
+            "scripts/live-ai-observer-route-demo.mjs",
+            "--allow-live-ai",
+            "--json"
+          ],
+          "env": {
+            "AMING_CLAW_LIVE_AI": "operator-approved-manual",
+            "AMING_CLAW_MODEL_CALLS": "deterministic_test_harness"
+          },
+          "timeout_ms": 30000
+        }
+      ],
+      "artifacts": [
+        {
+          "id": "gated_live_ai_observer_route_demo_script",
+          "kind": "demo_script",
+          "path": "scripts/live-ai-observer-route-demo.mjs",
+          "description": "Deterministic route harness for gated live observer timeline evidence; it is separate from mock Docker and dashboard smoke fixtures."
+        }
+      ]
+    },
+    {
       "id": "ruby_graph_sinatra",
       "title": "Ruby graph validation against Sinatra",
       "description": "Clones or reuses a pinned Sinatra workspace outside this repo, bootstraps it through governance when explicitly allowed, and validates Ruby graph reasonableness.",

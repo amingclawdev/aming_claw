@@ -17,6 +17,13 @@ AI, mutate the primary governance project registry, or require live providers.
 Dashboard evidence is covered by a separate Playwright lane that uses a mocked
 governance API and fixed mock-AI timeline input.
 
+Gated live observer evidence is intentionally separate from those smoke routes.
+`gated_live_ai_observer_route_demo` fails closed unless `--allow-live-ai` is
+present. When approved, it still runs a deterministic local harness: the output
+is timeline-shaped observer evidence for route alert acknowledgement, ordered
+step outputs, and final drift prompt handling. It is not a provider-call proof,
+and it stores no raw prompt output.
+
 ## Run
 
 ```bash
@@ -112,6 +119,48 @@ asserts that these evidence cards are visible: `Observer alert received`,
   "status": "blocked",
   "requires_flags": ["--allow-live-ai"],
   "command_summaries": []
+}
+```
+
+The gated live observer route is a separate scenario, not a replacement for
+the mock dashboard or Docker routes:
+
+```bash
+node scripts/test-scenario-manager.mjs run \
+  --scenario gated_live_ai_observer_route_demo \
+  --json
+```
+
+Without approval it is blocked before commands run. With explicit approval it
+executes the deterministic local harness:
+
+```bash
+node scripts/test-scenario-manager.mjs run \
+  --scenario gated_live_ai_observer_route_demo \
+  --allow-live-ai \
+  --json
+```
+
+Expected approved evidence:
+
+```json
+{
+  "source": "deterministic_test_harness",
+  "live_ai": {
+    "approval": "operator-approved/manual",
+    "execution_mode": "deterministic_test_harness",
+    "calls_models": false
+  },
+  "observer_evidence": {
+    "route_alert_ack": {"status": "acknowledged"},
+    "ordered_step_outputs": [
+      {"step_id": "01_route_alert_ack", "status": "passed"},
+      {"step_id": "02_ordered_route_steps", "status": "passed"},
+      {"step_id": "03_sanitized_live_ai_evidence", "status": "passed"}
+    ],
+    "final_drift_prompt": {"status": "shown"},
+    "no_raw_prompt_output": true
+  }
 }
 ```
 

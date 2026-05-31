@@ -288,10 +288,16 @@ reports as `test_flow_route`.
   already present, runs with `--pull=never`, clears AI credential env vars
   inside a `--network none` container, and records fixed structured mock output
   instead of calling a live model.
+- `gated_live_ai_observer_route_demo` is a separate live observer evidence
+  lane. It is blocked by default and requires `--allow-live-ai`; after approval
+  it runs a deterministic local harness that records route alert ack, ordered
+  observer step outputs, final drift prompt evidence, and sanitized
+  operator-approved/manual `live_ai` metadata. It does not replace the mock
+  dashboard or mock Docker smoke routes.
 
 The scenario manager preserves lane metadata in `plan` and `run` reports.
-Live-AI validation remains outside this deterministic runner until project AI
-config, local CLI auth, and operator approval are verified.
+Provider-backed Live-AI validation remains outside this deterministic runner
+until project AI config, local CLI auth, and operator approval are verified.
 
 The `test_flow_route.prompt_alert_bundle` is intentionally low-noise: it emits
 only the alerts for lanes selected by the current scenario. Focused unit tests
@@ -336,7 +342,25 @@ dashboard. Store provider, model, role, command shape, status, duration, and
 redacted diagnostics; do not store raw prompts, completions, API keys, bearer
 tokens, session tokens, or unredacted stderr/stdout from provider CLIs.
 
-### 7.3 External Project Test Route Manifests
+### 7.3 Gated Live Observer Route Demo
+
+The live observer route demo is intentionally not the same thing as mock smoke:
+
+- Mock dashboard smoke proves the UI can render fixed route/timeline evidence.
+- Mock Docker smoke proves container, credential, and no-network boundaries.
+- The gated live observer route proves that an observer route can fail closed
+  by default and, after explicit approval, emit timeline-shaped observer
+  evidence with route alert acknowledgement, ordered step outputs, final drift
+  prompt evidence, and sanitized `live_ai` metadata.
+
+The approved route uses a deterministic local harness so focused tests can run
+without provider credentials or quota. The evidence must be marked
+`operator-approved/manual` and `deterministic_test_harness`, must keep
+`calls_models=false`, and must store hashes or summaries rather than raw prompt
+or completion output. A future provider-backed observer proof may build on this
+lane, but it must remain opt-in and record separate invocation evidence.
+
+### 7.4 External Project Test Route Manifests
 
 External project test governance uses source-controlled route manifests rather
 than hidden prompts or ad hoc runner state. The scenario manager loads

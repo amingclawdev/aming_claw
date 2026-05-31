@@ -84,6 +84,44 @@ def test_paradigm_route_context_demo_proves_test_flow_lanes(tmp_path: Path) -> N
     assert "--allow-live-ai" in cases["live_ai_route_blocks_without_approval"]["requires_flags"]
     assert cases["live_ai_route_blocks_without_approval"]["command_summaries"] == []
 
+    assert cases["live_observer_route_blocks_without_approval"]["status"] == "blocked"
+    assert (
+        cases["live_observer_route_blocks_without_approval"]["decision"]
+        == "live_observer_route_demo"
+    )
+    assert (
+        "--allow-live-ai"
+        in cases["live_observer_route_blocks_without_approval"]["requires_flags"]
+    )
+    assert cases["live_observer_route_blocks_without_approval"]["alert_codes"] == [
+        "test_flow_live_observer_route"
+    ]
+    assert cases["live_observer_route_blocks_without_approval"]["command_summaries"] == []
+
+    observer = cases["live_observer_route_runs_approved_deterministic_timeline"]
+    assert observer["status"] == "passed"
+    assert observer["decision"] == "live_observer_route_demo"
+    assert observer["model_calls"] == "deterministic_test_harness"
+    assert observer["live_ai"] == "operator_approved_manual"
+    assert observer["structured_output_schema"] == "live_observer_route_demo.v1"
+    assert observer["source"] == "deterministic_test_harness"
+    assert observer["calls_models"] is False
+    assert observer["observer_ack_status"] == "acknowledged"
+    assert observer["step_ids"] == [
+        "01_route_alert_ack",
+        "02_ordered_route_steps",
+        "03_sanitized_live_ai_evidence",
+    ]
+    assert observer["timeline_event_types"] == [
+        "route_alert_ack",
+        "observer_step_output",
+        "observer_step_output",
+        "observer_step_output",
+        "final_drift_prompt",
+    ]
+    assert observer["final_drift_prompt_status"] == "shown"
+    assert observer["raw_prompt_output_stored"] is False
+
 
 def test_paradigm_route_context_demo_proves_external_registration_and_prompt_bundle(
     tmp_path: Path,

@@ -20,6 +20,7 @@ const VALID_MODES = new Set(["doctor", "plan", "run", "report"]);
 const RUN_TERMINAL_STATUSES = new Set(["passed", "failed", "blocked", "dry_run"]);
 const TEST_FLOW_LANE_PRIORITY = [
   "live_ai_environment_probe",
+  "live_observer_route_demo",
   "docker_fixture",
   "external_graph_fixture",
   "playwright_mock_ai",
@@ -116,6 +117,21 @@ const TEST_FLOW_LANE_DEFS = {
       message: "Live AI probes require explicit --allow-live-ai, sanitized evidence, and no silent quota use. Deterministic tests must use fixtures instead.",
       allowed_actions: ["run_operator_approved_live_ai_probe", "record_sanitized_ai_runtime_evidence"],
       blocked_actions: ["call_live_ai_from_fixture", "autorun_live_ai_probe", "store_raw_prompt_output"],
+    },
+  },
+  live_observer_route_demo: {
+    title: "Gated live observer route demo",
+    applies_when: "The goal is observer route-alert, ordered-step, and drift-prompt evidence; deterministic harness output must not be claimed as provider invocation.",
+    default_autorun: false,
+    required_flags: ["--allow-live-ai"],
+    model_calls: "deterministic_test_harness",
+    side_effect_class: "observer_route_timeline",
+    alert: {
+      code: "test_flow_live_observer_route",
+      severity: "block",
+      message: "Live observer route demos require explicit --allow-live-ai, sanitized timeline evidence, and a clear distinction between deterministic harness output and provider-backed model calls.",
+      allowed_actions: ["run_operator_approved_observer_route_harness", "record_observer_alert_step_and_drift_evidence"],
+      blocked_actions: ["autorun_observer_route_demo", "claim_provider_invocation_from_harness", "store_raw_prompt_output"],
     },
   },
   external_graph_fixture: {
@@ -574,6 +590,47 @@ function tailText(text, maxChars = 12000) {
   return sanitized.slice(sanitized.length - maxChars);
 }
 
+function sanitizeStructuredCommandEvidence(value) {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) return value.map((item) => sanitizeStructuredCommandEvidence(item));
+  if (typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        sanitizeText(String(key)),
+        sanitizeStructuredCommandEvidence(item),
+      ]),
+    );
+  }
+  if (typeof value === "string") return sanitizeText(value);
+  return value;
+}
+
+function parseStructuredCommandEvidence(stdout) {
+  const trimmed = String(stdout || "").trim();
+  if (!trimmed) return null;
+  const candidates = [trimmed, ...trimmed.split(/\r?\n/).reverse()];
+  for (const candidate of candidates) {
+    if (!candidate.trim().startsWith("{")) continue;
+    try {
+      const parsed = JSON.parse(candidate);
+      if (
+        parsed
+        && typeof parsed === "object"
+        && (
+          Array.isArray(parsed.timeline)
+          || parsed.observer_evidence
+          || parsed.live_ai
+        )
+      ) {
+        return sanitizeStructuredCommandEvidence(parsed);
+      }
+    } catch {
+      // Keep looking for a final JSON line; many commands print setup logs first.
+    }
+  }
+  return null;
+}
+
 function isInside(parent, child) {
   const rel = relative(resolve(parent), resolve(child));
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
@@ -619,13 +676,22 @@ function isLiveAiEnvironmentProbeScenario(scenario) {
   );
 }
 
-function isLiveAiEnvironmentProbeDependency(scenario, dependency) {
+function isLiveAiGatedObserverScenario(scenario) {
+  return (
+    scenario.execution_policy?.lane === "live_observer_route_demo"
+    || scenario.safety?.live_ai_observer_route === true
+    || scenario.route_context?.mode === "deterministic_observer_route"
+  );
+}
+
+function isLiveAiGatedDependency(scenario, dependency) {
   const mode = dependency.mode || dependency.probe_mode || "";
   const markedDependency = (
     dependency.id === "live_ai_environment_probe"
+    || dependency.id === "live_ai_observer_route"
     || (dependency.id === "live_ai_runtime" && ["environment_probe", "live_ai_environment_probe"].includes(mode))
   );
-  return markedDependency && isLiveAiEnvironmentProbeScenario(scenario);
+  return markedDependency && (isLiveAiEnvironmentProbeScenario(scenario) || isLiveAiGatedObserverScenario(scenario));
 }
 
 function unique(values) {
@@ -672,9 +738,11 @@ function inferTestFlowLanes(scenario) {
     || scenario.safety?.uses_docker_fixture === true
   );
   const isLiveProbe = isLiveAiEnvironmentProbeScenario(scenario);
+  const isLiveObserverRoute = isLiveAiGatedObserverScenario(scenario);
   const isExternalGraph = scenario.runner === "ruby_graph";
 
   if (isLiveProbe) lanes.push("live_ai_environment_probe");
+  if (isLiveObserverRoute) lanes.push("live_observer_route_demo");
   if (isDocker) lanes.push("docker_fixture");
   if (isExternalGraph) lanes.push("external_graph_fixture");
   if (hasE2eCommand(scenario)) lanes.push("e2e_fixture");
@@ -821,13 +889,17 @@ function buildDependencyDecisions(scenario, options, { planning = false } = {}) 
           }
         }
       }
-    } else if (isLiveAiEnvironmentProbeDependency(scenario, dependency)) {
+    } else if (isLiveAiGatedDependency(scenario, dependency)) {
       if (!options.allowLiveAi) {
         decision.status = "blocked";
-        decision.reason = "live AI environment probes are gated and require --allow-live-ai";
+        decision.reason = isLiveAiGatedObserverScenario(scenario)
+          ? "live observer route demos are gated and require --allow-live-ai"
+          : "live AI environment probes are gated and require --allow-live-ai";
       } else {
         decision.status = "allowed";
-        decision.reason = "live AI environment probe explicitly approved; the scenario command records provider/model/auth evidence";
+        decision.reason = isLiveAiGatedObserverScenario(scenario)
+          ? "live observer route demo explicitly approved; the scenario command records sanitized observer timeline evidence"
+          : "live AI environment probe explicitly approved; the scenario command records provider/model/auth evidence";
       }
     } else if (dependency.id === "live_ai_runtime") {
       decision.status = "blocked";
@@ -919,6 +991,7 @@ function baseReport(scenario, options) {
     dependency_decisions: [],
     artifacts: [],
     command_summaries: [],
+    structured_outputs: [],
     http_summaries: [],
     checks: [],
     blocked: null,
@@ -1091,6 +1164,16 @@ async function runCommand(commandSpec, options, report, externalWorkspace = "") 
       summary.duration_ms = Date.now() - started;
       summary.stdout_tail = tailText(stdout);
       summary.stderr_tail = tailText(stderr);
+      const structuredOutput = parseStructuredCommandEvidence(stdout);
+      if (structuredOutput) {
+        summary.structured_output = structuredOutput;
+        report.structured_outputs.push({
+          command_id: commandSpec.id,
+          schema_version: structuredOutput.schema_version || "",
+          status: structuredOutput.status || "",
+          evidence: structuredOutput,
+        });
+      }
       resolvePromise();
     });
   });

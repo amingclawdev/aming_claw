@@ -78,9 +78,10 @@ def test_doctor_json_reports_backend_blocker_without_failing_hard(tmp_path: Path
         "service_router_docker_fixture",
         "service_router_ai_structured_output_fixture",
         "service_router_live_ai_environment_tester",
+        "gated_live_ai_observer_route_demo",
         "ruby_graph_sinatra",
     }.issubset(set(payload["registry"]["scenario_ids"]))
-    assert payload["registry"]["scenario_count"] == 8
+    assert payload["registry"]["scenario_count"] == 9
     assert payload["paths"]["cache_inside_repo"] is False
 
 
@@ -100,9 +101,10 @@ def test_plan_output_lists_scenarios_actions_and_fixture_metadata(tmp_path: Path
     docker = scenarios["service_router_docker_fixture"]
     ai_fixture = scenarios["service_router_ai_structured_output_fixture"]
     live_probe = scenarios["service_router_live_ai_environment_tester"]
+    live_observer = scenarios["gated_live_ai_observer_route_demo"]
     ruby = scenarios["ruby_graph_sinatra"]
 
-    assert payload["selected_count"] == 8
+    assert payload["selected_count"] == 9
     assert set(scenarios) == {
         "simple_user_entry",
         "paradigm_route_context_demo",
@@ -111,6 +113,7 @@ def test_plan_output_lists_scenarios_actions_and_fixture_metadata(tmp_path: Path
         "service_router_docker_fixture",
         "service_router_ai_structured_output_fixture",
         "service_router_live_ai_environment_tester",
+        "gated_live_ai_observer_route_demo",
         "ruby_graph_sinatra",
     }
     assert scenario["scenario_id"] == "simple_user_entry"
@@ -262,6 +265,32 @@ def test_plan_output_lists_scenarios_actions_and_fixture_metadata(tmp_path: Path
         in live_commands["service_router_live_ai_environment_probe"]["command"]
     )
     assert "--allow-live-ai" in live_commands["service_router_live_ai_environment_probe"]["command"]
+    live_observer_commands = {command["id"]: command for command in live_observer["commands"]}
+    assert live_observer["execution_policy"]["lane"] == "live_observer_route_demo"
+    assert live_observer["execution_policy"]["requires_flags"] == ["--allow-live-ai"]
+    assert live_observer["execution_policy"]["live_ai"] == "operator_approved_manual"
+    assert live_observer["execution_policy"]["model_calls"] == "deterministic_test_harness"
+    assert live_observer["test_flow_route"]["decision"] == "live_observer_route_demo"
+    assert live_observer["test_flow_route"]["primary_lane"] == "live_observer_route_demo"
+    assert live_observer["test_flow_route"]["requires_flags"] == ["--allow-live-ai"]
+    assert live_observer["test_flow_route"]["live_ai"] == "operator_approved_manual"
+    assert live_observer["test_flow_route"]["model_calls"] == "deterministic_test_harness"
+    assert live_observer["test_flow_route"]["prompt_alert_bundle"]["alerts"][0]["code"] == "test_flow_live_observer_route"
+    assert live_observer["safety"]["deterministic_test_harness"] is True
+    assert live_observer["safety"]["calls_models"] is False
+    assert live_observer["fixtures"][0]["script"] == "scripts/live-ai-observer-route-demo.mjs"
+    assert {item["id"] for item in live_observer["evidence_requirements"]} >= {
+        "route_alert_ack",
+        "ordered_step_outputs",
+        "final_drift_prompt",
+        "live_ai_operator_approval",
+        "no_raw_prompt_output",
+    }
+    assert (
+        "scripts/live-ai-observer-route-demo.mjs"
+        in live_observer_commands["gated_live_ai_observer_route_timeline"]["command"]
+    )
+    assert "--allow-live-ai" in live_observer_commands["gated_live_ai_observer_route_timeline"]["command"]
     assert ruby["target_project"] == "test-scenario-ruby-sinatra"
     assert ruby["repository"]["commit"] == "5236d3459b8b9015e5ce21ddd0c6beb0db4081d4"
     assert ruby["repository"]["workspace_path"] == str(tmp_path / "state" / "workspaces" / "sinatra")
@@ -546,6 +575,77 @@ def test_service_router_fixture_dependency_gating_shape(tmp_path: Path) -> None:
     assert live_report["test_flow_route"]["decision"] == "live_ai_environment_probe"
     assert live_report["test_flow_route"]["prompt_alert_bundle"]["alerts"][0]["code"] == "test_flow_live_ai_probe"
     assert live_report["command_summaries"] == []
+
+
+def test_gated_live_ai_observer_route_blocks_then_runs_deterministic_timeline(tmp_path: Path) -> None:
+    blocked_result = _run_manager(
+        "run",
+        "--scenario",
+        "gated_live_ai_observer_route_demo",
+        "--json",
+        "--state-dir",
+        str(tmp_path / "blocked-state"),
+        check=False,
+    )
+    blocked_payload = _json(blocked_result)
+    [blocked_report] = blocked_payload["reports"]
+    blocked_deps = {item["id"]: item for item in blocked_report["dependency_decisions"]}
+
+    assert blocked_result.returncode == 2
+    assert blocked_payload["ok"] is False
+    assert blocked_report["status"] == "blocked"
+    assert blocked_report["blocked"]["reason_code"] == "dependency_live_ai_observer_route_blocked"
+    assert blocked_deps["live_ai_observer_route"]["status"] == "blocked"
+    assert "--allow-live-ai" in blocked_deps["live_ai_observer_route"]["reason"]
+    assert blocked_report["command_summaries"] == []
+    assert blocked_report["structured_outputs"] == []
+
+    allowed_result = _run_manager(
+        "run",
+        "--scenario",
+        "gated_live_ai_observer_route_demo",
+        "--json",
+        "--state-dir",
+        str(tmp_path / "allowed-state"),
+        "--allow-live-ai",
+    )
+    allowed_payload = _json(allowed_result)
+    [allowed_report] = allowed_payload["reports"]
+    allowed_deps = {item["id"]: item for item in allowed_report["dependency_decisions"]}
+    [summary] = allowed_report["command_summaries"]
+    [structured] = allowed_report["structured_outputs"]
+    evidence = structured["evidence"]
+
+    assert allowed_payload["ok"] is True
+    assert allowed_report["status"] == "passed"
+    assert allowed_deps["live_ai_observer_route"]["status"] == "allowed"
+    assert summary["status"] == "passed"
+    assert summary["structured_output"] == evidence
+    assert evidence["schema_version"] == "live_observer_route_demo.v1"
+    assert evidence["source"] == "deterministic_test_harness"
+    assert evidence["live_ai"]["approval"] == "operator-approved/manual"
+    assert evidence["live_ai"]["execution_mode"] == "deterministic_test_harness"
+    assert evidence["live_ai"]["calls_models"] is False
+    assert evidence["live_ai"]["silent_quota_use"] is False
+    assert evidence["observer_evidence"]["route_alert_ack"]["status"] == "acknowledged"
+    assert [
+        step["step_id"] for step in evidence["observer_evidence"]["ordered_step_outputs"]
+    ] == [
+        "01_route_alert_ack",
+        "02_ordered_route_steps",
+        "03_sanitized_live_ai_evidence",
+    ]
+    assert evidence["observer_evidence"]["final_drift_prompt"]["status"] == "shown"
+    assert evidence["observer_evidence"]["no_raw_prompt_output"] is True
+    assert [event["seq"] for event in evidence["timeline"]] == [1, 2, 3, 4, 5]
+    assert evidence["timeline"][0]["event_type"] == "route_alert_ack"
+    assert evidence["timeline"][-1]["event_type"] == "final_drift_prompt"
+    assert json.loads(summary["stdout_tail"]) == evidence
+    serialized = json.dumps(evidence).lower()
+    assert "openai_api_key" not in serialized
+    assert "anthropic_api_key" not in serialized
+    assert "bearer " not in serialized
+    assert "raw prompt body" not in serialized
 
 
 def test_required_live_ai_dependency_stays_manual_when_flag_supplied(tmp_path: Path) -> None:
