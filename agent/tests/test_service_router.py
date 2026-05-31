@@ -491,7 +491,9 @@ def test_route_prompt_alert_bundle_returns_visible_hashable_context_only():
     assert route["service_id"] == "route.prompt_alert_bundle"
     assert bundle["intent"] == "implementation"
     assert bundle["route"]["route_id"] == "route-1"
-    assert bundle["alerts"][0]["code"] == "observer_judger_must_not_implement"
+    assert "observer_judger_must_not_implement" not in {
+        alert["code"] for alert in bundle["alerts"]
+    }
     assert bundle["prompt_contract"]["prompt_contract_id"] == "rprompt-1"
     assert bundle["route_context_hash"].startswith("sha256:")
     assert bundle["prompt_contract_hash"].startswith("sha256:")

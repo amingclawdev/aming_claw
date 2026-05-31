@@ -20,6 +20,7 @@ The longer implementation note is:
 |---|---|---|---|---|
 | [Vibe Queue Demo](../vibe-queue-demo/README.md) | Ordinary vibe-coding users | Everyday workflow | Intent + Process + Contract | A user can keep describing requirements while the observer records, confirms, queues, executes, and reports progress. |
 | [HN Multi-Agent Challenge](../hn-demo/README.md) | Technical reviewers | Challenge / adversarial proof | Contract + Relationship / Impact + Process + Constraint | Multiple commit-bound workers can be coordinated by one observer, including failed/interrupted worker replay and audit evidence. |
+| [Route Context And Test Routes](route-context-test-routes.md) | Agent-infra builders | Runnable route proof | Contract + Relationship / Impact + Process + Constraint | Route-owned context selects focused/fixture/Docker/live-AI/external lanes, emits low-noise alerts, and blocks unsafe lanes without approval. |
 | [Observer Reminder Echo](observer-reminder-echo.md) | Agent-infra builders | Protocol proof | Intent + Process + Constraint | A payload-free hook reminder can route an obligation without leaking the business payload, then become timeline evidence. |
 
 ## Everyday user demos
@@ -40,6 +41,7 @@ These demos are for readers who want to challenge the architecture.
 | Demo | Failure mode | Surface proved | Evidence |
 |---|---|---|---|
 | [HN Multi-Agent Challenge](../hn-demo/README.md) | Chat-based multi-agent work loses scope, replay, and audit boundaries. | Contract + relationship / impact + process + constraint | Observer coordinates multiple commit-bound workers, failed/interrupted replay, graph reconcile, and audit self-review. |
+| [Route Context And Test Routes](route-context-test-routes.md) | A worker receives a noisy prompt or wrong test lane, then silently starts Docker, calls live AI, or treats an external project route as local. | Contract + relationship / impact + process + constraint | `paradigm_route_context_demo` proves fixture-only pass, Docker/live-AI gated block, external manifest registration, and hashable prompt context with no raw prompt leak. |
 | [Observer Reminder Echo](observer-reminder-echo.md) | A worker could claim it saw context that was never delivered. | Intent + process + constraint | Hook reminder is payload-free; observer must claim payload; worker must echo reminder as timeline evidence. |
 | [Weak Test Binding / Graph Self-Repair](../config/semantic-enrichment.md) | A TypeScript node can be falsely credited with unrelated Python tests as strong coverage. | Relationship / impact + constraint | Semantic rule, fixture, review gate, and full reconcile materialize the corrected relationship. |
 
@@ -81,4 +83,3 @@ constraint  -> what must be checked before progress or close
 
 If a coding-agent system cannot show runnable cases for those five surfaces, it
 is probably still chat with tools.
-

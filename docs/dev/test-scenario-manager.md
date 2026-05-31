@@ -146,6 +146,38 @@ command-name heuristic. A fixture-only external route with no pytest or E2E
 command still reports `fixture_only`, `model_calls: forbidden`, and
 `autorun: true`.
 
+## Paradigm Demo
+
+The route and alert contract is exposed as a runnable proof case:
+
+```bash
+python scripts/paradigm-route-context-demo.py --json
+```
+
+It is also registered in `scripts/test-scenarios.json`:
+
+```bash
+node scripts/test-scenario-manager.mjs run \
+  --scenario paradigm_route_context_demo \
+  --json
+```
+
+The demo intentionally spans multiple route outcomes while staying
+deterministic:
+
+- fixture-only route passes with `model_calls: forbidden`;
+- Docker fixture route blocks without `--allow-docker`;
+- live-AI environment route blocks without `--allow-live-ai`;
+- external project manifest route records project root, route id, and manifest
+  hash;
+- route prompt bundle exposes `route_context_hash` and
+  `prompt_contract_hash`, while raw prompt/private context stays out of the
+  bundle.
+
+This scenario is the public proof behind
+`docs/demos/route-context-test-routes.md` and the AI-agent development system
+paradigm articles.
+
 ## Scenario Schema
 
 The registry lives at `scripts/test-scenarios.json`:

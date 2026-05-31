@@ -300,6 +300,7 @@ def route_prompt_alert_bundle_handler(
         payload.get("route_alerts"),
         stage=topology["stage"],
         topology_policy=topology,
+        caller_role=_route_caller_role(payload),
     )
     content = _route_content(payload)
     route = _route_identity(payload, event)
@@ -643,10 +644,12 @@ def _route_alerts(
     *,
     stage: str = "",
     topology_policy: Mapping[str, Any] | None = None,
+    caller_role: str = "",
 ) -> list[dict[str, Any]]:
     source = value if isinstance(value, list) and value else list(DEFAULT_ROUTE_ALERTS)
     topology = topology_policy if isinstance(topology_policy, Mapping) else {}
     selected_topology = _text(topology.get("selected_topology"))
+    role = _text(caller_role).lower()
     route_owned_alerts: list[dict[str, Any]] = [DEFAULT_ROUTE_ALERTS[0]]
     if value is None and selected_topology == LIGHTWEIGHT_SINGLE_LANE_TOPOLOGY:
         source = [
@@ -678,6 +681,9 @@ def _route_alerts(
             continue
         code = alert.get("code", "")
         if not code or code in seen:
+            continue
+        applies_to = {_text(value).lower() for value in alert.get("applies_to", [])}
+        if role and applies_to and role not in applies_to:
             continue
         if not _alert_applies_to_stage(code, stage):
             continue

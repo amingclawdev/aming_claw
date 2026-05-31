@@ -113,6 +113,143 @@
       ]
     },
     {
+      "id": "paradigm_route_context_demo",
+      "title": "Paradigm route context and test-flow proof",
+      "description": "Runs the concrete proof case for the AI-agent development system paradigm: route-owned context, selected test-flow alerts, fixture-only pass, Docker/live-AI gated blocks, and external route registration.",
+      "target_project": "aming-claw",
+      "target_ref": "HEAD",
+      "runner": "commands",
+      "dependencies": [
+        {
+          "id": "python",
+          "kind": "command",
+          "command": "{python}",
+          "required": true,
+          "remediation": "Install Python or set PYTHON/PYTHON_BIN to the interpreter used for this checkout."
+        },
+        {
+          "id": "node",
+          "kind": "command",
+          "command": "{node}",
+          "required": true,
+          "remediation": "Install Node.js so the test scenario manager proof cases can run."
+        }
+      ],
+      "execution_policy": {
+        "lane": "fixture_only",
+        "autorun": true,
+        "requires_flags": [],
+        "live_ai": "disabled",
+        "model_calls": "forbidden"
+      },
+      "safety": {
+        "fixture_only": true,
+        "live_ai": false,
+        "calls_models": false,
+        "requires_human_approval": false
+      },
+      "coverage": {
+        "areas": [
+          "paradigm_demo",
+          "route_context",
+          "test_flow_route",
+          "external_route_manifest",
+          "prompt_alert_bundle"
+        ],
+        "test_files": [
+          "agent/tests/test_paradigm_route_context_demo.py",
+          "agent/tests/test_test_scenario_manager.py",
+          "agent/tests/test_service_router.py"
+        ]
+      },
+      "route_context": {
+        "service_id": "paradigm.route_context_demo",
+        "event_kind": "paradigm.demo.requested",
+        "mode": "preview",
+        "side_effect_class": "read"
+      },
+      "test_flow_route": {
+        "source": "scenario_registry",
+        "decision": "mixed",
+        "primary_lane": "fixture_only",
+        "lanes": [
+          "focused_unit",
+          "fixture_only"
+        ],
+        "evidence_ids": [
+          "fixture_only_route_runs",
+          "docker_route_blocks_without_approval",
+          "live_ai_route_blocks_without_approval",
+          "external_project_registers_fixture_route",
+          "route_prompt_bundle_is_hashable_and_low_noise"
+        ]
+      },
+      "fixtures": [
+        {
+          "id": "paradigm-external-route-manifest",
+          "kind": "generated_external_manifest",
+          "deterministic": true,
+          "calls_models": false,
+          "description": "The demo creates a temporary external project route manifest and verifies source-controlled registration metadata."
+        }
+      ],
+      "evidence_requirements": [
+        {
+          "id": "fixture_only_route_runs",
+          "kind": "demo_output",
+          "field": "proof_cases.fixture_only_route_runs.status",
+          "expected": "passed"
+        },
+        {
+          "id": "docker_route_blocks_without_approval",
+          "kind": "demo_output",
+          "field": "proof_cases.docker_route_blocks_without_approval.status",
+          "expected": "blocked"
+        },
+        {
+          "id": "live_ai_route_blocks_without_approval",
+          "kind": "demo_output",
+          "field": "proof_cases.live_ai_route_blocks_without_approval.status",
+          "expected": "blocked"
+        },
+        {
+          "id": "external_project_registers_fixture_route",
+          "kind": "demo_output",
+          "field": "proof_cases.external_project_registers_fixture_route.status",
+          "expected": "passed"
+        },
+        {
+          "id": "route_prompt_bundle_is_hashable_and_low_noise",
+          "kind": "demo_output",
+          "field": "proof_cases.route_prompt_bundle_is_hashable_and_low_noise.raw_context_exposed",
+          "expected": false
+        }
+      ],
+      "commands": [
+        {
+          "id": "paradigm_route_context_demo",
+          "cwd": "repo",
+          "command": [
+            "{python}",
+            "scripts/paradigm-route-context-demo.py",
+            "--json"
+          ],
+          "env": {
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"
+          },
+          "timeout_ms": 120000
+        }
+      ],
+      "artifacts": [
+        {
+          "id": "paradigm_route_context_demo_script",
+          "kind": "demo_script",
+          "path": "scripts/paradigm-route-context-demo.py",
+          "description": "Runnable JSON proof tying the article's paradigm surfaces to route context and test-flow route evidence."
+        }
+      ]
+    },
+    {
       "id": "service_router_docker_fixture",
       "title": "Service router Docker fixture lane",
       "description": "Deterministic service-router fixture declaration for Docker-backed service routing checks. The manager records the lane and blocks execution unless Docker fixture approval is explicit.",

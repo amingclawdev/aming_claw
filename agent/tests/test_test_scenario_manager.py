@@ -72,12 +72,13 @@ def test_doctor_json_reports_backend_blocker_without_failing_hard(tmp_path: Path
     assert payload["registry"]["schema_version"] == 1
     assert {
         "simple_user_entry",
+        "paradigm_route_context_demo",
         "service_router_docker_fixture",
         "service_router_ai_structured_output_fixture",
         "service_router_live_ai_environment_tester",
         "ruby_graph_sinatra",
     }.issubset(set(payload["registry"]["scenario_ids"]))
-    assert payload["registry"]["scenario_count"] == 5
+    assert payload["registry"]["scenario_count"] == 6
     assert payload["paths"]["cache_inside_repo"] is False
 
 
@@ -91,14 +92,16 @@ def test_plan_output_lists_scenarios_actions_and_fixture_metadata(tmp_path: Path
     payload = _json(result)
     scenarios = {scenario["scenario_id"]: scenario for scenario in payload["scenarios"]}
     scenario = scenarios["simple_user_entry"]
+    paradigm = scenarios["paradigm_route_context_demo"]
     docker = scenarios["service_router_docker_fixture"]
     ai_fixture = scenarios["service_router_ai_structured_output_fixture"]
     live_probe = scenarios["service_router_live_ai_environment_tester"]
     ruby = scenarios["ruby_graph_sinatra"]
 
-    assert payload["selected_count"] == 5
+    assert payload["selected_count"] == 6
     assert set(scenarios) == {
         "simple_user_entry",
+        "paradigm_route_context_demo",
         "service_router_docker_fixture",
         "service_router_ai_structured_output_fixture",
         "service_router_live_ai_environment_tester",
@@ -123,6 +126,22 @@ def test_plan_output_lists_scenarios_actions_and_fixture_metadata(tmp_path: Path
         "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"
     }
     assert "observer_session_command_queue" in commands
+    assert paradigm["test_flow_route"]["decision"] == "mixed"
+    assert paradigm["test_flow_route"]["primary_lane"] == "fixture_only"
+    assert paradigm["test_flow_route"]["lanes"] == ["focused_unit", "fixture_only"]
+    assert paradigm["test_flow_route"]["model_calls"] == "forbidden"
+    assert paradigm["test_flow_route"]["autorun"] is True
+    assert {
+        alert["code"] for alert in paradigm["test_flow_route"]["prompt_alert_bundle"]["alerts"]
+    } == {"test_flow_focused_unit", "test_flow_fixture_only"}
+    assert "route_prompt_bundle_is_hashable_and_low_noise" in paradigm["test_flow_route"][
+        "evidence_ids"
+    ]
+    paradigm_commands = {command["id"]: command for command in paradigm["commands"]}
+    assert paradigm_commands["paradigm_route_context_demo"]["command"][:2] == [
+        "python",
+        "scripts/paradigm-route-context-demo.py",
+    ]
     docker_deps = {item["id"]: item for item in docker["dependency_decisions"]}
     assert docker["execution_policy"]["requires_flags"] == ["--allow-docker"]
     assert docker["execution_policy"]["model_calls"] == "forbidden"

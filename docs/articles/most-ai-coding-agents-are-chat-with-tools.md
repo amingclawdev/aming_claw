@@ -116,6 +116,18 @@ The surfaces are not a diagram. Each is backed by a runnable case.
   the worker must echo the exact reminder as timeline evidence.
 - Link: [Observer Reminder Echo Demo](https://github.com/amingclawdev/aming-claw/blob/main/docs/demos/observer-reminder-echo.md).
 
+**Route Context And Test Routes**
+
+- Failure: a worker gets a noisy prompt or the wrong test route, then silently
+  starts Docker, calls live AI, or treats an external project route as local.
+- Surface that caught it: contract + relationship / impact + process +
+  constraint.
+- Evidence: one runnable demo shows fixture-only tests passing with model calls
+  forbidden, Docker and live-AI lanes blocking without explicit approval flags,
+  external manifest route registration by project root and manifest hash, and a
+  route prompt bundle that exposes hashes without leaking raw prompt context.
+- Link: [Route Context And Test Routes Demo](https://github.com/amingclawdev/aming-claw/blob/main/docs/demos/route-context-test-routes.md).
+
 Longer implementation note:
 [How Aming Claw implements right context for AI-agent development](https://github.com/amingclawdev/aming-claw/blob/main/docs/articles/how-aming-claw-implements-right-context.md)
 

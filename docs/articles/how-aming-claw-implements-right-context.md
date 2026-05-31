@@ -319,6 +319,52 @@ the final changed-file set differs from the worker's claimed scope, the gate
 must recompute tests, reconcile needs, doc drift, and waiver or follow-up
 requirements from the final state.
 
+## Test-route and route-context proof
+
+The route context system is easiest to inspect through a runnable test-route
+demo:
+
+```bash
+python scripts/paradigm-route-context-demo.py --json
+```
+
+The same proof is registered as a scenario:
+
+```bash
+node scripts/test-scenario-manager.mjs run \
+  --scenario paradigm_route_context_demo \
+  --json
+```
+
+This demo does not ask an agent to infer test policy from a prompt. It asks the
+route layer to return a structured `test_flow_route` and a low-noise
+`prompt_alert_bundle`.
+
+It proves five route decisions:
+
+| Route proof | Expected result | Why it matters |
+|---|---|---|
+| `fixture_only_route_runs` | passes with `model_calls: forbidden` | deterministic fixture work should not call a model |
+| `docker_route_blocks_without_approval` | blocks without `--allow-docker` | container boundaries require explicit operator approval |
+| `live_ai_route_blocks_without_approval` | blocks without `--allow-live-ai` | live provider checks must not spend quota silently |
+| `external_project_registers_fixture_route` | records external project root and manifest hash | external project routes are source-controlled target evidence |
+| `route_prompt_bundle_is_hashable_and_low_noise` | exposes route/prompt hashes and no raw context | context injection is visible, scoped, and auditable |
+
+This is the paradigm in a single command:
+
+```text
+Intent                -> scenario ids and external route ids
+Contract              -> test_flow_route lanes, flags, and evidence ids
+Relationship / impact -> external project root and manifest hash
+Process               -> scenario manager run reports
+Constraint            -> selected-lane alerts and action precheck
+```
+
+The demo is intentionally not a browser E2E and not a Docker proof. Its job is
+to prove that the system chooses those heavier routes only when the selected
+lane requires them, and that the corresponding alert is short, visible, and
+stage-specific.
+
 ## Observer Reminder Echo proof
 
 The current demo is small, but it proves the whole chain.
