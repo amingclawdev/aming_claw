@@ -19,7 +19,7 @@ const REPORT = path.resolve(FLAGS.report || path.join(REPO_ROOT, "docs", "vibe-q
 const JSON_REPORT = path.resolve(FLAGS["json-report"] || REPORT.replace(/\.md$/i, ".json"));
 
 function parseFlags(args) {
-  const bool = new Set(["no-browser"]);
+  const bool = new Set(["no-browser", "self-test"]);
   const out = {};
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -85,9 +85,62 @@ function write(relativePath, content) {
 }
 
 function parseFixtureOutput(stdout) {
-  const start = stdout.lastIndexOf("{");
-  assert(start >= 0, "fixture did not print JSON");
-  return JSON.parse(stdout.slice(start));
+  for (const candidate of jsonObjectCandidates(stdout).reverse()) {
+    const parsed = JSON.parse(candidate);
+    if (
+      parsed
+      && typeof parsed === "object"
+      && parsed.ok === true
+      && parsed.project_id
+      && parsed.dashboard_url
+      && parsed.planner_preview_url
+    ) {
+      return parsed;
+    }
+  }
+  throw new Error("fixture did not print a complete JSON result");
+}
+
+function jsonObjectCandidates(text) {
+  const raw = String(text || "");
+  const candidates = [];
+  for (let start = 0; start < raw.length; start++) {
+    if (raw[start] !== "{") continue;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < raw.length; index++) {
+      const char = raw[index];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (char === "\\") {
+          escaped = true;
+        } else if (char === "\"") {
+          inString = false;
+        }
+        continue;
+      }
+      if (char === "\"") {
+        inString = true;
+      } else if (char === "{") {
+        depth++;
+      } else if (char === "}") {
+        depth--;
+        if (depth === 0) {
+          const candidate = raw.slice(start, index + 1);
+          try {
+            JSON.parse(candidate);
+            candidates.push(candidate);
+          } catch {
+            // Keep scanning; not every brace-delimited block is JSON.
+          }
+          break;
+        }
+      }
+    }
+  }
+  return candidates;
 }
 
 function runFixture() {
@@ -389,8 +442,26 @@ function writeReports(audit) {
   console.log(JSON.stringify({ ok: true, report: REPORT, json_report: JSON_REPORT, project_id: PROJECT }, null, 2));
 }
 
+function runSelfTest() {
+  const fixture = {
+    ok: true,
+    project_id: "daily-planner-lite-vibe-self-test",
+    dashboard_url: "http://127.0.0.1:40000/dashboard?project_id=daily-planner-lite-vibe-self-test",
+    planner_preview_url: "http://127.0.0.1:4173/",
+    dashboard_links: {
+      backlog: "http://127.0.0.1:40000/dashboard?project_id=daily-planner-lite-vibe-self-test&view=backlog",
+    },
+  };
+  const noisy = `fixture boot log\n${JSON.stringify(fixture, null, 2)}\nfixture done`;
+  const parsed = parseFixtureOutput(noisy);
+  assert(parsed.project_id === fixture.project_id, "self-test parsed the wrong JSON object");
+  assert(parsed.dashboard_links.backlog === fixture.dashboard_links.backlog, "self-test lost nested object fields");
+  console.log("VIBE QUEUE AUDIT SELF TEST OK");
+}
+
 try {
-  await runAudit();
+  if (FLAGS["self-test"]) runSelfTest();
+  else await runAudit();
 } catch (error) {
   console.error(error.message);
   exit(1);

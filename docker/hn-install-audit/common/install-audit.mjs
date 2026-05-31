@@ -129,6 +129,15 @@ function sameJson(left, right) {
   return JSON.stringify(sortedValue(left)) === JSON.stringify(sortedValue(right));
 }
 
+function projectSlug(value) {
+  return String(value || "project")
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    || "project";
+}
+
 function pluginVersion() {
   try {
     const raw = readFileSync(join(SRC_ROOT, ".codex-plugin", "plugin.json"), "utf8");
@@ -542,6 +551,10 @@ function commandPendingReminder(projectId) {
     project_id: projectId,
     message: "pending observer commands exist; call observer_command_next",
     payload_included: false,
+    next_action: {
+      tool: "observer_command_next",
+      description: "claim the next pending observer command",
+    },
   };
 }
 
@@ -557,7 +570,7 @@ function failedChecks(checks) {
 
 async function observerCommandPendingSmoke() {
   const name = "observer_command_pending";
-  const projectId = `install-audit-${name}-${HOST}-${RUN_ID}`.toLowerCase();
+  const projectId = projectSlug(`install-audit-${name}-${HOST}-${RUN_ID}`);
   const rawId = `raw-${HOST}-${RUN_ID}`;
   let probe = null;
   let sessionId = "";
