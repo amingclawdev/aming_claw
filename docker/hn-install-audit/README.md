@@ -78,6 +78,17 @@ with the session token, and completes it. The JSON evidence records session and
 command ids plus hashes/statuses, but never records `session_token` or host auth
 token values.
 
+`DOCKER_LIVE_OBSERVER_ROUTE=1` enables the provider-backed observer route proof
+used by `docker_live_ai_observer_route_demo`. That lane asks the AI CLI inside
+the container to acknowledge the route alert, follow ordered observer steps,
+show the final drift prompt, and write `live_observer_route_result`. The report
+keeps prompt, stdout, stderr, and compact evidence hashes plus typed fields such
+as `provider_backed`, `route_alert_ack`, `ordered_step_count`, and
+`raw_output_stored: false`; it must not persist raw prompt output. The runner
+forwards `DOCKER_LIVE_OBSERVER_ROUTE` and the optional
+`LIVE_OBSERVER_ROUTE_REPORT_PATH` into the container so the route request is
+visible to the audited harness, not only to the host wrapper.
+
 Future AI feature smokes should be added to
 `docker/hn-install-audit/common/install-audit.mjs` via the reusable feature
 smoke runner, then validated in `docker/hn-install-audit/validate-report.mjs`.
@@ -109,6 +120,11 @@ The runner attempts every requested lane, then exits non-zero if any requested
 lane failed. This keeps the harness useful for CI while still collecting both
 Codex and Claude reports from the same run when possible.
 
+Even with `--no-build`, the runner bind-mounts the current
+`install-audit.mjs`, `state-manager.mjs`, and `validate-report.mjs` into the
+container. Reused images provide the provider CLI and OS dependencies; the
+audited harness contract still comes from the checkout under test.
+
 ## Artifacts
 
 Reports are written under `docs/hn-demo/audits/install-<run-id>/` by default:
@@ -121,6 +137,15 @@ Run report validation manually:
 
 ```bash
 node docker/hn-install-audit/validate-report.mjs \
+  docs/hn-demo/audits/install-<run-id>/codex-install-audit-<run-id>.json
+```
+
+For the route-focused Docker live-AI proof, require the live observer evidence
+even when broader install-audit blockers are present:
+
+```bash
+node docker/hn-install-audit/validate-report.mjs \
+  --require-live-observer-route \
   docs/hn-demo/audits/install-<run-id>/codex-install-audit-<run-id>.json
 ```
 

@@ -122,6 +122,20 @@ def test_paradigm_route_context_demo_proves_test_flow_lanes(tmp_path: Path) -> N
     assert observer["final_drift_prompt_status"] == "shown"
     assert observer["raw_prompt_output_stored"] is False
 
+    docker_live = cases["docker_live_ai_observer_route_blocks_without_approval"]
+    assert docker_live["status"] == "blocked"
+    assert docker_live["decision"] == "docker_live_ai_observer_route"
+    assert docker_live["model_calls"] == "provider_backed_live_ai"
+    assert docker_live["live_ai"] == "docker_provider_invocation"
+    assert docker_live["requires_flags"] == ["--allow-docker", "--allow-live-ai"]
+    assert docker_live["dependency_statuses"]["docker_fixture"] == "blocked"
+    assert docker_live["dependency_statuses"]["docker_live_ai_observer_route"] == "blocked"
+    assert docker_live["alert_codes"] == [
+        "test_flow_docker_live_ai_observer_route",
+        "test_flow_docker_fixture",
+    ]
+    assert docker_live["command_summaries"] == []
+
 
 def test_paradigm_route_context_demo_proves_external_registration_and_prompt_bundle(
     tmp_path: Path,

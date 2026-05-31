@@ -79,9 +79,10 @@ def test_doctor_json_reports_backend_blocker_without_failing_hard(tmp_path: Path
         "service_router_ai_structured_output_fixture",
         "service_router_live_ai_environment_tester",
         "gated_live_ai_observer_route_demo",
+        "docker_live_ai_observer_route_demo",
         "ruby_graph_sinatra",
     }.issubset(set(payload["registry"]["scenario_ids"]))
-    assert payload["registry"]["scenario_count"] == 9
+    assert payload["registry"]["scenario_count"] == 10
     assert payload["paths"]["cache_inside_repo"] is False
 
 
@@ -102,9 +103,10 @@ def test_plan_output_lists_scenarios_actions_and_fixture_metadata(tmp_path: Path
     ai_fixture = scenarios["service_router_ai_structured_output_fixture"]
     live_probe = scenarios["service_router_live_ai_environment_tester"]
     live_observer = scenarios["gated_live_ai_observer_route_demo"]
+    docker_live_observer = scenarios["docker_live_ai_observer_route_demo"]
     ruby = scenarios["ruby_graph_sinatra"]
 
-    assert payload["selected_count"] == 9
+    assert payload["selected_count"] == 10
     assert set(scenarios) == {
         "simple_user_entry",
         "paradigm_route_context_demo",
@@ -114,6 +116,7 @@ def test_plan_output_lists_scenarios_actions_and_fixture_metadata(tmp_path: Path
         "service_router_ai_structured_output_fixture",
         "service_router_live_ai_environment_tester",
         "gated_live_ai_observer_route_demo",
+        "docker_live_ai_observer_route_demo",
         "ruby_graph_sinatra",
     }
     assert scenario["scenario_id"] == "simple_user_entry"
@@ -291,6 +294,51 @@ def test_plan_output_lists_scenarios_actions_and_fixture_metadata(tmp_path: Path
         in live_observer_commands["gated_live_ai_observer_route_timeline"]["command"]
     )
     assert "--allow-live-ai" in live_observer_commands["gated_live_ai_observer_route_timeline"]["command"]
+    docker_live_deps = {
+        item["id"]: item for item in docker_live_observer["dependency_decisions"]
+    }
+    docker_live_commands = {
+        command["id"]: command for command in docker_live_observer["commands"]
+    }
+    docker_live_alerts = docker_live_observer["test_flow_route"]["prompt_alert_bundle"]["alerts"]
+    assert docker_live_observer["execution_policy"]["lane"] == "docker_live_ai_observer_route"
+    assert docker_live_observer["execution_policy"]["requires_flags"] == [
+        "--allow-docker",
+        "--allow-live-ai",
+    ]
+    assert docker_live_observer["execution_policy"]["live_ai"] == "docker_provider_invocation"
+    assert docker_live_observer["execution_policy"]["model_calls"] == "provider_backed_live_ai"
+    assert docker_live_observer["test_flow_route"]["decision"] == "docker_live_ai_observer_route"
+    assert docker_live_observer["test_flow_route"]["primary_lane"] == "docker_live_ai_observer_route"
+    assert docker_live_observer["test_flow_route"]["lanes"] == [
+        "docker_live_ai_observer_route",
+        "docker_fixture",
+    ]
+    assert docker_live_observer["test_flow_route"]["requires_flags"] == [
+        "--allow-docker",
+        "--allow-live-ai",
+    ]
+    assert docker_live_observer["test_flow_route"]["live_ai"] == "docker_provider_invocation"
+    assert docker_live_observer["test_flow_route"]["model_calls"] == "provider_backed_live_ai"
+    assert [alert["code"] for alert in docker_live_alerts] == [
+        "test_flow_docker_live_ai_observer_route",
+        "test_flow_docker_fixture",
+    ]
+    assert docker_live_observer["safety"]["calls_models"] is True
+    assert docker_live_observer["safety"]["raw_prompt_output_stored"] is False
+    assert docker_live_observer["fixtures"][0]["kind"] == "docker_live_ai_fixture"
+    assert docker_live_observer["fixtures"][0]["script"] == "docker/hn-install-audit/run-install-audit.sh"
+    assert docker_live_observer["fixtures"][0]["calls_models"] is True
+    assert docker_live_deps["docker_fixture"]["status"] == "planned"
+    assert docker_live_deps["docker_live_ai_observer_route"]["status"] == "planned"
+    assert "docker image inspect" in " ".join(docker_live_deps["docker_live_ai_observer_route"]["command"])
+    docker_live_command = docker_live_commands["docker_live_ai_observer_route_install_audit"]["command"]
+    assert docker_live_command[:2] == ["sh", "-lc"]
+    assert "DOCKER_LIVE_OBSERVER_ROUTE=1" in docker_live_command[2]
+    assert "docker/hn-install-audit/run-install-audit.sh" in docker_live_command[2]
+    assert "--ai-prompt-mode required" in docker_live_command[2]
+    assert "--no-build" in docker_live_command[2]
+    assert "--require-live-observer-route" in docker_live_command[2]
     assert ruby["target_project"] == "test-scenario-ruby-sinatra"
     assert ruby["repository"]["commit"] == "5236d3459b8b9015e5ce21ddd0c6beb0db4081d4"
     assert ruby["repository"]["workspace_path"] == str(tmp_path / "state" / "workspaces" / "sinatra")
@@ -575,6 +623,44 @@ def test_service_router_fixture_dependency_gating_shape(tmp_path: Path) -> None:
     assert live_report["test_flow_route"]["decision"] == "live_ai_environment_probe"
     assert live_report["test_flow_route"]["prompt_alert_bundle"]["alerts"][0]["code"] == "test_flow_live_ai_probe"
     assert live_report["command_summaries"] == []
+
+    docker_live_result = _run_manager(
+        "run",
+        "--scenario",
+        "docker_live_ai_observer_route_demo",
+        "--json",
+        "--state-dir",
+        str(tmp_path / "docker-live-observer-state"),
+        check=False,
+    )
+    docker_live_payload = _json(docker_live_result)
+    [docker_live_report] = docker_live_payload["reports"]
+    docker_live_deps = {
+        item["id"]: item for item in docker_live_report["dependency_decisions"]
+    }
+    docker_live_alerts = docker_live_report["test_flow_route"]["prompt_alert_bundle"]["alerts"]
+
+    assert docker_live_result.returncode == 2
+    assert docker_live_payload["ok"] is False
+    assert docker_live_report["status"] == "blocked"
+    assert docker_live_report["blocked"]["reason_code"] == "dependency_docker_fixture_blocked"
+    assert docker_live_deps["docker_fixture"]["status"] == "blocked"
+    assert docker_live_deps["docker_live_ai_observer_route"]["status"] == "blocked"
+    assert "--allow-docker" in docker_live_deps["docker_fixture"]["reason"]
+    assert "--allow-live-ai" in docker_live_deps["docker_live_ai_observer_route"]["reason"]
+    assert docker_live_report["execution_policy"]["requires_flags"] == [
+        "--allow-docker",
+        "--allow-live-ai",
+    ]
+    assert docker_live_report["execution_policy"]["model_calls"] == "provider_backed_live_ai"
+    assert docker_live_report["safety"]["calls_models"] is True
+    assert docker_live_report["safety"]["raw_prompt_output_stored"] is False
+    assert docker_live_report["test_flow_route"]["decision"] == "docker_live_ai_observer_route"
+    assert [alert["code"] for alert in docker_live_alerts] == [
+        "test_flow_docker_live_ai_observer_route",
+        "test_flow_docker_fixture",
+    ]
+    assert docker_live_report["command_summaries"] == []
 
 
 def test_gated_live_ai_observer_route_blocks_then_runs_deterministic_timeline(tmp_path: Path) -> None:

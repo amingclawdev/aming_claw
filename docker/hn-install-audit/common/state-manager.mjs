@@ -501,6 +501,13 @@ export function buildInstallAuditStateManagerReport({
   featureSmokeResults = [],
   generatedAt,
 } = {}) {
+  const featureSmokeNames = asArray(featureSmokeResults)
+    .map((item) => String(item?.name || item?.feature_id || "").trim())
+    .filter(Boolean);
+  const newFeatureSuites = uniqueStrings([
+    "observer_command_pending",
+    ...(featureSmokeNames.includes("live_observer_route") ? ["live_observer_route"] : []),
+  ]);
   const provider = normalizeProviderConfig({
     provider_id: "aming-claw-self-install",
     adapter: "self_install",
@@ -521,7 +528,7 @@ export function buildInstallAuditStateManagerReport({
     suite_registry: {
       install: ["docker-hn-install-audit"],
       update: [],
-      "new-feature": ["observer_command_pending"],
+      "new-feature": newFeatureSuites,
       "external-project": [],
     },
   });
@@ -540,6 +547,20 @@ export function buildInstallAuditStateManagerReport({
       ],
     },
   };
+  const liveObserverFeature = {
+    id: "live_observer_route",
+    extension_point_only: !featureSmokeNames.includes("live_observer_route"),
+    child_backlog_id: "AC-DEMO-DOCKER-LIVE-OBSERVER-ROUTE-20260531",
+    trigger: {
+      paths: [
+        "scripts/live-ai-observer-route-demo.mjs",
+        "scripts/test-scenarios.json",
+        "scripts/test-scenario-manager.mjs",
+        "docker/hn-install-audit/common/install-audit.mjs",
+        "docker/hn-install-audit/validate-report.mjs",
+      ],
+    },
+  };
 
   return buildStateManagerReport({
     host,
@@ -548,7 +569,7 @@ export function buildInstallAuditStateManagerReport({
     impact_plan: planImpact({
       changedFiles,
       requestedLanes: ["install"],
-      featureLanes: [observerFeature],
+      featureLanes: [observerFeature, liveObserverFeature],
     }),
     before_state: normalizeLaneState({
       lane_id: "install",

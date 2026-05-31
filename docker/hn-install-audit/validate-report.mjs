@@ -70,7 +70,7 @@ const TOKEN_PATTERNS = [
 ];
 
 function usage() {
-  console.error("Usage: node docker/hn-install-audit/validate-report.mjs <report.json>|--self-test");
+  console.error("Usage: node docker/hn-install-audit/validate-report.mjs [--require-live-observer-route] <report.json>|--self-test");
   process.exit(2);
 }
 
@@ -95,6 +95,60 @@ function stringsIn(value, prefix = "$") {
 function missingFrom(required, seen) {
   const set = new Set(Array.isArray(seen) ? seen.map(String) : []);
   return required.filter((item) => !set.has(item));
+}
+
+function validateLiveObserverRoute(report, { requireRequested = false } = {}) {
+  const errors = [];
+  const liveObserverRoute = report.live_observer_route_result || {};
+  const requested = liveObserverRoute.requested === true;
+  if (requireRequested && !requested) {
+    errors.push("Docker live observer route proof was required but not requested");
+  }
+  if (!requested && !requireRequested) return errors;
+
+  if (liveObserverRoute.ok !== true) errors.push("Docker live observer route result is not ok");
+  if (liveObserverRoute.provider_backed !== true) {
+    errors.push("Docker live observer route must be provider_backed=true");
+  }
+  if (liveObserverRoute.raw_output_stored !== false) {
+    errors.push("Docker live observer route must not store raw prompt output");
+  }
+  if (!String(liveObserverRoute.prompt_sha256 || "").trim()) {
+    errors.push("Docker live observer route requires prompt_sha256");
+  }
+  if (!String(liveObserverRoute.output_sha256 || "").trim()) {
+    errors.push("Docker live observer route requires output_sha256");
+  }
+  const evidence = liveObserverRoute.evidence || {};
+  if (evidence.schema_version !== "docker_live_observer_route_evidence.v1") {
+    errors.push("Docker live observer route evidence schema mismatch");
+  }
+  if (evidence.live_ai?.provider_backed !== true || evidence.live_ai?.calls_models !== true) {
+    errors.push("Docker live observer route evidence must mark live model invocation");
+  }
+  if (evidence.live_ai?.container_runtime !== "docker") {
+    errors.push("Docker live observer route evidence must mark container runtime docker");
+  }
+  if (evidence.route_alert_ack?.status !== "acknowledged") {
+    errors.push("Docker live observer route missing acknowledged route alert");
+  }
+  if (Number(evidence.ordered_step_count || 0) < 3) {
+    errors.push("Docker live observer route requires at least three ordered steps");
+  }
+  if (evidence.final_drift_prompt?.status !== "shown") {
+    errors.push("Docker live observer route missing final drift prompt");
+  }
+  if (evidence.no_raw_prompt_output !== true) {
+    errors.push("Docker live observer route evidence must set no_raw_prompt_output=true");
+  }
+  const featureSmokes = Array.isArray(report.feature_smoke_results)
+    ? report.feature_smoke_results
+    : [];
+  const liveSmoke = featureSmokes.find((item) => item?.name === "live_observer_route");
+  if (!liveSmoke || liveSmoke.ok !== true) {
+    errors.push("Docker live observer route feature smoke is missing or failed");
+  }
+  return errors;
 }
 
 function validate(report) {
@@ -159,6 +213,7 @@ function validate(report) {
         }
       }
     }
+    errors.push(...validateLiveObserverRoute(report));
     if (!report.demo_fixture_result || report.demo_fixture_result.ok !== true) {
       errors.push("PASS report must include demo_fixture_result.ok=true");
     }
@@ -185,16 +240,23 @@ function validate(report) {
   return errors;
 }
 
-const file = process.argv[2];
-if (!file) usage();
-if (file === "--self-test") {
+const args = process.argv.slice(2);
+if (!args.length) usage();
+if (args.includes("--self-test")) {
   const result = runStateManagerSelfTest();
   console.log(`INSTALL AUDIT STATE MANAGER SELF TEST OK: ${result.assertions} assertions`);
   process.exit(0);
 }
 
+const requireLiveObserverRoute = args.includes("--require-live-observer-route");
+const file = args.find((arg) => !arg.startsWith("--"));
+if (!file) usage();
+
 const report = readReport(file);
 const errors = validate(report);
+if (requireLiveObserverRoute) {
+  errors.push(...validateLiveObserverRoute(report, { requireRequested: true }));
+}
 if (errors.length) {
   console.error("INSTALL AUDIT REPORT INVALID");
   for (const error of errors) console.error(`- ${error}`);

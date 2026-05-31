@@ -1096,6 +1096,189 @@
       ]
     },
     {
+      "id": "docker_live_ai_observer_route_demo",
+      "title": "Docker live-AI observer route proof",
+      "description": "Separate Docker-backed live observer route proof. It requires explicit Docker and live-AI approval, runs through the install-audit AI container harness, and records provider-backed route evidence without raw prompt output.",
+      "target_project": "aming-claw",
+      "target_ref": "HEAD",
+      "runner": "commands",
+      "dependencies": [
+        {
+          "id": "node",
+          "kind": "command",
+          "command": "{node}",
+          "required": true,
+          "remediation": "Install Node.js so the scenario manager can inspect route metadata."
+        },
+        {
+          "id": "docker_fixture",
+          "kind": "capability",
+          "command": [
+            "sh",
+            "-lc",
+            "docker image inspect \"${AMING_CLAW_DOCKER_LIVE_AI_IMAGE:-aming-claw-install-audit-codex:latest}\" >/dev/null"
+          ],
+          "required": true,
+          "remediation": "Build or preload the Docker AI audit image before running the live observer route proof."
+        },
+        {
+          "id": "docker_live_ai_observer_route",
+          "kind": "capability",
+          "mode": "docker_live_ai_observer_route",
+          "command": [
+            "sh",
+            "-lc",
+            "docker image inspect \"${AMING_CLAW_DOCKER_LIVE_AI_IMAGE:-aming-claw-install-audit-codex:latest}\" >/dev/null"
+          ],
+          "required": true,
+          "remediation": "Re-run with --allow-docker --allow-live-ai only after approving Docker container execution and live provider invocation."
+        }
+      ],
+      "execution_policy": {
+        "lane": "docker_live_ai_observer_route",
+        "autorun": false,
+        "requires_flags": [
+          "--allow-docker",
+          "--allow-live-ai"
+        ],
+        "live_ai": "docker_provider_invocation",
+        "model_calls": "provider_backed_live_ai",
+        "route": "observer",
+        "default_without_flag": "blocked"
+      },
+      "safety": {
+        "fixture_only": false,
+        "live_ai": true,
+        "calls_models": true,
+        "docker_live_ai_observer_route": true,
+        "requires_human_approval": true,
+        "auth_status": "container_auth_reused_from_host",
+        "redacts_prompt_output": true,
+        "raw_prompt_output_stored": false,
+        "silent_quota_use": false
+      },
+      "coverage": {
+        "areas": [
+          "docker_live_ai_observer_route",
+          "route_context_evidence",
+          "provider_backed_ai_invocation",
+          "container_install_audit",
+          "prompt_redaction"
+        ],
+        "test_files": [
+          "agent/tests/test_test_scenario_manager.py",
+          "agent/tests/test_paradigm_route_context_demo.py",
+          "docker/hn-install-audit/validate-report.mjs"
+        ]
+      },
+      "route_context": {
+        "service_id": "observer.docker_live_ai_route_demo",
+        "event_kind": "observer.docker_live_ai_route_demo.requested",
+        "mode": "docker_live_ai_observer_route",
+        "route": "observer",
+        "side_effect_class": "docker_live_ai"
+      },
+      "test_flow_route": {
+        "source": "scenario_registry",
+        "decision": "docker_live_ai_observer_route",
+        "primary_lane": "docker_live_ai_observer_route",
+        "lanes": [
+          "docker_live_ai_observer_route",
+          "docker_fixture"
+        ],
+        "evidence_ids": [
+          "docker_live_ai_gate",
+          "container_provider_invocation",
+          "route_alert_ack",
+          "ordered_step_outputs",
+          "final_drift_prompt",
+          "transcript_hashes_only",
+          "no_raw_prompt_output"
+        ]
+      },
+      "fixtures": [
+        {
+          "id": "docker-live-observer-route-install-audit",
+          "kind": "docker_live_ai_fixture",
+          "deterministic": false,
+          "calls_models": true,
+          "script": "docker/hn-install-audit/run-install-audit.sh",
+          "description": "Runs the live observer route prompt inside the Docker install-audit AI container using provider CLI auth mounted read-only from the host."
+        }
+      ],
+      "evidence_requirements": [
+        {
+          "id": "docker_live_ai_gate",
+          "kind": "dependency_decision",
+          "dependency_id": "docker_live_ai_observer_route",
+          "required_status": "allowed"
+        },
+        {
+          "id": "container_provider_invocation",
+          "kind": "install_audit_report",
+          "field": "live_observer_route_result.provider_backed",
+          "expected": true
+        },
+        {
+          "id": "route_alert_ack",
+          "kind": "install_audit_report",
+          "field": "live_observer_route_result.evidence.route_alert_ack.status",
+          "expected": "acknowledged"
+        },
+        {
+          "id": "ordered_step_outputs",
+          "kind": "install_audit_report",
+          "field": "live_observer_route_result.evidence.ordered_step_count",
+          "minimum": 3
+        },
+        {
+          "id": "final_drift_prompt",
+          "kind": "install_audit_report",
+          "field": "live_observer_route_result.evidence.final_drift_prompt.status",
+          "expected": "shown"
+        },
+        {
+          "id": "transcript_hashes_only",
+          "kind": "redaction",
+          "fields": [
+            "live_observer_route_result.stdout_sha256",
+            "live_observer_route_result.stderr_sha256",
+            "live_observer_route_result.output_sha256"
+          ]
+        },
+        {
+          "id": "no_raw_prompt_output",
+          "kind": "redaction",
+          "field": "live_observer_route_result.raw_output_stored",
+          "expected": false
+        }
+      ],
+      "commands": [
+        {
+          "id": "docker_live_ai_observer_route_install_audit",
+          "cwd": "repo",
+          "command": [
+            "sh",
+            "-lc",
+            "host=\"${AMING_CLAW_DOCKER_LIVE_AI_HOST:-codex}\"; run_id=\"docker-live-observer-route-${AMING_CLAW_RUN_ID:-manual}\"; case \"$host\" in codex|claude) ;; *) echo \"AMING_CLAW_DOCKER_LIVE_AI_HOST must be codex or claude for route proof\" >&2; exit 2 ;; esac; report=\"docs/hn-demo/audits/install-${run_id}/${host}-install-audit-${run_id}.json\"; DOCKER_LIVE_OBSERVER_ROUTE=1 docker/hn-install-audit/run-install-audit.sh --host \"$host\" --run-id \"$run_id\" --ai-prompt-mode required --no-build --changed-files \"scripts/test-scenarios.json,scripts/live-ai-observer-route-demo.mjs,docker/hn-install-audit/run-install-audit.sh,docker/hn-install-audit/common/install-audit.mjs,docker/hn-install-audit/validate-report.mjs\"; audit_status=$?; node docker/hn-install-audit/validate-report.mjs --require-live-observer-route \"$report\"; live_status=$?; if [ \"$live_status\" -ne 0 ]; then exit \"$live_status\"; fi; if [ \"$audit_status\" -ne 0 ]; then echo \"install audit status was nonzero; Docker live observer route proof passed\"; fi"
+          ],
+          "env": {
+            "DOCKER_LIVE_OBSERVER_ROUTE": "1",
+            "AMING_CLAW_MODEL_CALLS": "provider_backed_live_ai"
+          },
+          "timeout_ms": 1800000
+        }
+      ],
+      "artifacts": [
+        {
+          "id": "docker_live_ai_observer_route_report",
+          "kind": "install_audit_report",
+          "path": "docs/hn-demo/audits/install-docker-live-observer-route-manual",
+          "description": "Docker install-audit report containing live_observer_route_result with sanitized provider-backed route evidence."
+        }
+      ]
+    },
+    {
       "id": "ruby_graph_sinatra",
       "title": "Ruby graph validation against Sinatra",
       "description": "Clones or reuses a pinned Sinatra workspace outside this repo, bootstraps it through governance when explicitly allowed, and validates Ruby graph reasonableness.",

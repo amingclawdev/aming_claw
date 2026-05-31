@@ -42,6 +42,9 @@ const PROMPT_TIMEOUT_MS = Number(process.env.AI_PROMPT_TIMEOUT_MS || 20 * 60 * 1
 const GOVERNANCE_PORT = process.env.GOVERNANCE_PORT || "40000";
 const GOVERNANCE_URL = `http://127.0.0.1:${GOVERNANCE_PORT}`;
 const IMPACT_CHANGED_FILES = parseChangedFiles(process.env.DOCKER_AI_E2E_CHANGED_FILES || "");
+const LIVE_OBSERVER_ROUTE_REQUESTED = /^(1|true|required|yes)$/i.test(process.env.DOCKER_LIVE_OBSERVER_ROUTE || "");
+const LIVE_OBSERVER_ROUTE_REPORT_PATH = process.env.LIVE_OBSERVER_ROUTE_REPORT_PATH
+  || join(OUT_DIR, `${HOST}-live-observer-route-${RUN_ID}.json`);
 
 const REQUIRED_SKILLS = [
   "aming-claw",
@@ -65,6 +68,7 @@ const REQUIRED_RESOURCES = [
 
 const FEATURE_SMOKE_NAMES = [
   "observer_command_pending",
+  "live_observer_route",
 ];
 
 const DEFAULT_PLUGIN_VERSION = "0.1.1";
@@ -838,6 +842,61 @@ Confirm they prefer the current Claude Code or Codex session as observer, with s
 Record whether the demos produced server-verifiable evidence and why you rate the run that way.`;
 }
 
+function buildLiveObserverRoutePrompt({ routeContextHash, promptContractHash, finalDriftPromptHash }) {
+  return `You are the observer in the Docker live-AI route proof for Aming Claw.
+
+You have received this route context alert:
+- alert code: test_flow_docker_live_ai_observer_route
+- caller role: observer
+- stage: verification
+- route context hash: ${routeContextHash}
+- prompt contract hash: ${promptContractHash}
+
+Task:
+1. Acknowledge the route alert before doing any route evidence work.
+2. Follow this order: route alert acknowledgement, ordered route steps, sanitized evidence summary, final drift prompt.
+3. Write a JSON object to ${LIVE_OBSERVER_ROUTE_REPORT_PATH}.
+4. Do not include raw prompt text, credential values, environment dumps, or full command output.
+
+The JSON object must use this exact shape:
+{
+  "schema_version": "docker_live_observer_route_evidence.v1",
+  "source": "docker_live_ai_observer_route",
+  "provider_runtime": "${HOST}",
+  "route_context": {
+    "service_id": "observer.docker_live_ai_route_demo",
+    "role": "observer",
+    "stage": "verification",
+    "route_context_hash": "${routeContextHash}",
+    "prompt_contract_hash": "${promptContractHash}",
+    "raw_context_exposed": false
+  },
+  "live_ai": {
+    "provider_backed": true,
+    "calls_models": true,
+    "container_runtime": "docker",
+    "host": "${HOST}"
+  },
+  "observer_evidence": {
+    "route_alert_ack": {"status": "acknowledged", "alert_code": "test_flow_docker_live_ai_observer_route"},
+    "ordered_step_outputs": [
+      {"step_id": "01_route_alert_ack", "status": "passed"},
+      {"step_id": "02_ordered_route_steps", "status": "passed"},
+      {"step_id": "03_sanitized_live_ai_evidence", "status": "passed"}
+    ],
+    "final_drift_prompt": {
+      "status": "shown",
+      "prompt_hash": "${finalDriftPromptHash}"
+    },
+    "no_raw_prompt_output": true
+  },
+  "precheck": {
+    "status": "passed",
+    "checked_fields": ["route_alert_ack", "ordered_step_outputs", "final_drift_prompt", "no_raw_prompt_output"]
+  }
+}`;
+}
+
 function aiCommand(prompt) {
   if (HOST === "codex") {
     const args = ["exec", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "-C", WORK_ROOT];
@@ -860,6 +919,169 @@ function aiCommand(prompt) {
     ],
     { cwd: WORK_ROOT, input: prompt, timeout: PROMPT_TIMEOUT_MS },
   );
+}
+
+function emptyLiveObserverRouteResult() {
+  return {
+    name: "live_observer_route",
+    requested: false,
+    ok: false,
+    status: "not_requested",
+  };
+}
+
+function compactLiveObserverEvidence(payload) {
+  const evidence = payload?.observer_evidence || {};
+  const steps = Array.isArray(evidence.ordered_step_outputs) ? evidence.ordered_step_outputs : [];
+  return {
+    schema_version: payload?.schema_version || "",
+    source: payload?.source || "",
+    provider_runtime: payload?.provider_runtime || "",
+    route_context: {
+      service_id: payload?.route_context?.service_id || "",
+      role: payload?.route_context?.role || "",
+      stage: payload?.route_context?.stage || "",
+      route_context_hash: payload?.route_context?.route_context_hash || "",
+      prompt_contract_hash: payload?.route_context?.prompt_contract_hash || "",
+      raw_context_exposed: payload?.route_context?.raw_context_exposed,
+    },
+    live_ai: {
+      provider_backed: payload?.live_ai?.provider_backed === true,
+      calls_models: payload?.live_ai?.calls_models === true,
+      container_runtime: payload?.live_ai?.container_runtime || "",
+      host: payload?.live_ai?.host || "",
+    },
+    route_alert_ack: {
+      status: evidence.route_alert_ack?.status || "",
+      alert_code: evidence.route_alert_ack?.alert_code || "",
+    },
+    ordered_step_count: steps.length,
+    ordered_step_ids: steps.map((step) => String(step?.step_id || "")),
+    final_drift_prompt: {
+      status: evidence.final_drift_prompt?.status || "",
+      prompt_hash: evidence.final_drift_prompt?.prompt_hash || "",
+    },
+    no_raw_prompt_output: evidence.no_raw_prompt_output === true,
+    precheck_status: payload?.precheck?.status || "",
+  };
+}
+
+function validateLiveObserverRoutePayload(payload, expected) {
+  const compact = compactLiveObserverEvidence(payload);
+  const errors = [];
+  if (compact.schema_version !== "docker_live_observer_route_evidence.v1") {
+    errors.push("schema_version must be docker_live_observer_route_evidence.v1");
+  }
+  if (compact.source !== "docker_live_ai_observer_route") {
+    errors.push("source must be docker_live_ai_observer_route");
+  }
+  if (compact.route_context.route_context_hash !== expected.routeContextHash) {
+    errors.push("route_context_hash mismatch");
+  }
+  if (compact.route_context.prompt_contract_hash !== expected.promptContractHash) {
+    errors.push("prompt_contract_hash mismatch");
+  }
+  if (compact.route_context.raw_context_exposed !== false) {
+    errors.push("raw_context_exposed must be false");
+  }
+  if (!compact.live_ai.provider_backed || !compact.live_ai.calls_models) {
+    errors.push("live_ai must mark provider_backed=true and calls_models=true");
+  }
+  if (compact.live_ai.container_runtime !== "docker") {
+    errors.push("live_ai.container_runtime must be docker");
+  }
+  if (compact.route_alert_ack.status !== "acknowledged") {
+    errors.push("route_alert_ack.status must be acknowledged");
+  }
+  if (compact.ordered_step_count < 3) {
+    errors.push("ordered_step_outputs must contain at least 3 steps");
+  }
+  if (compact.final_drift_prompt.status !== "shown") {
+    errors.push("final_drift_prompt.status must be shown");
+  }
+  if (compact.no_raw_prompt_output !== true) {
+    errors.push("observer_evidence.no_raw_prompt_output must be true");
+  }
+  if (compact.precheck_status !== "passed") {
+    errors.push("precheck.status must be passed");
+  }
+  return errors;
+}
+
+function parseJsonObject(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const start = raw.indexOf("{");
+    const end = raw.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      try {
+        return JSON.parse(raw.slice(start, end + 1));
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+
+function runLiveObserverRoutePrompt() {
+  if (!LIVE_OBSERVER_ROUTE_REQUESTED) return emptyLiveObserverRouteResult();
+  if (AI_PROMPT_MODE === "skip") {
+    return {
+      name: "live_observer_route",
+      requested: true,
+      ok: false,
+      status: "blocked",
+      provider_backed: true,
+      raw_output_stored: false,
+      validation_errors: ["AI_PROMPT_MODE=skip cannot satisfy Docker live-AI observer route proof"],
+    };
+  }
+
+  const routeContextHash = `sha256:${sha256("observer.docker_live_ai_route_demo:route-context:v1")}`;
+  const promptContractHash = `sha256:${sha256("observer.docker_live_ai_route_demo:prompt-contract:v1")}`;
+  const finalDriftPromptHash = `sha256:${sha256("observer.docker_live_ai_route_demo:final-drift-prompt:v1")}`;
+  const prompt = buildLiveObserverRoutePrompt({
+    routeContextHash,
+    promptContractHash,
+    finalDriftPromptHash,
+  });
+  rmSync(LIVE_OBSERVER_ROUTE_REPORT_PATH, { force: true });
+  const result = aiCommand(prompt);
+  let outputText = "";
+  try {
+    outputText = readFileSync(LIVE_OBSERVER_ROUTE_REPORT_PATH, "utf8");
+  } catch {
+    outputText = result.stdout || "";
+  }
+  const parsed = parseJsonObject(outputText);
+  const validationErrors = parsed
+    ? validateLiveObserverRoutePayload(parsed, { routeContextHash, promptContractHash })
+    : ["AI did not write parseable Docker live observer route JSON evidence"];
+  const compactEvidence = parsed ? compactLiveObserverEvidence(parsed) : {};
+  const ok = Boolean(result.ok && parsed && validationErrors.length === 0);
+  return sanitizeEvidence({
+    name: "live_observer_route",
+    requested: true,
+    ok,
+    status: ok ? "passed" : "failed",
+    provider_backed: true,
+    host: HOST,
+    command: result.command,
+    exit_code: result.status,
+    elapsed_ms: result.elapsed_ms,
+    prompt_sha256: sha256(prompt),
+    stdout_sha256: sha256(result.stdout || ""),
+    stderr_sha256: sha256(result.stderr || ""),
+    output_sha256: sha256(outputText || ""),
+    output_path: LIVE_OBSERVER_ROUTE_REPORT_PATH,
+    raw_output_stored: false,
+    evidence: compactEvidence,
+    validation_errors: validationErrors,
+  });
 }
 
 function maybeRunAiPrompts(installPrompt, demoPrompt) {
@@ -945,6 +1167,7 @@ function buildReport({
   demo,
   everydayDemos,
   featureSmokes,
+  liveObserverRoute,
   skills,
   tools,
   resources,
@@ -969,6 +1192,9 @@ function buildReport({
   if (featureFailures.length) {
     blockers.push(`feature smoke failed: ${featureFailures.map((item) => item.name).join(", ")}`);
   }
+  if (liveObserverRoute?.requested && !liveObserverRoute.ok) {
+    blockers.push("Docker live observer route proof failed");
+  }
   const loginRequired = HOST === "claude" && AI_PROMPT_MODE === "required" && (isLoginRequired(ai.install) || isLoginRequired(ai.demo));
   if (loginRequired) blockers.push("Claude AI prompt execution requires login");
   else if (AI_PROMPT_MODE === "required" && (!ai.install.ok || !ai.demo.ok)) blockers.push("AI prompt execution failed");
@@ -989,6 +1215,10 @@ function buildReport({
     : loginRequired
       ? "Claude CLI is installed but not authenticated in the mounted auth home. Run `claude /login` or `claude auth login` with the same auth home, then rerun with --claude-auth-home <dir>."
     : "";
+  const combinedFeatureSmokes = [
+    ...(featureSmokes || []),
+    ...(liveObserverRoute?.requested ? [liveObserverRoute] : []),
+  ];
   const stateManager = buildInstallAuditStateManagerReport({
     host: HOST,
     status,
@@ -1012,8 +1242,9 @@ function buildReport({
       dashboard,
       demo,
       ...(featureSmokes || []),
+      ...(liveObserverRoute?.requested ? [liveObserverRoute] : []),
     ],
-    featureSmokeResults: featureSmokes || [],
+    featureSmokeResults: combinedFeatureSmokes,
   });
 
   return sanitizeReportValue({
@@ -1035,7 +1266,8 @@ function buildReport({
     dashboard_health: dashboard,
     ai_fixture_readiness: aiFixtureReadiness,
     feature_smoke_names: FEATURE_SMOKE_NAMES,
-    feature_smoke_results: featureSmokes || [],
+    feature_smoke_results: combinedFeatureSmokes,
+    live_observer_route_result: liveObserverRoute || emptyLiveObserverRouteResult(),
     demo_fixture_result: {
       ok: demo.ok,
       command: demo.command,
@@ -1084,6 +1316,7 @@ async function main() {
   let demo = { ok: false, command: "not-run", stdout: "", stderr: "governance not started" };
   let everydayDemos = [];
   let featureSmokes = [];
+  let liveObserverRoute = emptyLiveObserverRouteResult();
   let governance = null;
 
   if (clone.ok) runtimeInstall = installRuntime();
@@ -1100,6 +1333,7 @@ async function main() {
     if (dashboard.ok) demo = runDemoFixture();
     if (dashboard.ok) everydayDemos = runEverydayDemos();
     if (dashboard.ok) featureSmokes = await runFeatureSmokes();
+    if (dashboard.ok) liveObserverRoute = runLiveObserverRoutePrompt();
   }
 
   const skills = hostInstall.ok ? listSkillsSeen() : [];
@@ -1123,6 +1357,7 @@ async function main() {
     demo,
     everydayDemos,
     featureSmokes,
+    liveObserverRoute,
     skills,
     tools,
     resources,

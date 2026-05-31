@@ -377,6 +377,13 @@ def build_report(state_dir: Path) -> dict[str, Any]:
         )
     )
     observer_route_evidence = observer_route_allowed["structured_outputs"][0]["evidence"]
+    docker_live_report = _first_report(
+        _manager_json(
+            ["run", "--scenario", "docker_live_ai_observer_route_demo"],
+            state_dir=state_dir / "docker-live-observer-run",
+            expected_codes={2},
+        )
+    )
 
     external_project = state_dir / "external-route-project"
     external_project.mkdir(parents=True, exist_ok=True)
@@ -503,6 +510,25 @@ def build_report(state_dir: Path) -> dict[str, Any]:
             "raw_prompt_output_stored": not observer_route_evidence["observer_evidence"]["no_raw_prompt_output"],
         },
         {
+            "id": "docker_live_ai_observer_route_blocks_without_approval",
+            "scenario_id": docker_live_report["scenario_id"],
+            "status": docker_live_report["status"],
+            "decision": docker_live_report["test_flow_route"]["decision"],
+            "model_calls": docker_live_report["test_flow_route"]["model_calls"],
+            "live_ai": docker_live_report["test_flow_route"]["live_ai"],
+            "requires_flags": docker_live_report["test_flow_route"]["requires_flags"],
+            "blocked_reason_code": docker_live_report["blocked"]["reason_code"],
+            "dependency_statuses": {
+                item["id"]: item["status"]
+                for item in docker_live_report["dependency_decisions"]
+            },
+            "alert_codes": [
+                alert["code"]
+                for alert in docker_live_report["test_flow_route"]["prompt_alert_bundle"]["alerts"]
+            ],
+            "command_summaries": docker_live_report["command_summaries"],
+        },
+        {
             "id": "external_project_registers_fixture_route",
             "scenario_id": external_report["scenario_id"],
             "status": external_report["status"],
@@ -548,6 +574,11 @@ def build_report(state_dir: Path) -> dict[str, Any]:
         and observer_route_evidence["observer_evidence"]["route_alert_ack"]["status"] == "acknowledged"
         and observer_route_evidence["observer_evidence"]["final_drift_prompt"]["status"] == "shown"
         and observer_route_evidence["observer_evidence"]["no_raw_prompt_output"] is True
+        and docker_live_report["status"] == "blocked"
+        and docker_live_report["test_flow_route"]["decision"] == "docker_live_ai_observer_route"
+        and docker_live_report["test_flow_route"]["model_calls"] == "provider_backed_live_ai"
+        and "--allow-docker" in docker_live_report["test_flow_route"]["requires_flags"]
+        and "--allow-live-ai" in docker_live_report["test_flow_route"]["requires_flags"]
         and external_report["status"] == "passed"
         and external_report["route_registration"]["manifest_hash"] == manifest_hash
         and route_bundle["raw_context_exposed"] is False
@@ -562,7 +593,8 @@ def build_report(state_dir: Path) -> dict[str, Any]:
             "alerts, blocks unsafe Docker/live-AI/observer routes without approval, and exposes "
             "hashable prompt context without raw prompt leakage. Dashboard validation uses "
             "Playwright with mock AI inputs; AI-related Docker validation stays gated, while "
-            "the live observer route demo records deterministic timeline-shaped observer evidence."
+            "the live observer route demo records deterministic timeline-shaped observer evidence "
+            "and the Docker live-AI observer route is separated behind both Docker and live-AI gates."
         ),
         "surfaces": {
             "intent": "scenario ids and external manifest route ids state the test intent",

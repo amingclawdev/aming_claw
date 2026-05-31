@@ -19,6 +19,7 @@ const EXTERNAL_ROUTE_MANIFEST_CANDIDATES = [
 const VALID_MODES = new Set(["doctor", "plan", "run", "report"]);
 const RUN_TERMINAL_STATUSES = new Set(["passed", "failed", "blocked", "dry_run"]);
 const TEST_FLOW_LANE_PRIORITY = [
+  "docker_live_ai_observer_route",
   "live_ai_environment_probe",
   "live_observer_route_demo",
   "docker_fixture",
@@ -102,6 +103,21 @@ const TEST_FLOW_LANE_DEFS = {
       message: "Docker fixture routes are gated. Require --allow-docker and Docker readiness before commands; do not silently start containers or call models.",
       allowed_actions: ["probe_docker_after_approval", "run_declared_docker_fixture_commands"],
       blocked_actions: ["start_docker_without_approval", "call_live_ai", "hide_container_lifecycle"],
+    },
+  },
+  docker_live_ai_observer_route: {
+    title: "Docker live-AI observer route proof",
+    applies_when: "The goal is to prove a real provider-backed observer route prompt ran inside the Docker AI harness.",
+    default_autorun: false,
+    required_flags: ["--allow-docker", "--allow-live-ai"],
+    model_calls: "provider_backed_live_ai",
+    side_effect_class: "docker_live_ai",
+    alert: {
+      code: "test_flow_docker_live_ai_observer_route",
+      severity: "block",
+      message: "Docker live-AI observer route proofs require explicit Docker and live-AI approval, container evidence, sanitized transcript hashes, and no raw prompt output.",
+      allowed_actions: ["run_operator_approved_docker_live_ai_observer_route", "record_container_provider_and_route_evidence"],
+      blocked_actions: ["autorun_docker_live_ai", "claim_mock_or_deterministic_output_as_provider_invocation", "store_raw_prompt_output"],
     },
   },
   live_ai_environment_probe: {
@@ -684,6 +700,14 @@ function isLiveAiGatedObserverScenario(scenario) {
   );
 }
 
+function isDockerLiveAiObserverScenario(scenario) {
+  return (
+    scenario.execution_policy?.lane === "docker_live_ai_observer_route"
+    || scenario.safety?.docker_live_ai_observer_route === true
+    || scenario.route_context?.mode === "docker_live_ai_observer_route"
+  );
+}
+
 function isLiveAiGatedDependency(scenario, dependency) {
   const mode = dependency.mode || dependency.probe_mode || "";
   const markedDependency = (
@@ -691,7 +715,11 @@ function isLiveAiGatedDependency(scenario, dependency) {
     || dependency.id === "live_ai_observer_route"
     || (dependency.id === "live_ai_runtime" && ["environment_probe", "live_ai_environment_probe"].includes(mode))
   );
-  return markedDependency && (isLiveAiEnvironmentProbeScenario(scenario) || isLiveAiGatedObserverScenario(scenario));
+  return markedDependency && (
+    isLiveAiEnvironmentProbeScenario(scenario)
+    || isLiveAiGatedObserverScenario(scenario)
+    || isDockerLiveAiObserverScenario(scenario)
+  );
 }
 
 function unique(values) {
@@ -739,8 +767,10 @@ function inferTestFlowLanes(scenario) {
   );
   const isLiveProbe = isLiveAiEnvironmentProbeScenario(scenario);
   const isLiveObserverRoute = isLiveAiGatedObserverScenario(scenario);
+  const isDockerLiveObserverRoute = isDockerLiveAiObserverScenario(scenario);
   const isExternalGraph = scenario.runner === "ruby_graph";
 
+  if (isDockerLiveObserverRoute) lanes.push("docker_live_ai_observer_route");
   if (isLiveProbe) lanes.push("live_ai_environment_probe");
   if (isLiveObserverRoute) lanes.push("live_observer_route_demo");
   if (isDocker) lanes.push("docker_fixture");
@@ -887,6 +917,26 @@ function buildDependencyDecisions(scenario, options, { planning = false } = {}) 
           if (!decision.remediation) {
             decision.remediation = "Start Docker and re-run the scenario with --allow-docker.";
           }
+        }
+      }
+    } else if (dependency.id === "docker_live_ai_observer_route") {
+      if (!options.allowDocker || !options.allowLiveAi) {
+        decision.status = "blocked";
+        const missingFlags = [
+          !options.allowDocker ? "--allow-docker" : "",
+          !options.allowLiveAi ? "--allow-live-ai" : "",
+        ].filter(Boolean);
+        decision.reason = `Docker live-AI observer route proofs are gated and require ${missingFlags.join(" and ")}`;
+      } else {
+        const command = dependency.command || ["docker", "info", "--format", "{{json .ServerVersion}}"];
+        const available = commandAvailable(command);
+        decision.status = available ? "allowed" : "blocked";
+        decision.command = dependencyCommandSummary(command);
+        decision.reason = available
+          ? "Docker live-AI observer route explicitly approved; the scenario command records provider-backed container route evidence"
+          : "Docker live-AI observer route was approved but Docker or the required image is unavailable";
+        if (!available && !decision.remediation) {
+          decision.remediation = "Build or preload the Docker AI audit image, then re-run with --allow-docker --allow-live-ai.";
         }
       }
     } else if (isLiveAiGatedDependency(scenario, dependency)) {

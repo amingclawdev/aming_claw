@@ -40,6 +40,10 @@ Useful flags:
 - `--cache-dir <path>` controls external project cache workspaces. The manager
   refuses to use a cache directory inside this repo.
 - `--dry-run` records plans and skipped command summaries without executing.
+- `--allow-docker` permits Docker fixture checks and declared container
+  commands for routes that require container evidence.
+- `--allow-live-ai` permits live-AI readiness probes and route scenarios that
+  explicitly call provider-backed CLIs.
 - `--allow-network` permits external clone/fetch work for scenarios that need
   it.
 - `--allow-bootstrap` permits governance bootstrap HTTP calls that mutate the
@@ -130,6 +134,9 @@ fixtures, execution policy, safety metadata, and commands:
   or Docker-backed service routing is part of the behavior.
 - `live_ai_environment_probe`: provider/model/CLI/auth readiness is being
   checked with explicit operator approval.
+- `docker_live_ai_observer_route`: a real provider-backed observer route prompt
+  is executed inside the Docker AI install-audit harness after both Docker and
+  live-AI approval.
 - `external_graph_fixture`: a pinned external repository is needed to validate
   graph adapter/bootstrap behavior.
 
@@ -168,6 +175,9 @@ deterministic:
 - fixture-only route passes with `model_calls: forbidden`;
 - Docker fixture route blocks without `--allow-docker`;
 - live-AI environment route blocks without `--allow-live-ai`;
+- Docker live-AI observer route blocks without both `--allow-docker` and
+  `--allow-live-ai`; when approved it must emit sanitized
+  `live_observer_route_result` evidence from the install-audit container;
 - external project manifest route records project root, route id, and manifest
   hash;
 - route prompt bundle exposes `route_context_hash` and

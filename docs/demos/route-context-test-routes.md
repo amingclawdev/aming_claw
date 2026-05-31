@@ -24,6 +24,13 @@ is timeline-shaped observer evidence for route alert acknowledgement, ordered
 step outputs, and final drift prompt handling. It is not a provider-call proof,
 and it stores no raw prompt output.
 
+Provider-backed observer evidence is a separate Docker live-AI lane.
+`docker_live_ai_observer_route_demo` fails closed unless both `--allow-docker`
+and `--allow-live-ai` are present. Its approved run goes through
+`docker/hn-install-audit/run-install-audit.sh`, writes a
+`live_observer_route_result`, and stores transcript hashes/evidence fields
+instead of raw prompt output.
+
 ## Run
 
 ```bash
@@ -40,7 +47,7 @@ node scripts/test-scenario-manager.mjs run \
 
 ## What It Proves
 
-The JSON report contains seven proof cases:
+The JSON report contains eight proof cases:
 
 | Proof case | Expected result | Surface proved |
 |---|---|---|
@@ -49,6 +56,7 @@ The JSON report contains seven proof cases:
 | `docker_route_blocks_without_approval` | Docker route is blocked without `--allow-docker` | Constraint |
 | `mock_ai_docker_route_blocks_without_approval` | AI-related Docker route is gated, then runs fixed mock output inside a no-network container after approval | Constraint + contract |
 | `live_ai_route_blocks_without_approval` | Live-AI route is blocked without `--allow-live-ai` | Constraint |
+| `docker_live_ai_observer_route_blocks_without_approval` | Docker live-AI observer route is blocked without both Docker and live-AI approval | Constraint + process |
 | `external_project_registers_fixture_route` | External manifest route passes and records manifest hash | Relationship / impact + contract |
 | `route_prompt_bundle_is_hashable_and_low_noise` | Prompt bundle has route/prompt hashes and no raw context leak | Contract + constraint |
 
@@ -163,6 +171,46 @@ Expected approved evidence:
   }
 }
 ```
+
+The Docker live-AI observer route is the real provider-call route, so the
+default demo proves only that it is registered and blocked without both gates:
+
+```bash
+node scripts/test-scenario-manager.mjs run \
+  --scenario docker_live_ai_observer_route_demo \
+  --json
+```
+
+Expected blocked evidence:
+
+```json
+{
+  "id": "docker_live_ai_observer_route_blocks_without_approval",
+  "status": "blocked",
+  "decision": "docker_live_ai_observer_route",
+  "model_calls": "provider_backed_live_ai",
+  "requires_flags": ["--allow-docker", "--allow-live-ai"],
+  "command_summaries": []
+}
+```
+
+An approved run is intentionally explicit because it starts Docker and invokes
+a real provider-backed CLI inside the install-audit container:
+
+```bash
+node scripts/test-scenario-manager.mjs run \
+  --scenario docker_live_ai_observer_route_demo \
+  --allow-docker \
+  --allow-live-ai \
+  --json
+```
+
+That route must produce `live_observer_route_result.provider_backed: true`,
+acknowledge the route alert, record ordered observer steps and the final drift
+prompt, and keep `raw_output_stored: false`. The scenario validates that field
+set with `validate-report.mjs --require-live-observer-route`, so route proof
+quality is auditable even when the broader install-audit report still records
+unrelated demo-suite blockers.
 
 The external route proof should bind the target project root to a
 source-controlled manifest hash:

@@ -12,6 +12,8 @@ AUTH_MODE="${AUTH_MODE:-AUTH_REUSED_FROM_HOST}"
 CODEX_AUTH_HOME="${CODEX_AUTH_HOME:-}"
 CLAUDE_AUTH_HOME="${CLAUDE_AUTH_HOME:-}"
 DOCKER_AI_E2E_CHANGED_FILES="${DOCKER_AI_E2E_CHANGED_FILES:-}"
+DOCKER_LIVE_OBSERVER_ROUTE="${DOCKER_LIVE_OBSERVER_ROUTE:-0}"
+LIVE_OBSERVER_ROUTE_REPORT_PATH="${LIVE_OBSERVER_ROUTE_REPORT_PATH:-}"
 
 usage() {
   cat <<'USAGE'
@@ -120,7 +122,9 @@ run_host() {
     "${mounts[@]}" \
     -v "$ROOT:/plugin-source:ro" \
     -v "$OUT_DIR:/audit-output" \
+    -v "$ROOT/docker/hn-install-audit/common/install-audit.mjs:/opt/hn-install-audit/install-audit.mjs:ro" \
     -v "$ROOT/docker/hn-install-audit/common/state-manager.mjs:/opt/hn-install-audit/state-manager.mjs:ro" \
+    -v "$ROOT/docker/hn-install-audit/validate-report.mjs:/opt/hn-install-audit/validate-report.mjs:ro" \
     -e "AI_HOST=$host" \
     -e "RUN_ID=$RUN_ID" \
     -e "PLUGIN_REPO_URL=$PLUGIN_REPO_URL" \
@@ -128,6 +132,8 @@ run_host() {
     -e "AI_PROMPT_MODE=$AI_PROMPT_MODE" \
     -e "AUTH_MODE=$AUTH_MODE" \
     -e "DOCKER_AI_E2E_CHANGED_FILES=$DOCKER_AI_E2E_CHANGED_FILES" \
+    -e "DOCKER_LIVE_OBSERVER_ROUTE=$DOCKER_LIVE_OBSERVER_ROUTE" \
+    -e "LIVE_OBSERVER_ROUTE_REPORT_PATH=$LIVE_OBSERVER_ROUTE_REPORT_PATH" \
     "$image"
 }
 
