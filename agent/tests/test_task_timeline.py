@@ -185,6 +185,33 @@ class TestTaskTimeline(unittest.TestCase):
         self.conn.commit()
         return contract
 
+    def _record_route_context_consumption(self, bug_id, *, task_id=""):
+        from agent.governance import task_timeline
+
+        for event in [
+            *_route_context_consumption_events(),
+            _route_context_qa_verification_event(),
+        ]:
+            task_timeline.record_event(
+                self.conn,
+                project_id="proj",
+                backlog_id=bug_id,
+                task_id=task_id,
+                event_type=event.get("event_type") or event.get("event_kind"),
+                phase=event.get("phase", ""),
+                event_kind=event.get("event_kind", ""),
+                status=event.get("status", ""),
+                payload=event.get("payload") or {},
+                verification=event.get("verification") or {},
+                artifact_refs=event.get("artifact_refs") or {},
+            )
+        self.conn.commit()
+
+    def _route_waiver_for_existing_identity(self, bug_id, *, task_id=""):
+        waiver = _route_waiver("task_timeline_append", bug_id, task_id=task_id)
+        waiver.update(ROUTE_IDENTITY)
+        return waiver
+
     def test_concurrent_timeline_writes_use_serialized_queue(self):
         from agent.governance import task_timeline
 
@@ -240,6 +267,15 @@ class TestTaskTimeline(unittest.TestCase):
                     )
 
                 self.assertEqual(raised.exception.code, "route_token_required")
+                self.assertEqual(
+                    raised.exception.details["fault_domain"],
+                    "caller_missing_route_evidence",
+                )
+                self.assertTrue(raised.exception.details["expected_behavior"])
+                self.assertTrue(raised.exception.details["do_not_file_system_bug"])
+                self.assertFalse(raised.exception.details["is_system_bug"])
+                self.assertIn("next_valid_actions", raised.exception.details)
+                self.assertIn("system_bug_preconditions", raised.exception.details)
                 count = self.conn.execute(
                     "SELECT COUNT(*) AS c FROM task_timeline_events WHERE backlog_id = ?",
                     ("BUG-TL-PROTECTED",),
@@ -324,6 +360,191 @@ class TestTaskTimeline(unittest.TestCase):
             ("BUG-TL-WAIVER",),
         ).fetchone()["c"]
         self.assertEqual(count, 2)
+
+    def test_mf_parallel_timeline_rejects_generic_waiver_for_protected_evidence(self):
+        from agent.governance import server
+        from agent.governance.errors import GovernanceError
+
+        self._insert_router_backlog("BUG-TL-MF-PARALLEL-WAIVER")
+
+        with self.assertRaises(GovernanceError) as raised:
+            server.handle_task_timeline_append(
+                _ctx(
+                    body={
+                        "backlog_id": "BUG-TL-MF-PARALLEL-WAIVER",
+                        "event_type": "mf.implementation",
+                        "event_kind": "implementation",
+                        "status": "accepted",
+                        "route_waiver": _route_waiver(
+                            "task_timeline_append",
+                            "BUG-TL-MF-PARALLEL-WAIVER",
+                        ),
+                    },
+                    method="POST",
+                )
+            )
+
+        self.assertEqual(raised.exception.code, "route_token_required")
+        self.assertEqual(
+            raised.exception.details["fault_domain"],
+            "caller_missing_route_evidence",
+        )
+        self.assertTrue(raised.exception.details["waiver_evidence_only"])
+        self.assertIn(
+            "bounded_implementation_worker_dispatch",
+            raised.exception.details["required_before_protected_evidence"],
+        )
+        self.assertIn(
+            "mf_subagent_startup",
+            raised.exception.details["required_before_protected_evidence"],
+        )
+        count = self.conn.execute(
+            "SELECT COUNT(*) AS c FROM task_timeline_events WHERE backlog_id = ?",
+            ("BUG-TL-MF-PARALLEL-WAIVER",),
+        ).fetchone()["c"]
+        self.assertEqual(count, 0)
+
+    def test_mf_parallel_waiver_evidence_does_not_satisfy_close_precheck(self):
+        from agent.governance import server
+
+        bug_id = "BUG-TL-MF-PARALLEL-WAIVER-EVIDENCE"
+        contract = {
+            "template_id": "mf_parallel.v1",
+            "contract_instance_id": bug_id,
+        }
+        self.conn.execute(
+            """INSERT INTO backlog_bugs
+               (bug_id, title, status, priority, chain_trigger_json, mf_type, created_at, updated_at)
+               VALUES (?, ?, 'OPEN', 'P0', ?, 'chain_rescue', '2026-05-29T00:00:00Z', '2026-05-29T00:00:00Z')""",
+            (bug_id, "High-risk waiver evidence test", json.dumps(contract)),
+        )
+        self.conn.commit()
+
+        waiver_result = server.handle_task_timeline_append(
+            _ctx(
+                body={
+                    "backlog_id": bug_id,
+                    "event_type": "route.waiver.recorded",
+                    "event_kind": "route_waiver",
+                    "phase": "route_gate",
+                    "status": "accepted",
+                    "route_waiver": _route_waiver(
+                        "task_timeline_append",
+                        bug_id,
+                    ),
+                },
+                method="POST",
+            )
+        )
+        self.assertEqual(waiver_result["event_kind"], "route_waiver")
+        self.assertIn("route_waiver", waiver_result["payload"])
+
+        precheck = server.handle_backlog_timeline_gate(
+            _ctx(
+                path_params={"project_id": "proj", "bug_id": bug_id},
+                query={"include_events": "true"},
+            )
+        )
+
+        self.assertFalse(precheck["can_close"], precheck)
+        self.assertIn(
+            "bounded_implementation_worker_dispatch",
+            precheck["timeline_gate"]["route_context_gate"]["missing_requirement_ids"],
+        )
+        self.assertIn(
+            "mf_subagent_startup",
+            precheck["timeline_gate"]["route_context_gate"]["missing_requirement_ids"],
+        )
+
+    def test_mf_parallel_timeline_accepts_valid_route_token_for_protected_evidence(self):
+        from agent.governance import server
+
+        self._insert_router_backlog("BUG-TL-MF-PARALLEL-TOKEN")
+        result = server.handle_task_timeline_append(
+            _ctx(
+                body={
+                    "backlog_id": "BUG-TL-MF-PARALLEL-TOKEN",
+                    "event_type": "mf.implementation",
+                    "event_kind": "implementation",
+                    "status": "accepted",
+                    "route_token": _route_token(
+                        "task_timeline_append",
+                        "BUG-TL-MF-PARALLEL-TOKEN",
+                    ),
+                },
+                method="POST",
+            )
+        )
+
+        self.assertEqual(result["route_token_gate"]["decision"], "route_token")
+        count = self.conn.execute(
+            "SELECT COUNT(*) AS c FROM task_timeline_events WHERE backlog_id = ?",
+            ("BUG-TL-MF-PARALLEL-TOKEN",),
+        ).fetchone()["c"]
+        self.assertEqual(count, 2)
+
+    def test_mf_parallel_timeline_accepts_matching_waiver_after_bounded_evidence(self):
+        from agent.governance import server
+
+        bug_id = "BUG-TL-MF-PARALLEL-WAIVER-AFTER-EVIDENCE"
+        self._insert_router_backlog(bug_id)
+        self._record_route_context_consumption(bug_id)
+
+        result = server.handle_task_timeline_append(
+            _ctx(
+                body={
+                    "backlog_id": bug_id,
+                    "event_type": "mf.implementation",
+                    "event_kind": "implementation",
+                    "status": "accepted",
+                    "route_waiver": self._route_waiver_for_existing_identity(bug_id),
+                },
+                method="POST",
+            )
+        )
+
+        self.assertEqual(result["route_token_gate"]["decision"], "route_waiver")
+        self.assertEqual(result["event_kind"], "implementation")
+        count = self.conn.execute(
+            "SELECT COUNT(*) AS c FROM task_timeline_events WHERE backlog_id = ? AND event_kind = ?",
+            (bug_id, "implementation"),
+        ).fetchone()["c"]
+        self.assertEqual(count, 1)
+
+    def test_mf_parallel_timeline_rejects_waiver_identity_mismatch_after_bounded_evidence(self):
+        from agent.governance import server
+        from agent.governance.errors import GovernanceError
+
+        bug_id = "BUG-TL-MF-PARALLEL-WAIVER-MISMATCH"
+        self._insert_router_backlog(bug_id)
+        self._record_route_context_consumption(bug_id)
+        waiver = self._route_waiver_for_existing_identity(bug_id)
+        waiver["route_context_hash"] = "sha256:mismatched-route-context"
+
+        with self.assertRaises(GovernanceError) as raised:
+            server.handle_task_timeline_append(
+                _ctx(
+                    body={
+                        "backlog_id": bug_id,
+                        "event_type": "mf.implementation",
+                        "event_kind": "implementation",
+                        "status": "accepted",
+                        "route_waiver": waiver,
+                    },
+                    method="POST",
+                )
+            )
+
+        self.assertEqual(raised.exception.code, "route_token_required")
+        self.assertEqual(
+            raised.exception.details["route_identity_mismatch_fields"],
+            ["route_context_hash"],
+        )
+        count = self.conn.execute(
+            "SELECT COUNT(*) AS c FROM task_timeline_events WHERE backlog_id = ? AND event_kind = ?",
+            (bug_id, "implementation"),
+        ).fetchone()["c"]
+        self.assertEqual(count, 0)
 
     def test_task_claim_and_complete_write_verified_timeline(self):
         from agent.governance import task_timeline

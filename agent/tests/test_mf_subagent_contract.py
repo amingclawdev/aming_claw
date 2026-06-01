@@ -24,6 +24,7 @@ from agent.governance.mf_subagent_contract import (
     OBSERVER_COORDINATOR_ROLE,
     OBSERVER_DIRECT_MUTATION_SCHEMA_VERSION,
     ROUTE_ACTION_GATE_SCHEMA_VERSION,
+    ROUTE_TOKEN_REQUIRED_FAILURE_SCHEMA_VERSION,
     ROUTE_TOKEN_MUTATION_GATE_SCHEMA_VERSION,
     WORKTREE_POLICY_MODE,
     MfSubagentContractError,
@@ -33,6 +34,7 @@ from agent.governance.mf_subagent_contract import (
     validate_mf_subagent_dispatch_gate,
     validate_mf_subagent_finish_gate,
     validate_route_action_gate,
+    route_token_required_failure_details,
     validate_route_token_mutation_gate,
 )
 from agent.governance.parallel_branch_runtime import BranchTaskRuntimeContext
@@ -525,6 +527,21 @@ def test_route_token_mutation_gate_rejects_missing_token_for_protected_action() 
             project_id="aming-claw",
             backlog_id="BUG-1",
         )
+
+
+def test_route_token_required_failure_details_classify_expected_gate_behavior() -> None:
+    details = route_token_required_failure_details(
+        action="task_timeline_append",
+        reason="route_token is required for protected governance action",
+    )
+
+    assert details["schema_version"] == ROUTE_TOKEN_REQUIRED_FAILURE_SCHEMA_VERSION
+    assert details["fault_domain"] == "caller_missing_route_evidence"
+    assert details["expected_behavior"] is True
+    assert details["do_not_file_system_bug"] is True
+    assert details["is_system_bug"] is False
+    assert "next_valid_actions" in details
+    assert "system_bug_preconditions" in details
 
 
 def test_route_token_mutation_gate_rejects_scope_mismatch() -> None:

@@ -141,7 +141,17 @@ def is_protected_close_evidence(event: dict[str, Any] | None) -> bool:
         tokens.add(event_type)
         tokens.update(part for part in re.split(r"[._:/]+", event_type) if part)
     protected = {item.lower().replace("-", "_") for item in MF_CLOSE_REQUIRED_EVENT_KINDS}
-    protected.update({"independent_verification", "qa_verification"})
+    protected.update(
+        {
+            "checkpoint",
+            "checkpoint_branch_task",
+            "evidence_checkpoint",
+            "evidence_export",
+            "export",
+            "independent_verification",
+            "qa_verification",
+        }
+    )
     return bool(tokens & protected)
 
 

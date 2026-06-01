@@ -481,6 +481,34 @@
   },
   "evidence_requirements": [
     {
+      "id": "route_context",
+      "required": true,
+      "phase": "dispatch",
+      "kind": "service_route",
+      "description": "Route context resolution evidence with route_context_hash, prompt_contract_id, prompt_contract_hash, allowed_actions, blocked_actions, required_lanes, and visible injection manifest hash."
+    },
+    {
+      "id": "route_action_precheck",
+      "required": true,
+      "phase": "pre_mutation",
+      "kind": "local_precheck",
+      "description": "Route action gate evidence proving the writer consumed the route identity before any write-capable action."
+    },
+    {
+      "id": "bounded_implementation_worker_dispatch",
+      "required": true,
+      "phase": "dispatch",
+      "kind": "local_precheck",
+      "description": "Dispatch gate evidence for the bounded implementation worker/subagent tied to the same route_context_hash, prompt_contract_id, and prompt_contract_hash."
+    },
+    {
+      "id": "mf_subagent_startup",
+      "required": true,
+      "phase": "startup_gate",
+      "kind": "local_precheck",
+      "description": "Startup gate evidence proving the bounded worker/subagent actually began in the assigned worktree/fence context before implementation."
+    },
+    {
       "id": "observer_test_strategy",
       "required": true,
       "phase": "plan",
@@ -561,6 +589,10 @@
       "implementation",
       "verification",
       "close_ready",
+      "route_context",
+      "route_action_precheck",
+      "bounded_implementation_worker_dispatch",
+      "mf_subagent_startup",
       "all_required_evidence_requirements"
     ],
     "waiver_policy": "Required E2E can be disabled only in the instantiated contract with a reason and follow-up backlog for user-visible or API behavior."

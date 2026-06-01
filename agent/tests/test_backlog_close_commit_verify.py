@@ -12,6 +12,7 @@ import pytest
 
 def _make_ctx(bug_id="BUG-001", commit="abc123", project_id="test-proj"):
     """Build a minimal RequestContext-like object for handle_backlog_close."""
+    route_identity = _valid_route_token(bug_id=bug_id, project_id=project_id)
     ctx = MagicMock()
     ctx.path_params = {"project_id": project_id, "bug_id": bug_id}
     ctx.get_project_id.return_value = project_id
@@ -22,6 +23,10 @@ def _make_ctx(bug_id="BUG-001", commit="abc123", project_id="test-proj"):
             "accepted": True,
             "waiver_type": "manual_fix",
             "allowed_action": "backlog_close",
+            "route_context_hash": route_identity["route_context_hash"],
+            "prompt_contract_id": route_identity["prompt_contract_id"],
+            "prompt_contract_hash": route_identity["prompt_contract_hash"],
+            "caller_role": route_identity["caller_role"],
             "project_id": project_id,
             "backlog_id": bug_id,
             "reason": "Unit test supplies explicit route gate waiver evidence.",
@@ -42,6 +47,74 @@ def _valid_route_token(action="backlog_close", bug_id="BUG-001", project_id="tes
         "expires_at": "2999-01-01T00:00:00Z",
         "evidence_refs": ["timeline:test-route-token-backlog-close"],
     }
+
+
+def _route_context_consumption_events():
+    identity = {
+        "route_context_hash": "sha256:test-route-context",
+        "prompt_contract_id": "prompt-contract-backlog-close",
+        "prompt_contract_hash": "sha256:test-prompt-contract",
+    }
+    return [
+        {
+            "event_kind": "route_context",
+            "phase": "dispatch",
+            "status": "passed",
+            "payload": {
+                "route_context": {
+                    **identity,
+                    "caller_role": "observer",
+                    "blocked_actions": ["apply_patch"],
+                    "required_lanes": ["bounded_implementation_worker"],
+                }
+            },
+        },
+        {
+            "event_kind": "route_action_precheck",
+            "phase": "pre_mutation",
+            "status": "allowed",
+            "verification": {**identity, "allowed_action": "dispatch_worker"},
+        },
+        {
+            "event_kind": "mf_subagent_dispatch",
+            "phase": "dispatch",
+            "status": "passed",
+            "payload": {
+                "mf_subagent_dispatch_gate": {
+                    **identity,
+                    "worker_id": "mf-sub-test",
+                    "bounded": True,
+                }
+            },
+        },
+        {
+            "event_kind": "mf_subagent_startup",
+            "phase": "startup_gate",
+            "status": "passed",
+            "payload": {
+                "mf_subagent_startup_gate": {
+                    **identity,
+                    "worker_id": "mf-sub-test",
+                    "fence_token": "fence-test",
+                }
+            },
+        },
+        {
+            "event_kind": "qa_verification",
+            "phase": "verification",
+            "status": "passed",
+            "verification": {
+                **identity,
+                "contract_evidence": [
+                    {
+                        "requirement_id": "independent_verification_lane",
+                        "status": "passed",
+                        "reviewer_role": "qa",
+                    }
+                ],
+            },
+        },
+    ]
 
 
 @pytest.fixture
@@ -255,6 +328,44 @@ def test_mf_close_with_required_timeline_evidence_passes(_mock_subprocess, _mock
 
 
 @patch("agent.governance.server.subprocess.run")
+def test_mf_close_p1_governance_route_requires_consumed_route_context(
+    _mock_subprocess,
+    _mock_db,
+    _mock_audit,
+):
+    """P0/P1 governance route work cannot close on a route waiver alone."""
+    from agent.governance.errors import GovernanceError
+    from agent.governance.server import handle_backlog_close
+
+    _mock_subprocess.return_value = MagicMock(returncode=0)
+    _mock_db.execute.return_value.fetchone.return_value = {
+        "bug_id": "BUG-001",
+        "status": "OPEN",
+        "priority": "P1",
+        "target_files": '["agent/governance/service_router.py"]',
+        "title": "Route close gate",
+        "mf_type": "observer_hotfix",
+        "bypass_policy_json": "{}",
+        "chain_stage": "",
+        "chain_trigger_json": "{}",
+    }
+    events = [
+        {"event_kind": "implementation", "phase": "implementation", "status": "passed"},
+        {"event_kind": "verification", "phase": "verification", "status": "passed"},
+        {"event_kind": "close_ready", "phase": "close", "status": "accepted"},
+    ]
+    ctx = _make_ctx(commit="abc123")
+
+    with patch("agent.governance.task_timeline.list_events", return_value=events):
+        with pytest.raises(GovernanceError) as exc_info:
+            handle_backlog_close(ctx)
+
+    assert exc_info.value.code == "mf_timeline_gate_failed"
+    assert "bounded_implementation_worker_dispatch" in str(exc_info.value)
+    assert "mf_subagent_startup" in str(exc_info.value)
+
+
+@patch("agent.governance.server.subprocess.run")
 def test_mf_close_instantiated_contract_missing_e2e_is_blocked(_mock_subprocess, _mock_db, _mock_audit):
     """Instantiated MF contracts can require specific timeline evidence before close."""
     from agent.governance.errors import GovernanceError
@@ -287,6 +398,7 @@ def test_mf_close_instantiated_contract_missing_e2e_is_blocked(_mock_subprocess,
             "verification": {"requirement_id": "unit_tests"},
         },
         {"event_kind": "close_ready", "phase": "close", "status": "accepted"},
+        *_route_context_consumption_events(),
     ]
     ctx = _make_ctx(commit="abc123")
 
@@ -340,6 +452,7 @@ def test_mf_close_instantiated_contract_evidence_passes(_mock_subprocess, _mock_
             },
         },
         {"event_kind": "close_ready", "phase": "close", "status": "accepted"},
+        *_route_context_consumption_events(),
     ]
     ctx = _make_ctx(commit="abc123")
 

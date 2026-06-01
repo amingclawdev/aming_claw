@@ -512,8 +512,14 @@ def mf():
 
 @mf.command("precommit-check")
 @click.option("--plugin-state", default="", help="Optional plugin update state JSON path.")
+@click.option(
+    "--route-consumption-file",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, readable=True),
+    help="Optional route-context consumption evidence JSON path.",
+)
 @click.option("--json-output", is_flag=True, help="Print machine-readable JSON.")
-def mf_precommit_check(plugin_state, json_output):
+def mf_precommit_check(plugin_state, route_consumption_file, json_output):
     """Run local MF pre-commit guards that do not mutate governance state."""
     from agent.plugin_installer import (
         format_plugin_update_state_status,
@@ -521,10 +527,12 @@ def mf_precommit_check(plugin_state, json_output):
     )
 
     plugin_status = plugin_update_state_status(state_path=plugin_state or None)
+    route_status = _mf_route_consumption_file_status(route_consumption_file)
     result = {
-        "ok": bool(plugin_status.get("ok")),
+        "ok": bool(plugin_status.get("ok")) and bool(route_status.get("ok")),
         "checks": {
             "plugin_update_state": plugin_status,
+            "route_context_consumption": route_status,
         },
     }
     if json_output:
@@ -533,8 +541,44 @@ def mf_precommit_check(plugin_state, json_output):
         click.echo("Aming Claw MF precommit check")
         click.echo("")
         click.echo(format_plugin_update_state_status(plugin_status))
+        if route_consumption_file:
+            status = "pass" if route_status.get("ok") else "fail"
+            click.echo(f"route context consumption: {status}")
+            missing = route_status.get("missing_requirement_ids") or []
+            if missing:
+                click.echo(f"missing: {', '.join(missing)}")
     if not result["ok"]:
         raise click.exceptions.Exit(1)
+
+
+def _mf_route_consumption_file_status(path: str) -> dict:
+    if not path:
+        return {"status": "skipped", "ok": True}
+    from agent.governance.task_timeline import mf_route_context_gate_verification
+
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {"status": "fail", "ok": False, "error": f"invalid route consumption file: {exc}"}
+    if not isinstance(payload, dict):
+        return {"status": "fail", "ok": False, "error": "route consumption file must be a JSON object"}
+    raw_events = payload.get("timeline_evidence") or payload.get("events") or payload.get("route_events")
+    if isinstance(raw_events, dict):
+        events = [raw_events]
+    elif isinstance(raw_events, list):
+        events = [item for item in raw_events if isinstance(item, dict)]
+    else:
+        events = [payload] if any(key in payload for key in ("route_context_hash", "route_identity")) else []
+    contract = payload.get("contract") if isinstance(payload.get("contract"), dict) else payload
+    gate = mf_route_context_gate_verification(events, contract=contract)
+    return {
+        "status": "pass" if gate.get("passed") else "fail",
+        "ok": bool(gate.get("passed")),
+        "required": bool(gate.get("required")),
+        "missing_requirement_ids": gate.get("missing_requirement_ids") or [],
+        "present_requirement_ids": gate.get("present_requirement_ids") or [],
+        "topology_policy": gate.get("topology_policy") or {},
+    }
 
 
 @mf.command("dispatch-gate")

@@ -671,6 +671,9 @@ class TestCliMf:
             "target_head_commit": "def456",
             "merge_queue_id": "mq-test",
             "fence_token": "fence-test",
+            "route_context_hash": "sha256:test-route-context",
+            "prompt_contract_id": "prompt-contract-test",
+            "prompt_contract_hash": "sha256:test-prompt-contract",
             "owned_files": ["agent/cli.py"],
             "dirty_scope_check": {
                 "status": "passed",
@@ -689,6 +692,7 @@ class TestCliMf:
         payload = json.loads(result.output)
         assert payload["schema_version"] == "mf_subagent_dispatch_gate.v1"
         assert payload["fence_token"] == "fence-test"
+        assert payload["route_context_hash"] == "sha256:test-route-context"
         assert payload["base_commit"] == "abc123"
         assert payload["target_head_commit"] == "def456"
         assert payload["owned_files"] == ["agent/cli.py"]
@@ -732,3 +736,100 @@ class TestCliMf:
         payload = json.loads(result.output)
         assert payload["ok"] is False
         assert payload["checks"]["plugin_update_state"]["status"] == "fail"
+
+    def test_mf_precommit_check_blocks_missing_route_consumption(self, tmp_path):
+        runner = CliRunner()
+        route_path = tmp_path / "route.json"
+        route_path.write_text(json.dumps({
+            "contract": {
+                "selected_topology": "observer_led_parallel_lanes",
+                "recommended_topology": "mf_parallel.v1",
+            },
+            "timeline_evidence": [
+                {
+                    "event_kind": "route_context_advisory",
+                    "status": "passed",
+                    "payload": {"message": "route docs say to use a worker"},
+                }
+            ],
+        }), encoding="utf-8")
+
+        result = runner.invoke(main, [
+            "mf",
+            "precommit-check",
+            "--route-consumption-file",
+            str(route_path),
+            "--json-output",
+        ])
+
+        assert result.exit_code == 1
+        payload = json.loads(result.output)
+        assert payload["ok"] is False
+        assert "bounded_implementation_worker_dispatch" in payload["checks"][
+            "route_context_consumption"
+        ]["missing_requirement_ids"]
+
+    def test_mf_precommit_check_accepts_consumed_route_context(self, tmp_path):
+        runner = CliRunner()
+        identity = {
+            "route_context_hash": "sha256:test-route-context",
+            "prompt_contract_id": "prompt-contract-test",
+            "prompt_contract_hash": "sha256:test-prompt-contract",
+        }
+        route_path = tmp_path / "route.json"
+        route_path.write_text(json.dumps({
+            "contract": {
+                "selected_topology": "observer_led_parallel_lanes",
+                "recommended_topology": "mf_parallel.v1",
+            },
+            "timeline_evidence": [
+                {
+                    "event_kind": "route_context",
+                    "status": "passed",
+                    "payload": {"route_context": identity},
+                },
+                {
+                    "event_kind": "route_action_precheck",
+                    "status": "allowed",
+                    "verification": {**identity, "allowed_action": "dispatch_worker"},
+                },
+                {
+                    "event_kind": "mf_subagent_dispatch",
+                    "status": "passed",
+                    "payload": {"mf_subagent_dispatch_gate": {**identity, "bounded": True}},
+                },
+                {
+                    "event_kind": "mf_subagent_startup",
+                    "status": "passed",
+                    "payload": {"mf_subagent_startup_gate": {**identity, "worker_id": "mf-sub"}},
+                },
+                {
+                    "event_kind": "qa_verification",
+                    "status": "passed",
+                    "verification": {
+                        **identity,
+                        "contract_evidence": [
+                            {
+                                "requirement_id": "independent_verification_lane",
+                                "status": "passed",
+                                "reviewer_role": "qa",
+                            }
+                        ],
+                    },
+                },
+            ],
+        }), encoding="utf-8")
+
+        result = runner.invoke(main, [
+            "mf",
+            "precommit-check",
+            "--plugin-state",
+            str(tmp_path / "missing.json"),
+            "--route-consumption-file",
+            str(route_path),
+            "--json-output",
+        ])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["checks"]["route_context_consumption"]["status"] == "pass"

@@ -18,6 +18,12 @@ Canonical source: `docs/governance/manual-fix-sop.md`. This file is only the sho
      Aming-owned route/precheck contracts and record provider id, version, and
      hash evidence; source-controlled Aming skills must not name private
      provider systems or provider-specific tool names.
+   - Route context must be consumed by machine gates, not merely shown in a
+     prompt. For `observer_led_parallel_lanes` / `mf_parallel.v1` work, record
+     timeline evidence for `route_context`, `route_action_precheck`,
+     `bounded_implementation_worker_dispatch`, and `mf_subagent_startup` with
+     matching `route_context_hash`, `prompt_contract_id`, and
+     `prompt_contract_hash`.
    - Dispatch nontrivial implementation to bounded `mf_sub`/worker lanes with
      target files, tests or a recorded no-test/E2E decision, worktree/fence
      evidence, and review evidence.
@@ -182,7 +188,9 @@ Canonical source: `docs/governance/manual-fix-sop.md`. This file is only the sho
      review checks, or documented no-test decisions;
    - `task_timeline_append` with `event_kind=close_ready` after commit,
      redeploy/reconcile/version checks are complete;
-   - run `mf_timeline_precheck` before `backlog_close`.
+   - run `mf_timeline_precheck` before `backlog_close`; for route-parallel work,
+     the gate also checks route-context consumption and bounded worker
+     dispatch/startup evidence tied to the same route identity.
    - when using MCP `backlog_close`, pass the route-token gate evidence:
      either `route_token` with route context / prompt contract / scope /
      expiry / evidence refs, or an explicit `route_waiver` with reason and

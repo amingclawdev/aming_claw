@@ -74,11 +74,15 @@ as the default operator path.
   `prompt_contract_id`, `caller_role`, `allowed_action`, `scope.project_id`,
   `expires_at`, and `evidence_refs`) or an explicit `route_waiver` /
   `route_token_waiver` with manual-fix/same-worktree reason and timeline
-  evidence.
+  evidence. For `observer_led_parallel_lanes` / `mf_parallel.v1` work, this
+  token/waiver does not replace close-gate route consumption evidence.
 - `task_timeline_append`: append observer/agent execution evidence during MF
   work. For close-gate evidence use `event_kind=implementation`,
   `event_kind=verification`, and `event_kind=close_ready` with
-  `status=accepted`/`passed`/`succeeded`.
+  `status=accepted`/`passed`/`succeeded`. Route-parallel close also requires
+  passing timeline events for `route_context`, `route_action_precheck`,
+  `mf_subagent_dispatch`, and `mf_subagent_startup`, each carrying matching
+  `route_context_hash`, `prompt_contract_id`, and `prompt_contract_hash`.
 - `task_timeline_list`: inspect append-only timeline events by `backlog_id`,
   `task_id`, `trace_id`, `phase`, or `event_kind`.
 - `mf_timeline_precheck`: run the same non-mutating MF close-gate check that

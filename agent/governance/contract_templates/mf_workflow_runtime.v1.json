@@ -537,13 +537,18 @@
         "precheck_token",
         "contract_evidence",
         "timeline_evidence",
-        "required_evidence_ids"
+        "required_evidence_ids",
+        "route_context_gate_evidence",
+        "bounded_implementation_worker_dispatch_evidence",
+        "mf_subagent_startup_evidence"
       ],
       "outputs": [
         "precheck_run_id",
         "decision",
         "close_ready_present",
         "mf_timeline_precheck_compatible",
+        "route_context_consumption_required",
+        "route_context_gate",
         "next_stage"
       ]
     }
@@ -633,6 +638,10 @@
       "merge_commit_recorded",
       "required_evidence_ids_present",
       "subject_commit_matches_precheck_token",
+      "route_context_hash_present",
+      "route_action_precheck_consumed",
+      "bounded_implementation_worker_dispatch_matches_route",
+      "mf_subagent_startup_matches_route",
       "independent_verification_lane_evidence_for_p0_p1_governance_routing_runtime"
     ]
   },
@@ -706,6 +715,20 @@
       "phase": "verification",
       "kind": "qa",
       "description": "Required by merge and close prechecks when the route classifies P0/P1 governance, routing, permission, or runtime changes as observer-led parallel lanes."
+    },
+    {
+      "id": "bounded_implementation_worker_dispatch",
+      "required": false,
+      "phase": "dispatch",
+      "kind": "local_precheck",
+      "description": "Required by close/precommit gates when route topology is observer_led_parallel_lanes or mf_parallel.v1; must carry the same route_context_hash, prompt_contract_id, and prompt_contract_hash as the route action gate."
+    },
+    {
+      "id": "mf_subagent_startup",
+      "required": false,
+      "phase": "startup_gate",
+      "kind": "local_precheck",
+      "description": "Required by close/precommit gates when route topology is observer_led_parallel_lanes or mf_parallel.v1; proves the bounded worker actually started inside the assigned runtime context."
     },
     {
       "id": "fixture_contract",

@@ -247,6 +247,46 @@ def test_mcp_protected_write_dispatch_forwards_route_gate_payloads():
     ]
 
 
+def test_mcp_protected_write_dispatch_preserves_structured_gate_failure():
+    structured_failure = {
+        "error": "route_token_required",
+        "message": "route_token is required for protected governance action",
+        "details": {
+            "fault_domain": "caller_missing_route_evidence",
+            "expected_behavior": True,
+            "do_not_file_system_bug": True,
+            "is_system_bug": False,
+            "next_valid_actions": ["return_to_route_context_and_request_a_valid_route_token"],
+            "system_bug_preconditions": ["valid route token was supplied and still rejected"],
+        },
+    }
+
+    def fake_api(method: str, path: str, data: dict | None = None):
+        return structured_failure
+
+    dispatcher = ToolDispatcher(
+        api_fn=fake_api,
+        worker_pool=None,
+        manager_api_fn=fake_api,
+        workspace=str(ROOT),
+    )
+
+    result = dispatcher.dispatch(
+        "task_timeline_append",
+        {
+            "project_id": "aming-claw",
+            "backlog_id": "BUG-ROUTE",
+            "event_type": "mf.verification",
+            "event_kind": "verification",
+        },
+    )
+
+    assert result["error"] == "route_token_required"
+    assert result["details"]["fault_domain"] == "caller_missing_route_evidence"
+    assert result["details"]["expected_behavior"] is True
+    assert result["details"]["is_system_bug"] is False
+
+
 def test_mcp_stdio_resources_expose_skill_and_context_without_governance():
     responses, stderr, returncode = _run_mcp_probe([
         {"jsonrpc": "2.0", "id": 1, "method": "resources/list", "params": {}},

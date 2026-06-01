@@ -25,6 +25,7 @@ DISPATCH_GATE_SCHEMA_VERSION = "mf_subagent_dispatch_gate.v1"
 OBSERVER_DIRECT_MUTATION_SCHEMA_VERSION = "observer_direct_mutation_exception.v1"
 ROUTE_ACTION_GATE_SCHEMA_VERSION = "route_action_gate.v1"
 ROUTE_TOKEN_MUTATION_GATE_SCHEMA_VERSION = "route_token_mutation_gate.v1"
+ROUTE_TOKEN_REQUIRED_FAILURE_SCHEMA_VERSION = "route_token_required_failure.v1"
 FINISH_GATE_REPLAY_SOURCE = "mf_sub_finish_gate"
 BACKEND_CONTRACT = "parallel_branch_worker.v1"
 DISPATCH_DEFAULT = "non_blocking_after_gate"
@@ -689,6 +690,64 @@ def validate_route_token_mutation_gate(
         "allowed action, scope, expiry, and evidence_refs, or pass an explicit "
         "route_waiver with reason and timeline evidence"
     )
+
+
+def route_token_required_failure_details(
+    *,
+    action: str,
+    reason: str = "",
+    extra: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return machine-readable details for expected protected-route failures."""
+
+    action_name = _normalized_action(action) or _string(action)
+    details: dict[str, Any] = {
+        "schema_version": ROUTE_TOKEN_REQUIRED_FAILURE_SCHEMA_VERSION,
+        "protected_action": action_name,
+        "route_token_required": True,
+        "fault_domain": "caller_missing_route_evidence",
+        "expected_behavior": True,
+        "do_not_file_system_bug": True,
+        "is_system_bug": False,
+        "classification": "expected_protected_route_gate",
+        "required_route_token_fields": [
+            "route_context_hash",
+            "prompt_contract_id",
+            "caller_role",
+            "allowed_action",
+            "scope.project_id",
+            "expires_at",
+            "evidence_refs",
+        ],
+        "waiver_fields": [
+            "route_waiver.waiver_type",
+            "route_waiver.reason",
+            "route_waiver.route_context_hash",
+            "route_waiver.prompt_contract_id",
+            "route_waiver.caller_role",
+            "route_waiver.scope.project_id",
+            "route_waiver.scope.backlog_id",
+            "route_waiver.scope.task_id",
+            "route_waiver.timeline_evidence",
+            "route_waiver.allowed_action",
+        ],
+        "next_valid_actions": [
+            "return_to_route_context_and_request_a_valid_route_token",
+            "dispatch_or_start_the_bounded_mf_subagent_worker_and_record_route_context_consumption",
+            "record_route_waiver_as_waiver_evidence_only_when_no_route_token_is_available",
+            "retry_the_protected_action_only_after_matching_route_token_or_required_route_evidence_exists",
+        ],
+        "system_bug_preconditions": [
+            "a_valid_unexpired_route_token_with_matching_action_scope_and_evidence_refs_was_supplied",
+            "or_required_bounded_worker_route_context_consumption_evidence_exists_with_matching_route_identity",
+            "and_the_protected_gate_still_rejected_or_stripped_the_structured_route_details",
+        ],
+    }
+    if reason:
+        details["reason"] = reason
+    if isinstance(extra, Mapping):
+        details.update(dict(extra))
+    return details
 
 
 def _route_token_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
