@@ -4,6 +4,7 @@ import type {
   BacklogBug,
   BacklogResponse,
   BacklogTimelineGateResponse,
+  ContentSysDemoVisualizationEvidence,
   MfCloseTimelineGate,
   TaskTimelineEvent,
 } from "../types";
@@ -23,6 +24,7 @@ const PRIORITY_WEIGHT: Record<string, number> = { P0: 0, P1: 1, P2: 2, P3: 3 };
 const CLOSED_STATUSES = new Set(["FIXED", "CLOSED", "DONE", "RESOLVED", "CANCELLED"]);
 const BACKLOG_URL_PARAM = "backlog";
 const BACKLOG_DETAIL_TIMELINE_LIMIT = 250;
+const CONTENT_SYS_DEMO_VISUALIZATION_SCHEMA = "content_sys.demo_visualization_evidence.v1";
 
 export const BACKLOG_PARALLEL_TIMELINE_FIXTURE_EVENTS: TaskTimelineEvent[] = [
   {
@@ -979,20 +981,23 @@ function EvidenceInspector({ node }: { node: TimelineDagNode | null }) {
           </div>
           <ArtifactPills summary={artifacts} />
           {routeEvidenceCards.length > 0 ? <RouteEvidenceCards cards={routeEvidenceCards} /> : null}
-          <div className="backlog-inspector-json">
-            <div>
-              <span>verification</span>
-              <pre>{JSON.stringify(event?.verification ?? node.syntheticVerification ?? {}, null, 2)}</pre>
+          <details className="backlog-inspector-raw">
+            <summary>Inspect raw timeline payloads</summary>
+            <div className="backlog-inspector-json">
+              <div>
+                <span>verification</span>
+                <pre>{JSON.stringify(event?.verification ?? node.syntheticVerification ?? {}, null, 2)}</pre>
+              </div>
+              <div>
+                <span>artifact_refs</span>
+                <pre>{JSON.stringify(event?.artifact_refs ?? {}, null, 2)}</pre>
+              </div>
+              <div>
+                <span>raw payload</span>
+                <pre>{JSON.stringify(event?.payload ?? node.syntheticPayload ?? {}, null, 2)}</pre>
+              </div>
             </div>
-            <div>
-              <span>artifact_refs</span>
-              <pre>{JSON.stringify(event?.artifact_refs ?? {}, null, 2)}</pre>
-            </div>
-            <div>
-              <span>raw payload</span>
-              <pre>{JSON.stringify(event?.payload ?? node.syntheticPayload ?? {}, null, 2)}</pre>
-            </div>
-          </div>
+          </details>
         </>
       ) : (
         <div className="timeline-empty">Select a timeline or contract node to inspect evidence.</div>
@@ -1062,6 +1067,7 @@ function buildRouteEvidenceCards(event: TaskTimelineEvent): RouteEvidenceCard[] 
     payload.drift_prompt,
     verification.final_drift_prompt,
   );
+  const demoVisualizations = contentSysDemoVisualizationEvidence(event);
   const cards: RouteEvidenceCard[] = [];
 
   const routeContextHash = firstText(
@@ -1144,7 +1150,167 @@ function buildRouteEvidenceCards(event: TaskTimelineEvent): RouteEvidenceCard[] 
     });
   }
 
+  demoVisualizations.forEach((artifact, index) => {
+    cards.push(...buildContentSysDemoVisualizationCards(artifact, index));
+  });
+
   return cards;
+}
+
+function contentSysDemoVisualizationEvidence(event: TaskTimelineEvent): ContentSysDemoVisualizationEvidence[] {
+  const containers = [event.payload, event.verification, event.artifact_refs];
+  const matches: ContentSysDemoVisualizationEvidence[] = [];
+  const seen = new Set<unknown>();
+  const keys = new Set<string>();
+  containers.forEach((container) => collectContentSysDemoVisualizations(container, matches, seen, keys, 0));
+  return matches;
+}
+
+function collectContentSysDemoVisualizations(
+  value: unknown,
+  matches: ContentSysDemoVisualizationEvidence[],
+  seen: Set<unknown>,
+  keys: Set<string>,
+  depth: number,
+) {
+  if (value == null || depth > 8) return;
+  if (typeof value !== "object") return;
+  if (seen.has(value)) return;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectContentSysDemoVisualizations(item, matches, seen, keys, depth + 1));
+    return;
+  }
+
+  const record = value as Record<string, unknown>;
+  const displayContract = asRecord(record.frontend_display_contract);
+  const schemaVersion = firstText(record.schema_version, displayContract.schema_version);
+  const hasVisualizationPayload = Boolean(
+    record.status_cards ||
+    record.timeline_events ||
+    record.privacy_boundary ||
+    record.frontend_display_contract,
+  );
+  const isVisualization =
+    schemaVersion === CONTENT_SYS_DEMO_VISUALIZATION_SCHEMA ||
+    (firstText(record.artifact_id, record.id) === "content_sys_demo_visualization" && hasVisualizationPayload);
+  if (isVisualization) {
+    const key = [
+      schemaVersion,
+      firstText(record.artifact_id, record.id),
+      firstText(record.scenario_id),
+      firstText(record.public_summary),
+    ].join("|");
+    if (!keys.has(key)) {
+      keys.add(key);
+      matches.push(record as ContentSysDemoVisualizationEvidence);
+    }
+  }
+
+  Object.values(record).forEach((item) => collectContentSysDemoVisualizations(item, matches, seen, keys, depth + 1));
+}
+
+function buildContentSysDemoVisualizationCards(
+  artifact: ContentSysDemoVisualizationEvidence,
+  index: number,
+): RouteEvidenceCard[] {
+  const suffix = index > 0 ? `-${index + 1}` : "";
+  const statusCards = listRecords(artifact.status_cards);
+  const timelineEvents = listRecords(artifact.timeline_events);
+  const artifactRefs = listRecords(artifact.artifact_refs);
+  const privacy = asRecord(artifact.privacy_boundary);
+  const routeIdentity = firstRecord(artifact.route_identity, artifact.route_refs);
+  const routeRefs = firstRecord(artifact.route_refs, artifact.route_identity);
+  const displayContract = asRecord(artifact.frontend_display_contract);
+  const publicSummary = firstText(artifact.public_summary)
+    || "Public Docker fixture visualization evidence is available for dashboard rendering.";
+  const routeHash = firstText(routeIdentity.route_context_hash, routeRefs.route_context_hash);
+  const promptContractHash = firstText(routeIdentity.prompt_contract_hash, routeRefs.prompt_contract_hash);
+  const visibleManifestHash = firstText(
+    routeIdentity.visible_injection_manifest_hash,
+    routeRefs.visible_injection_manifest_hash,
+  );
+
+  return [
+    {
+      id: `content-sys-demo-identity${suffix}`,
+      title: "Content-sys demo visualization",
+      status: firstText(artifact.schema_version) || CONTENT_SYS_DEMO_VISUALIZATION_SCHEMA,
+      detail: publicSummary,
+      chips: evidenceChips([
+        ["route_id", firstText(routeIdentity.route_id, routeRefs.route_id)],
+        ["route_context_hash", routeHash],
+        ["prompt_contract_id", firstText(routeIdentity.prompt_contract_id, routeRefs.prompt_contract_id)],
+        ["prompt_contract_hash", promptContractHash],
+        ["visible_manifest_hash", visibleManifestHash],
+        ["scenario", firstText(artifact.scenario_id)],
+      ], 8),
+    },
+    {
+      id: `content-sys-demo-status${suffix}`,
+      title: "Docker demo status",
+      status: statusFromEvidenceRows(statusCards),
+      detail: statusCards.length > 0
+        ? `${countRowsByStatus(statusCards, "passed")} of ${statusCards.length} fixture status checks passed.`
+        : "No status_cards were attached to this visualization artifact.",
+      chips: statusCards.length > 0
+        ? statusCards.map((row) => `${firstText(row.id, row.name) || "status"}: ${firstText(row.status) || "recorded"}`).slice(0, 10)
+        : ["status_cards: missing"],
+    },
+    {
+      id: `content-sys-demo-timeline${suffix}`,
+      title: "Docker demo timeline",
+      status: statusFromEvidenceRows(timelineEvents),
+      detail: timelineEvents.length > 0
+        ? `${timelineEvents.length} ordered fixture event${timelineEvents.length === 1 ? "" : "s"} recorded for the demo path.`
+        : "No timeline_events were attached to this visualization artifact.",
+      chips: timelineEvents.length > 0
+        ? timelineEvents.map((row) => `${firstText(row.sequence) || "-"} · ${firstText(row.id, row.name) || "event"}: ${firstText(row.status) || "recorded"}`).slice(0, 10)
+        : ["timeline_events: missing"],
+    },
+    {
+      id: `content-sys-demo-artifacts${suffix}`,
+      title: "Docker artifact refs",
+      status: statusFromEvidenceRows(artifactRefs, "recorded"),
+      detail: artifactRefs.length > 0
+        ? `${artifactRefs.length} public artifact reference${artifactRefs.length === 1 ? "" : "s"} available for inspection.`
+        : "No artifact_refs were attached to this visualization artifact.",
+      chips: artifactRefs.length > 0
+        ? artifactRefs.map((row) => `${firstText(row.id, row.path) || "artifact"}: ${firstText(row.status) || "recorded"}${firstText(row.path) ? ` @ ${firstText(row.path)}` : ""}`).slice(0, 10)
+        : ["artifact_refs: missing"],
+    },
+    {
+      id: `content-sys-demo-privacy${suffix}`,
+      title: "Privacy boundary",
+      status: privacyBoundaryStatus(privacy),
+      detail: privacyBoundaryDetail(privacy),
+      chips: evidenceChips([
+        ["host_home_mounted", firstText(privacy.host_home_mounted)],
+        ["host_provider_env", firstText(privacy.host_provider_env)],
+        ["host_paths_emitted", firstText(privacy.host_paths_emitted, privacy.private_paths_emitted)],
+        ["raw_prompt_emitted", firstText(privacy.raw_prompt_emitted)],
+        ["model_calls", firstText(privacy.model_calls)],
+        ["provider_runtime", firstText(privacy.provider_runtime)],
+        ["real_media_sources", firstText(privacy.real_media_sources)],
+      ], 8),
+    },
+    {
+      id: `content-sys-demo-display-contract${suffix}`,
+      title: "Frontend display contract",
+      status: firstText(displayContract.schema_version) === CONTENT_SYS_DEMO_VISUALIZATION_SCHEMA ? "ready" : "partial",
+      detail: firstText(displayContract.artifact_path)
+        ? `Dashboard can render ${firstText(displayContract.artifact_path)} outside Docker.`
+        : "Display contract is missing an artifact path; showing available fields only.",
+      chips: evidenceChips([
+        ["screen_id", firstText(displayContract.screen_id)],
+        ["schema", firstText(displayContract.schema_version)],
+        ["route_id", firstText(displayContract.route_id)],
+        ["render_outside_docker", firstText(displayContract.render_outside_docker)],
+        ["artifact_path", firstText(displayContract.artifact_path)],
+        ["panels", listUnknown(displayContract.panel_ids).map(String).join(", ")],
+      ], 8),
+    },
+  ];
 }
 
 function ContractGatePanel({
@@ -2286,14 +2452,55 @@ function alertCodesFrom(value: unknown): string[] {
       const record = asRecord(item);
       return firstText(record.code, record.alert_code, item);
     })
-    .filter(Boolean);
+      .filter(Boolean);
 }
 
-function evidenceChips(entries: [string, string][]): string[] {
+function evidenceChips(entries: [string, string][], limit = 6): string[] {
   return entries
     .map(([label, value]) => (value ? `${label}: ${value}` : ""))
     .filter(Boolean)
-    .slice(0, 6);
+    .slice(0, limit);
+}
+
+function listRecords(value: unknown): Record<string, unknown>[] {
+  return listUnknown(value)
+    .map(asRecord)
+    .filter((record) => Object.keys(record).length > 0);
+}
+
+function statusFromEvidenceRows(rows: Record<string, unknown>[], emptyStatus = "missing"): string {
+  if (rows.length === 0) return emptyStatus;
+  const statuses = rows.map((row) => firstText(row.status, row.result, row.state).toLowerCase()).filter(Boolean);
+  if (statuses.some((status) => ["failed", "error", "blocked"].includes(status))) return "failed";
+  if (statuses.some((status) => status === "missing")) return "missing";
+  if (statuses.length > 0 && statuses.every((status) => ["passed", "generated", "ready", "ok", "recorded"].includes(status))) return "passed";
+  return statuses[0] || "recorded";
+}
+
+function countRowsByStatus(rows: Record<string, unknown>[], expectedStatus: string): number {
+  return rows.filter((row) => firstText(row.status, row.result, row.state).toLowerCase() === expectedStatus).length;
+}
+
+function privacyBoundaryStatus(privacy: Record<string, unknown>): string {
+  if (Object.keys(privacy).length === 0) return "missing";
+  const hostHomeMounted = privacy.host_home_mounted === false;
+  const hostProviderEnv = privacy.host_provider_env === false;
+  const hostPathsEmitted = privacy.host_paths_emitted === false || privacy.private_paths_emitted === false;
+  const rawPromptEmitted = privacy.raw_prompt_emitted === false || privacy.raw_prompt_emitted == null;
+  const modelCallsForbidden = privacy.model_calls === "forbidden";
+  const providerRuntimeDisabled = privacy.provider_runtime === "disabled";
+  return hostHomeMounted && hostProviderEnv && hostPathsEmitted && rawPromptEmitted && modelCallsForbidden && providerRuntimeDisabled
+    ? "passed"
+    : "failed";
+}
+
+function privacyBoundaryDetail(privacy: Record<string, unknown>): string {
+  if (Object.keys(privacy).length === 0) return "Privacy boundary fields are missing from this visualization artifact.";
+  const modelCalls = firstText(privacy.model_calls) || "unspecified";
+  const providerRuntime = firstText(privacy.provider_runtime) || "unspecified";
+  const hostPaths = firstText(privacy.host_paths_emitted, privacy.private_paths_emitted) || "unspecified";
+  const rawPrompt = firstText(privacy.raw_prompt_emitted) || "unspecified";
+  return `Privacy boundary truth: model calls ${modelCalls}, provider runtime ${providerRuntime}, host paths emitted ${hostPaths}, raw prompt emitted ${rawPrompt}.`;
 }
 
 function shortEvidenceHash(value: string): string {

@@ -168,12 +168,115 @@ function backlogBug() {
       "Expert review evidence is visible.",
       "Test route evidence is visible.",
       "Final drift prompt is visible.",
+      "Docker demo visualization evidence is visible.",
       "Live AI calls stay disabled.",
     ],
     details_md: "Mock dashboard row for route-context demo validation.",
     provenance_paths: ["mock-ai-playwright-route"],
     created_at: "2026-05-31T12:00:00Z",
     updated_at: "2026-05-31T12:00:00Z",
+  };
+}
+
+function mockDemoVisualizationEvidence() {
+  return {
+    artifact_id: "content_sys_demo_visualization",
+    artifact_refs: [
+      {
+        id: "content_context_fixture_summary",
+        path: "artifacts/content-context-fixture-summary.json",
+        status: "passed",
+        digest_status: "deferred_until_summary_reference_is_final",
+      },
+      {
+        id: "content_sys_route_plan",
+        path: "artifacts/content-sys-route-plan.json",
+        status: "passed",
+        digest: "sha256:mock-route-plan",
+      },
+      {
+        id: "content_sys_bootstrap",
+        path: "artifacts/content-sys-bootstrap.json",
+        status: "passed",
+        digest: "sha256:mock-bootstrap",
+      },
+      {
+        id: "content_sys_preflight",
+        path: "artifacts/content-sys-preflight.json",
+        status: "passed",
+        digest: "sha256:mock-preflight",
+      },
+      {
+        id: "aming_claw_health",
+        path: "artifacts/aming-claw-health.json",
+        status: "passed",
+        digest: "sha256:mock-health",
+      },
+      {
+        id: "content_sys_demo_visualization",
+        path: "artifacts/content-sys-demo-visualization.json",
+        status: "generated",
+        digest_status: "recorded_in_summary_artifact_ref",
+      },
+    ],
+    fixture_id: "content_sys.docker_context_fixture",
+    frontend_display_contract: {
+      artifact_path: "artifacts/content-sys-demo-visualization.json",
+      panel_ids: [
+        "content_sys_demo_status_cards",
+        "content_sys_demo_timeline",
+        "content_sys_demo_artifacts",
+        "content_sys_demo_privacy_boundary",
+      ],
+      render_outside_docker: true,
+      route_id: "content_sys_docker_context_fixture",
+      screen_id: "content_sys_demo_visualization",
+      schema_version: "content_sys.demo_visualization_evidence.v1",
+    },
+    privacy_boundary: {
+      host_home_mounted: false,
+      host_only_context_required: false,
+      host_paths_emitted: false,
+      host_provider_env: false,
+      model_calls: "forbidden",
+      provider_runtime: "disabled",
+      raw_prompt_emitted: false,
+      real_media_sources: "omitted",
+    },
+    public_summary: "Public Docker fixture evidence for content-sys demo visualization is ready for frontend rendering.",
+    route_identity: {
+      prompt_contract_id: "content_sys.docker_context_fixture.v1",
+      route_context_hash: "sha256:mock-content-sys-route-context",
+      route_id: "content_sys_docker_context_fixture",
+      visible_injection_manifest_hash: "sha256:mock-content-sys-visible-manifest",
+    },
+    route_refs: {
+      prompt_contract_id: "content_sys.docker_context_fixture.v1",
+      route_context_hash: "sha256:mock-content-sys-route-context",
+      route_id: "content_sys_docker_context_fixture",
+      visible_injection_manifest_hash: "sha256:mock-content-sys-visible-manifest",
+    },
+    scenario_id: "content_sys_docker_context_fixture",
+    schema_version: "content_sys.demo_visualization_evidence.v1",
+    status_cards: [
+      { id: "container_governance", sequence: 1, status: "passed" },
+      { id: "governed_project", sequence: 2, status: "passed" },
+      { id: "bootstrap", sequence: 3, status: "passed" },
+      { id: "preflight", sequence: 4, status: "passed" },
+      { id: "tests", sequence: 5, status: "passed" },
+      { id: "route_plan", sequence: 6, status: "passed" },
+      { id: "privacy_boundary", sequence: 7, status: "passed" },
+      { id: "self_graph_required", sequence: 8, status: "passed" },
+    ],
+    timeline_events: [
+      { id: "checkout", sequence: 1, status: "passed" },
+      { id: "governance", sequence: 2, status: "passed" },
+      { id: "bootstrap", sequence: 3, status: "passed" },
+      { id: "preflight", sequence: 4, status: "passed" },
+      { id: "tests", sequence: 5, status: "passed" },
+      { id: "route_plan", sequence: 6, status: "passed" },
+      { id: "summary", sequence: 7, status: "passed" },
+    ],
   };
 }
 
@@ -192,6 +295,7 @@ function mockTimelineEvent() {
         "expert_review_visible",
         "test_route_visible",
         "final_drift_prompt_visible",
+        "demo_visualization_evidence",
       ],
       observer_alert_acknowledgement: {
         received: true,
@@ -220,6 +324,7 @@ function mockTimelineEvent() {
         drift_state: "possible_drift_reviewed",
         message: "Before close, re-check route context, test evidence, and asset drift state.",
       },
+      demo_visualization_evidence: mockDemoVisualizationEvidence(),
     },
     verification: {
       passed: true,
@@ -364,12 +469,14 @@ function mockApiResponse(url) {
             "expert_review_visible",
             "test_route_visible",
             "final_drift_prompt_visible",
+            "demo_visualization_evidence",
           ],
           present_requirement_ids: [
             "observer_alert_ack_visible",
             "expert_review_visible",
             "test_route_visible",
             "final_drift_prompt_visible",
+            "demo_visualization_evidence",
           ],
           missing_requirement_ids: [],
         },
@@ -434,8 +541,16 @@ async function main() {
       "Expert review",
       "Test route",
       "Final drift prompt",
+      "Content-sys demo visualization",
+      "Docker demo status",
+      "Docker demo timeline",
+      "Docker artifact refs",
+      "Privacy boundary",
+      "Frontend display contract",
       "playwright_mock_ai",
       "mocked",
+      "content_sys.demo_visualization_evidence.v1",
+      "model_calls: forbidden",
       "Add mock-AI Docker and Playwright validation",
     ];
     const found = [];
