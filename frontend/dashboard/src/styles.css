@@ -3377,6 +3377,21 @@ a:hover { text-decoration: underline; }
   font-style: normal;
 }
 
+.backlog-inspector-raw {
+  margin-top: 12px;
+}
+
+.backlog-inspector-raw summary {
+  cursor: pointer;
+  color: var(--ink-600);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.backlog-inspector-raw[open] summary {
+  margin-bottom: 8px;
+}
+
 .backlog-contract-inputs {
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
 }

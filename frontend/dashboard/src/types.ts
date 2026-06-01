@@ -776,6 +776,22 @@ export interface TaskTimelineVerification {
   [key: string]: unknown;
 }
 
+export interface ContentSysDemoVisualizationEvidence {
+  schema_version?: string;
+  artifact_id?: string;
+  fixture_id?: string;
+  scenario_id?: string;
+  public_summary?: string;
+  route_identity?: Record<string, unknown>;
+  route_refs?: Record<string, unknown>;
+  status_cards?: Record<string, unknown>[];
+  timeline_events?: Record<string, unknown>[];
+  artifact_refs?: Record<string, unknown>[];
+  privacy_boundary?: Record<string, unknown>;
+  frontend_display_contract?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
 export type AssetInboxStatus =
   | "source_orphan"
   | "doc_unbound"
