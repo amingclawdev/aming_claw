@@ -1,3 +1,5 @@
+<!-- governance-hint {"attach_to_node": {"path": "agent/ACCEPTANCE_WORKFLOW.md", "role": "doc", "target_module": "agent.workspace_queue", "target_node_id": "L7.198", "target_title": "agent.workspace_queue"}} -->
+
 # Task Iteration and Acceptance Workflow
 
 ## Status Transitions
