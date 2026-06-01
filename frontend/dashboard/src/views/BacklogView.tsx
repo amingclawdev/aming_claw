@@ -1183,21 +1183,26 @@ function collectContentSysDemoVisualizations(
   }
 
   const record = value as Record<string, unknown>;
-  const displayContract = asRecord(record.frontend_display_contract);
-  const schemaVersion = firstText(record.schema_version, displayContract.schema_version);
+  const schemaVersion = firstText(record.schema_version);
+  const artifactId = firstText(record.artifact_id, record.id);
   const hasVisualizationPayload = Boolean(
     record.status_cards ||
     record.timeline_events ||
     record.privacy_boundary ||
-    record.frontend_display_contract,
+    record.frontend_display_contract ||
+    record.artifact_refs ||
+    record.route_identity ||
+    record.route_refs ||
+    record.public_summary ||
+    record.scenario_id,
   );
   const isVisualization =
-    schemaVersion === CONTENT_SYS_DEMO_VISUALIZATION_SCHEMA ||
-    (firstText(record.artifact_id, record.id) === "content_sys_demo_visualization" && hasVisualizationPayload);
+    hasVisualizationPayload &&
+    (schemaVersion === CONTENT_SYS_DEMO_VISUALIZATION_SCHEMA || artifactId === "content_sys_demo_visualization");
   if (isVisualization) {
     const key = [
       schemaVersion,
-      firstText(record.artifact_id, record.id),
+      artifactId,
       firstText(record.scenario_id),
       firstText(record.public_summary),
     ].join("|");

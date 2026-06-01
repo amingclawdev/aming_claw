@@ -559,6 +559,15 @@ async function main() {
     }
     const body = (await page.textContent("body")) || "";
     assert(!body.includes(RAW_PROMPT_SENTINEL), "raw prompt sentinel leaked into dashboard body");
+    const unexpectedTexts = [
+      "No status_cards were attached to this visualization artifact.",
+      "No timeline_events were attached to this visualization artifact.",
+      "Privacy boundary fields are missing from this visualization artifact.",
+      "Display contract is missing an artifact path",
+    ];
+    for (const text of unexpectedTexts) {
+      assert(!body.includes(text), `duplicate or partial visualization card rendered: ${text}`);
+    }
 
     if (KEEP_OPEN) await page.waitForTimeout(3000);
     console.log(JSON.stringify({
