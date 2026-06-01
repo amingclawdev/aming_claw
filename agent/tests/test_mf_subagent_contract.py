@@ -332,6 +332,7 @@ def _route_action_payload(**overrides: object) -> dict[str, object]:
         "route_context_hash": "sha256:route-context",
         "prompt_contract_id": "rprompt-1",
         "prompt_contract_hash": "sha256:prompt-contract",
+        "visible_injection_manifest_hash": "sha256:visible-manifest",
         "route_alerts": [{"code": "observer_judger_must_not_implement"}],
         "version_check": {"status": "passed", "dirty": False, "dirty_files": []},
         "graph_status": {"current_state": {"graph_stale": {"is_stale": False}}},
@@ -445,6 +446,7 @@ def test_route_action_gate_rejects_high_risk_without_machine_context_fields() ->
             _route_action_payload(
                 caller_role="implementation_worker",
                 priority="P0",
+                visible_injection_manifest_hash="",
                 target_files=["agent/governance/precheck_service.py"],
                 route_alerts=[
                     {
@@ -518,7 +520,6 @@ def test_route_action_gate_blocks_high_risk_worker_when_dispatch_lacks_fence() -
 @pytest.mark.parametrize(
     "startup_override",
     [
-        {"prompt_contract_hash": ""},
         {"fence_token": "", "fence_token_matches": False},
     ],
 )
@@ -648,14 +649,17 @@ def test_route_action_gate_rejects_implementation_without_route_identity() -> No
         )
 
 
-def test_route_action_gate_rejects_implementation_without_prompt_contract_hash() -> None:
-    with pytest.raises(MfSubagentContractError, match="prompt_contract_hash"):
-        validate_route_action_gate(
-            _route_action_payload(
-                caller_role="implementation_worker",
-                prompt_contract_hash="",
-            )
+def test_route_action_gate_allows_implementation_without_prompt_contract_hash_when_visible_manifest_present() -> None:
+    evidence = validate_route_action_gate(
+        _route_action_payload(
+            caller_role="implementation_worker",
+            prompt_contract_hash="",
         )
+    )
+
+    assert evidence["allowed"] is True
+    assert evidence["prompt_contract_hash"] == ""
+    assert evidence["route_machine_context"]["visible_injection_manifest_present"] is True
 
 
 def test_route_action_gate_rejects_dirty_workspace_without_waiver() -> None:
@@ -846,6 +850,27 @@ def test_route_token_mutation_gate_rejects_missing_token_for_protected_action() 
         validate_route_token_mutation_gate(
             {},
             action="backlog_close",
+            project_id="aming-claw",
+            backlog_id="BUG-1",
+        )
+
+
+def test_route_token_mutation_gate_rejects_generic_waiver_without_route_identity() -> None:
+    with pytest.raises(MfSubagentContractError, match="route identity"):
+        validate_route_token_mutation_gate(
+            {
+                "route_waiver": {
+                    "accepted": True,
+                    "waiver_type": "manual_fix",
+                    "caller_role": "observer",
+                    "allowed_action": "task_timeline_append",
+                    "project_id": "aming-claw",
+                    "backlog_id": "BUG-1",
+                    "reason": "Generic waiver lacks required public-safe route identity.",
+                    "timeline_evidence": {"event_id": 978},
+                }
+            },
+            action="task_timeline_append",
             project_id="aming-claw",
             backlog_id="BUG-1",
         )

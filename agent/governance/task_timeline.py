@@ -110,8 +110,8 @@ MF_ROUTE_CONTEXT_GATE_SCHEMA_VERSION = "mf_route_context_consumption_gate.v1"
 MF_ROUTE_IDENTITY_FIELDS = (
     "route_context_hash",
     "prompt_contract_id",
-    "prompt_contract_hash",
 )
+MF_ROUTE_OPTIONAL_IDENTITY_FIELDS = ("prompt_contract_hash",)
 MF_ROUTE_CONTEXT_REQUIRED_EVIDENCE_IDS = (
     "route_context",
     "route_action_precheck",
@@ -792,11 +792,24 @@ def _first_deep_text(value: Any, key: str) -> str:
 
 def _route_identity(value: Any) -> dict[str, str]:
     identity = {field: _first_deep_text(value, field) for field in MF_ROUTE_IDENTITY_FIELDS}
+    for field in MF_ROUTE_OPTIONAL_IDENTITY_FIELDS:
+        optional = _first_deep_text(value, field)
+        if optional:
+            identity[field] = optional
     return identity if all(identity.values()) else {}
 
 
-def _route_identity_key(identity: dict[str, str]) -> tuple[str, str, str]:
+def _route_identity_key(identity: dict[str, str]) -> tuple[str, ...]:
     return tuple(identity.get(field, "") for field in MF_ROUTE_IDENTITY_FIELDS)
+
+
+def _route_visible_manifest_present(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    return bool(
+        _first_deep_text(value, "visible_injection_manifest_hash")
+        or _first_deep_text(value, "visible_injection_manifest")
+    )
 
 
 def _route_event_passed(event: dict[str, Any]) -> bool:
@@ -947,6 +960,15 @@ def mf_route_context_gate_verification(
                 "categories": sorted(categories),
             })
             continue
+        if "route_context" in categories and not _route_visible_manifest_present(event):
+            ignored.append({
+                "id": event.get("id") or event.get("event_id"),
+                "event_kind": event.get("event_kind"),
+                "status": event.get("status") or event.get("decision"),
+                "reason": "missing_visible_injection_manifest",
+                "categories": sorted(categories),
+            })
+            continue
         if not _route_event_passed(event):
             ignored.append({
                 "id": event.get("id") or event.get("event_id"),
@@ -974,10 +996,19 @@ def mf_route_context_gate_verification(
         for identity in identities[category_id]
         if identity
     }
+    prompt_hashes = {
+        identity.get("prompt_contract_hash", "")
+        for category_id in required_requirement_ids
+        for identity in identities[category_id]
+        if identity.get("prompt_contract_hash")
+    }
     same_route_identity = len(identity_keys) <= 1
-    if required and identity_keys and not same_route_identity:
+    same_optional_prompt_contract_hash = len(prompt_hashes) <= 1
+    if required and identity_keys and not (same_route_identity and same_optional_prompt_contract_hash):
         missing.append("route_identity_mismatch")
-    passed = (not required) or (not missing and same_route_identity)
+    passed = (not required) or (
+        not missing and same_route_identity and same_optional_prompt_contract_hash
+    )
     route_identity: dict[str, str] = {}
     if len(identity_keys) == 1:
         identity_key = next(iter(identity_keys))
@@ -985,6 +1016,8 @@ def mf_route_context_gate_verification(
             field: identity_key[idx]
             for idx, field in enumerate(MF_ROUTE_IDENTITY_FIELDS)
         }
+        if len(prompt_hashes) == 1:
+            route_identity["prompt_contract_hash"] = next(iter(prompt_hashes))
     return {
         "schema_version": MF_ROUTE_CONTEXT_GATE_SCHEMA_VERSION,
         "passed": passed,
@@ -1012,6 +1045,7 @@ def mf_route_context_gate_verification(
                 present.get(MF_ROUTE_CONTEXT_INDEPENDENT_VERIFICATION_ID)
             ),
             "same_route_identity": same_route_identity,
+            "same_optional_prompt_contract_hash": same_optional_prompt_contract_hash,
         },
     }
 

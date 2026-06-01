@@ -1244,6 +1244,7 @@ def test_route_action_precheck_route_allows_bounded_worker_action():
                 "route_context_hash": "sha256:route-context",
                 "prompt_contract_id": "rprompt-1",
                 "prompt_contract_hash": "sha256:prompt-contract",
+                "visible_injection_manifest_hash": "sha256:visible-manifest",
                 "route_alerts": [{"code": "observer_judger_must_not_implement"}],
                 "version_check": {
                     "status": "passed",

@@ -818,10 +818,15 @@ def _accepted_waiver_matches(
     }
     if not accepted:
         return False
+    waiver_prompt_hash = _string(waiver.get("prompt_contract_hash"))
     return (
         _string(waiver.get("route_context_hash")) == route_context_hash
         and _string(waiver.get("prompt_contract_id")) == prompt_contract_id
-        and _string(waiver.get("prompt_contract_hash")) == prompt_contract_hash
+        and (
+            not waiver_prompt_hash
+            or not prompt_contract_hash
+            or waiver_prompt_hash == prompt_contract_hash
+        )
     )
 
 
@@ -850,12 +855,17 @@ def _dispatch_evidence_matches(
         evidence.get("role") or evidence.get("worker_role") or evidence.get("caller_role")
     ).lower()
     worker_role_ok = not role or role in _WORKER_ROLES or role == MF_SUB_ROLE
+    evidence_prompt_hash = _string(evidence.get("prompt_contract_hash"))
     return (
         allowed
         and worker_role_ok
         and _string(evidence.get("route_context_hash")) == route_context_hash
         and _string(evidence.get("prompt_contract_id")) == prompt_contract_id
-        and _string(evidence.get("prompt_contract_hash")) == prompt_contract_hash
+        and (
+            not evidence_prompt_hash
+            or not prompt_contract_hash
+            or evidence_prompt_hash == prompt_contract_hash
+        )
     )
 
 
@@ -942,12 +952,17 @@ def _startup_evidence_matches(
         evidence.get("role") or evidence.get("worker_role") or evidence.get("caller_role")
     ).lower()
     worker_role_ok = not role or role in _WORKER_ROLES or role == MF_SUB_ROLE
+    evidence_prompt_hash = _string(evidence.get("prompt_contract_hash"))
     return (
         allowed
         and worker_role_ok
         and _string(evidence.get("route_context_hash")) == route_context_hash
         and _string(evidence.get("prompt_contract_id")) == prompt_contract_id
-        and _string(evidence.get("prompt_contract_hash")) == prompt_contract_hash
+        and (
+            not evidence_prompt_hash
+            or not prompt_contract_hash
+            or evidence_prompt_hash == prompt_contract_hash
+        )
     )
 
 
@@ -1116,11 +1131,27 @@ def validate_route_action_gate(
     direct_implementation_block_alerts = sorted(
         ROUTE_DIRECT_IMPLEMENTATION_BLOCK_ALERTS.intersection(route_alert_codes)
     )
+    waiver = _mapping(
+        payload.get("route_action_waiver")
+        or payload.get("accepted_waiver")
+        or payload.get("waiver"),
+        field_name="route_action_waiver",
+    )
+    waiver_matches = _accepted_waiver_matches(
+        waiver,
+        route_context_hash=route_context_hash,
+        prompt_contract_id=prompt_contract_id,
+        prompt_contract_hash=prompt_contract_hash,
+    )
 
     if implementation_action and provider_unavailable_reason:
         raise MfSubagentContractError(
             "blocked_route_context_unavailable: "
             f"{provider_unavailable_reason}"
+        )
+    if implementation_action and (not route_context_hash or not prompt_contract_id):
+        raise MfSubagentContractError(
+            "implementation action requires route_context_hash and prompt_contract_id"
         )
     if (
         caller_role in _OBSERVER_JUDGER_ROLES
@@ -1133,12 +1164,10 @@ def validate_route_action_gate(
             f"action {action_name or 'unknown'}; route waiver, dispatch, or startup "
             "evidence cannot authorize observer/reviewer direct implementation"
         )
-    if implementation_action and (
-        not route_context_hash or not prompt_contract_id or not prompt_contract_hash
-    ):
+    if implementation_action and not _route_visible_injection_manifest_present(payload):
         raise MfSubagentContractError(
-            "implementation action requires route_context_hash, "
-            "prompt_contract_id, and prompt_contract_hash"
+            "implementation action requires visible_injection_manifest_hash "
+            "or visible_injection_manifest"
         )
     machine_context = {
         "visible_injection_manifest_present": _route_visible_injection_manifest_present(
@@ -1181,13 +1210,6 @@ def validate_route_action_gate(
             "route blocked_actions explicitly block implementation action "
             f"{action_name}"
         )
-
-    waiver = _mapping(
-        payload.get("route_action_waiver")
-        or payload.get("accepted_waiver")
-        or payload.get("waiver"),
-        field_name="route_action_waiver",
-    )
     dispatch_evidence = _mapping(
         payload.get("bounded_dispatch_evidence")
         or payload.get("dispatch_evidence")
@@ -1195,12 +1217,6 @@ def validate_route_action_gate(
         field_name="bounded_dispatch_evidence",
     )
     startup_evidence = _route_startup_evidence(payload)
-    waiver_matches = _accepted_waiver_matches(
-        waiver,
-        route_context_hash=route_context_hash,
-        prompt_contract_id=prompt_contract_id,
-        prompt_contract_hash=prompt_contract_hash,
-    )
     bounded_worker_evidence = _bounded_worker_evidence_matches(
         dispatch_evidence,
         startup_evidence,

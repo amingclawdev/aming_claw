@@ -126,6 +126,18 @@ def _route_context_qa_verification_event():
     }
 
 
+def _without_prompt_contract_hash(value):
+    if isinstance(value, dict):
+        return {
+            key: _without_prompt_contract_hash(item)
+            for key, item in value.items()
+            if key != "prompt_contract_hash"
+        }
+    if isinstance(value, list):
+        return [_without_prompt_contract_hash(item) for item in value]
+    return value
+
+
 def _route_token(action="task_timeline_append", bug_id="BUG-ROUTE", task_id="", project_id="proj"):
     scope = {"project_id": project_id, "backlog_id": bug_id}
     if task_id:
@@ -1349,6 +1361,65 @@ class TestTaskTimeline(unittest.TestCase):
                 "mf_subagent_startup",
                 "independent_verification_lane",
             ],
+        )
+
+    def test_route_context_gate_accepts_visible_manifest_without_prompt_contract_hash(self):
+        from agent.governance import task_timeline
+
+        contract = {
+            "template_id": "mf_parallel.v1",
+            "contract_instance_id": "BUG-ROUTE-NO-PROMPT-HASH",
+        }
+        events = _without_prompt_contract_hash(
+            [
+                *_route_context_consumption_events(),
+                _route_context_qa_verification_event(),
+                {
+                    "event_kind": "route_waiver",
+                    "phase": "pre_mutation",
+                    "status": "accepted",
+                    "payload": {
+                        "route_waiver": {
+                            "accepted": True,
+                            "route_context_hash": ROUTE_IDENTITY["route_context_hash"],
+                            "prompt_contract_id": ROUTE_IDENTITY["prompt_contract_id"],
+                            "allowed_action": "task_timeline_append",
+                            "timeline_evidence": {"event_id": "tl-route-waiver"},
+                        }
+                    },
+                },
+            ]
+        )
+
+        result = task_timeline.mf_route_context_gate_verification(events, contract)
+
+        self.assertTrue(result["passed"], result)
+        self.assertEqual(result["missing_requirement_ids"], [])
+        self.assertEqual(
+            result["route_identity"],
+            {
+                "route_context_hash": ROUTE_IDENTITY["route_context_hash"],
+                "prompt_contract_id": ROUTE_IDENTITY["prompt_contract_id"],
+            },
+        )
+
+    def test_route_context_gate_ignores_route_context_without_visible_manifest(self):
+        from agent.governance import task_timeline
+
+        contract = {
+            "template_id": "mf_parallel.v1",
+            "contract_instance_id": "BUG-ROUTE-NO-MANIFEST",
+        }
+        events = _without_prompt_contract_hash(_route_context_consumption_events())
+        events[0]["payload"].pop("visible_injection_manifest_hash", None)
+
+        result = task_timeline.mf_route_context_gate_verification(events, contract)
+
+        self.assertFalse(result["passed"], result)
+        self.assertIn("route_context", result["missing_requirement_ids"])
+        self.assertEqual(
+            result["ignored_route_events"][0]["reason"],
+            "missing_visible_injection_manifest",
         )
 
     def test_mf_parallel_close_gate_requires_matching_qa_lane(self):

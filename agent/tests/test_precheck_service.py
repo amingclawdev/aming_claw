@@ -43,6 +43,7 @@ def route_context_consumption_events() -> list[dict[str, object]]:
             "payload": {
                 "route_context": {
                     **ROUTE_IDENTITY,
+                    "visible_injection_manifest_hash": "sha256:visible-manifest",
                     "blocked_actions": ["apply_patch"],
                     "required_lanes": ["bounded_implementation_worker"],
                 }

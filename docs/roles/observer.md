@@ -43,6 +43,11 @@ explicit manual-fix or same-worktree exception, pass `route_waiver` with an
 accepted decision, waiver type, reason, matching action/scope, and timeline
 evidence. Governance records accepted route-token or waiver evidence into the
 task timeline for later audit.
+For route context consumption, timeline evidence must carry the same required
+identity (`route_context_hash`, `prompt_contract_id`) plus public-safe
+`visible_injection_manifest_hash` or `visible_injection_manifest`.
+`prompt_contract_hash` may be supplied for propagation/comparison, but is not
+required route identity.
 
 ## Advanced Chain Flow: Coordinator Takeover
 

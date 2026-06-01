@@ -22,16 +22,21 @@ Canonical source: `docs/governance/manual-fix-sop.md`. This file is only the sho
      prompt. For `observer_led_parallel_lanes` / `mf_parallel.v1` work, record
      timeline evidence for `route_context`, `route_action_precheck`,
      `bounded_implementation_worker_dispatch`, and `mf_subagent_startup` with
-     matching `route_context_hash`, `prompt_contract_id`, and
-     `prompt_contract_hash`.
+     matching required route identity (`route_context_hash`,
+     `prompt_contract_id`). Route context consumption also needs public-safe
+     `visible_injection_manifest_hash` or `visible_injection_manifest`;
+     propagate and compare `prompt_contract_hash` when provided.
    - Before local implementation writes for P0, cross-module, or parallel MF
      work, run `agent.governance.precheck_service.run_precheck` with
      `kind="route.pre_mutation"` or an equivalent `route.action_precheck`
      service gate. `preflight_check` output or advisory route prose is not
-     authorization; machine route identity, allowed/blocked actions, required
-     lanes/evidence, caller role, and visible injection manifest evidence must
-     be present. Provider unavailable, transport closed, or stale route
-     evidence must block as `blocked_route_context_unavailable`.
+     authorization; required machine route identity (`route_context_hash`,
+     `prompt_contract_id`), allowed/blocked actions, required lanes/evidence,
+     caller role, and public-safe visible injection manifest evidence must be
+     present. `prompt_contract_hash` may be supplied for propagation/comparison,
+     but is not required route identity. Provider unavailable, transport
+     closed, or stale route evidence must block as
+     `blocked_route_context_unavailable`.
    - Dispatch nontrivial implementation to bounded `mf_sub`/worker lanes with
      target files, tests or a recorded no-test/E2E decision, worktree/fence
      evidence, and review evidence.
