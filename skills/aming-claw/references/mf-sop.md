@@ -24,6 +24,14 @@ Canonical source: `docs/governance/manual-fix-sop.md`. This file is only the sho
      `bounded_implementation_worker_dispatch`, and `mf_subagent_startup` with
      matching `route_context_hash`, `prompt_contract_id`, and
      `prompt_contract_hash`.
+   - Before local implementation writes for P0, cross-module, or parallel MF
+     work, run `agent.governance.precheck_service.run_precheck` with
+     `kind="route.pre_mutation"` or an equivalent `route.action_precheck`
+     service gate. `preflight_check` output or advisory route prose is not
+     authorization; machine route identity, allowed/blocked actions, required
+     lanes/evidence, caller role, and visible injection manifest evidence must
+     be present. Provider unavailable, transport closed, or stale route
+     evidence must block as `blocked_route_context_unavailable`.
    - Dispatch nontrivial implementation to bounded `mf_sub`/worker lanes with
      target files, tests or a recorded no-test/E2E decision, worktree/fence
      evidence, and review evidence.
@@ -68,6 +76,9 @@ Canonical source: `docs/governance/manual-fix-sop.md`. This file is only the sho
      each privileged stage through
      `agent.governance.precheck_service.run_precheck(kind, contract_id, stage,
      subject, actor)`;
+   - run `route.pre_mutation` before local implementation writes for high-risk,
+     P0, cross-module, `mf_parallel.v1`, or `observer_led_parallel_lanes`
+     implementation actions;
    - use the workflow runtime stage graph
      `dispatch -> startup_gate -> implementation_wait -> handoff_gate -> merge_gate ->
      merge_queue_entry -> merge_preview -> live_merge -> reconcile ->

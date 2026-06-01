@@ -78,6 +78,283 @@ def route_context_consumption_events() -> list[dict[str, object]]:
     ]
 
 
+def _bounded_dispatch_evidence() -> dict[str, object]:
+    return {
+        **ROUTE_IDENTITY,
+        "schema_version": "mf_subagent_dispatch_gate.v1",
+        "allowed": True,
+        "role": "mf_sub",
+        "bounded": True,
+        "branch": "mf/sub-test",
+        "worktree": "/repo/.worktrees/mf-sub-test",
+        "fence_token": FENCE_TOKEN,
+    }
+
+
+def _bounded_startup_evidence() -> dict[str, object]:
+    return {
+        **ROUTE_IDENTITY,
+        "gate_kind": "mf_subagent.startup",
+        "status": "passed",
+        "role": "mf_sub",
+        "bounded": True,
+        "fence_token": FENCE_TOKEN,
+        "same_as_expected_worker": True,
+        "fence_token_matches": True,
+    }
+
+
+def _route_pre_mutation_subject(**overrides: object) -> dict[str, object]:
+    subject: dict[str, object] = {
+        **ROUTE_IDENTITY,
+        "caller_role": "implementation_worker",
+        "action": "apply_patch",
+        "priority": "P0",
+        "target_files": [
+            "agent/governance/mf_subagent_contract.py",
+            "agent/governance/precheck_service.py",
+            "agent/tests/test_precheck_service.py",
+            "docs/governance/manual-fix-sop.md",
+        ],
+        "visible_injection_manifest_hash": "sha256:visible-manifest",
+        "allowed_actions": ["apply_patch"],
+        "route_alerts": [
+            {
+                "code": "observer_judger_must_not_implement",
+                "blocked_actions": ["observer_direct_implementation"],
+            }
+        ],
+        "required_lanes": [
+            {"id": "bounded_implementation_worker", "role": "mf_sub"},
+            {"id": "independent_verification_lane", "role": "qa"},
+        ],
+        "required_evidence": [
+            "route_context",
+            "route_action_precheck",
+            "bounded_implementation_worker_dispatch",
+            "mf_subagent_startup",
+        ],
+        "version_check": {"status": "passed", "dirty": False, "dirty_files": []},
+        "graph_status": {"current_state": {"graph_stale": {"is_stale": False}}},
+    }
+    subject.update(overrides)
+    return subject
+
+
+def test_route_pre_mutation_blocks_preflight_only_advisory_route() -> None:
+    result = run_precheck(
+        "route.pre_mutation",
+        CONTRACT_ID,
+        "pre_mutation",
+        {
+            "caller_role": "implementation_worker",
+            "action": "apply_patch",
+            "priority": "P0",
+            "target_files": ["agent/governance/precheck_service.py"],
+            "preflight_check": {"ok": True, "status": "passed"},
+            "route_advisory_text": "Advisory prose says implementation may proceed.",
+            "version_check": {"status": "passed", "dirty": False, "dirty_files": []},
+            "graph_status": {"current_state": {"graph_stale": {"is_stale": False}}},
+        },
+        "pytest",
+    )
+
+    assert result["decision"] == "block"
+    assert "missing_route_context_hash" in result["evidence"]["errors"]
+    assert result["evidence"]["preflight_check_is_authorization"] is False
+
+
+def test_route_pre_mutation_blocks_provider_unavailable_for_writes() -> None:
+    result = run_precheck(
+        "route.pre_mutation",
+        CONTRACT_ID,
+        "pre_mutation",
+        _route_pre_mutation_subject(route_provider_error="Transport closed"),
+        "pytest",
+    )
+
+    assert result["decision"] == "block"
+    assert "blocked_route_context_unavailable" in result["evidence"]["errors"]
+    assert "Transport closed" in result["evidence"]["route_action_error"]
+
+
+def test_route_pre_mutation_blocks_requested_blocked_action_for_worker() -> None:
+    result = run_precheck(
+        "route.pre_mutation",
+        CONTRACT_ID,
+        "pre_mutation",
+        _route_pre_mutation_subject(blocked_actions=["apply_patch"]),
+        "pytest",
+    )
+
+    assert result["decision"] == "block"
+    assert "blocked_action_requested" in result["evidence"]["errors"]
+    assert "blocked_actions" in result["evidence"]["route_action_error"]
+
+
+def test_route_pre_mutation_blocks_nested_provider_runtime_stale() -> None:
+    result = run_precheck(
+        "route.pre_mutation",
+        CONTRACT_ID,
+        "pre_mutation",
+        _route_pre_mutation_subject(
+            provider_runtime_status={
+                "stale": True,
+                "loaded_source_hash": "sha256:route-source",
+                "current_source_hash": "sha256:route-source",
+            }
+        ),
+        "pytest",
+    )
+
+    assert result["decision"] == "block"
+    assert "blocked_route_context_unavailable" in result["evidence"]["errors"]
+    assert "provider_runtime_status.stale=True" in result["evidence"][
+        "route_action_error"
+    ]
+
+
+def test_route_pre_mutation_blocks_nested_provider_source_hash_mismatch() -> None:
+    result = run_precheck(
+        "route.pre_mutation",
+        CONTRACT_ID,
+        "pre_mutation",
+        _route_pre_mutation_subject(
+            provider_runtime_status={
+                "loaded_source_hash": "sha256:old-route-source",
+                "current_source_hash": "sha256:new-route-source",
+            }
+        ),
+        "pytest",
+    )
+
+    assert result["decision"] == "block"
+    assert "blocked_route_context_unavailable" in result["evidence"]["errors"]
+    assert "loaded_source_hash/current_source_hash_mismatch" in result["evidence"][
+        "route_action_error"
+    ]
+
+
+def test_route_pre_mutation_blocks_worker_without_dispatch_evidence() -> None:
+    result = run_precheck(
+        "route.pre_mutation",
+        CONTRACT_ID,
+        "pre_mutation",
+        _route_pre_mutation_subject(),
+        "pytest",
+    )
+
+    assert result["decision"] == "block"
+    assert "missing_bounded_dispatch_startup_evidence" in result["evidence"]["errors"]
+    assert "bounded dispatch/startup evidence" in result["evidence"]["route_action_error"]
+
+
+def test_route_pre_mutation_blocks_worker_with_dispatch_only() -> None:
+    result = run_precheck(
+        "route.pre_mutation",
+        CONTRACT_ID,
+        "pre_mutation",
+        _route_pre_mutation_subject(
+            bounded_dispatch_evidence=_bounded_dispatch_evidence()
+        ),
+        "pytest",
+    )
+
+    assert result["decision"] == "block"
+    assert "missing_bounded_dispatch_startup_evidence" in result["evidence"]["errors"]
+    assert "bounded dispatch/startup evidence" in result["evidence"]["route_action_error"]
+
+
+def test_route_pre_mutation_blocks_worker_with_startup_only() -> None:
+    result = run_precheck(
+        "route.pre_mutation",
+        CONTRACT_ID,
+        "pre_mutation",
+        _route_pre_mutation_subject(
+            bounded_startup_evidence=_bounded_startup_evidence()
+        ),
+        "pytest",
+    )
+
+    assert result["decision"] == "block"
+    assert "missing_bounded_dispatch_startup_evidence" in result["evidence"]["errors"]
+    assert "bounded dispatch/startup evidence" in result["evidence"]["route_action_error"]
+
+
+def test_route_pre_mutation_allows_worker_with_bounded_dispatch_and_startup_evidence() -> None:
+    result = run_precheck(
+        "route.pre_mutation",
+        CONTRACT_ID,
+        "pre_mutation",
+        _route_pre_mutation_subject(
+            bounded_dispatch_evidence=_bounded_dispatch_evidence(),
+            bounded_startup_evidence=_bounded_startup_evidence(),
+        ),
+        "pytest",
+    )
+
+    assert result["decision"] == "allow"
+    gate = result["evidence"]["route_action_gate"]
+    assert gate["allowed"] is True
+    assert gate["machine_context_required"] is True
+    assert gate["route_machine_context"]["allowed_actions"] == ["apply_patch"]
+    assert gate["bounded_dispatch_evidence_present"] is True
+    assert gate["bounded_startup_evidence_present"] is True
+    assert gate["bounded_worker_evidence_present"] is True
+
+
+def test_route_pre_mutation_waiver_without_dispatch_evidence_still_blocks() -> None:
+    result = run_precheck(
+        "route.pre_mutation",
+        CONTRACT_ID,
+        "pre_mutation",
+        _route_pre_mutation_subject(
+            route_action_waiver={
+                "accepted": True,
+                **ROUTE_IDENTITY,
+            },
+            version_check={
+                "status": "failed",
+                "dirty": True,
+                "dirty_files": ["agent/governance/mf_subagent_contract.py"],
+            },
+            graph_status={"current_state": {"graph_stale": {"is_stale": True}}},
+        ),
+        "pytest",
+    )
+
+    assert result["decision"] == "block"
+    assert "missing_bounded_dispatch_startup_evidence" in result["evidence"]["errors"]
+    assert "bounded dispatch/startup evidence" in result["evidence"]["route_action_error"]
+
+
+def test_route_pre_mutation_reports_direct_reviewer_implementation_error_code() -> None:
+    for caller_role, alert_code in (
+        ("observer", "observer_judger_must_not_implement"),
+        ("independent_reviewer", "observer_independent_reviewer_must_not_implement"),
+    ):
+        result = run_precheck(
+            "route.pre_mutation",
+            CONTRACT_ID,
+            "pre_mutation",
+            _route_pre_mutation_subject(
+                caller_role=caller_role,
+                route_alerts=[{"code": alert_code, "blocked_actions": ["apply_patch"]}],
+                route_action_waiver={
+                    "accepted": True,
+                    **ROUTE_IDENTITY,
+                },
+                bounded_dispatch_evidence=_bounded_dispatch_evidence(),
+                bounded_startup_evidence=_bounded_startup_evidence(),
+            ),
+            "pytest",
+        )
+
+        assert result["decision"] == "block"
+        assert "observer_direct_implementation_blocked" in result["evidence"]["errors"]
+        assert alert_code in result["evidence"]["route_action_error"]
+
+
 def test_scn_mf_wf_002_dispatch_collects_git_evidence_and_blocks_bad_state(
     tmp_path: Path,
 ) -> None:

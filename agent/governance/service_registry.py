@@ -110,6 +110,20 @@ DEFAULT_ROUTE_ALERTS: tuple[dict[str, Any], ...] = (
         ],
     },
     {
+        "code": "observer_independent_reviewer_must_not_implement",
+        "severity": "block",
+        "applies_to": ["observer", "reviewer", "independent_reviewer", "judger"],
+        "blocked_actions": [
+            "apply_patch",
+            "edit_file",
+            "edit_files",
+            "write_file",
+            "implementation_exec",
+            "mutate_files",
+            "run_implementation_command",
+        ],
+    },
+    {
         "code": "implementation_prompt_must_live_in_route",
         "severity": "block",
         "applies_to": ["observer", "judger", "implementation_worker", "mf_sub", "qa"],
@@ -650,11 +664,19 @@ def _route_alerts(
     topology = topology_policy if isinstance(topology_policy, Mapping) else {}
     selected_topology = _text(topology.get("selected_topology"))
     role = _text(caller_role).lower()
-    route_owned_alerts: list[dict[str, Any]] = [DEFAULT_ROUTE_ALERTS[0]]
+    route_owned_alerts: list[dict[str, Any]] = [
+        alert
+        for alert in DEFAULT_ROUTE_ALERTS
+        if alert["code"]
+        in {
+            "observer_judger_must_not_implement",
+            "observer_independent_reviewer_must_not_implement",
+        }
+    ]
     if value is None and selected_topology == LIGHTWEIGHT_SINGLE_LANE_TOPOLOGY:
         source = [
-            DEFAULT_ROUTE_ALERTS[1],
-            DEFAULT_ROUTE_ALERTS[4],
+            DEFAULT_ROUTE_ALERTS[2],
+            DEFAULT_ROUTE_ALERTS[5],
         ]
     if selected_topology == OBSERVER_LED_PARALLEL_TOPOLOGY:
         route_owned_alerts.extend(

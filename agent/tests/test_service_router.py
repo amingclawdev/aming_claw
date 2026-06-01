@@ -867,6 +867,7 @@ def test_low_risk_bundle_still_blocks_observer_direct_implementation():
 
     assert bundle["selected_topology"] == "lightweight_single_lane"
     assert "observer_judger_must_not_implement" in alert_codes
+    assert "observer_independent_reviewer_must_not_implement" in alert_codes
     assert action_result["decision"] == "block"
     assert route["status"] == "route_action_policy_blocked"
     assert gate["allowed"] is False
@@ -1272,6 +1273,59 @@ def test_route_action_precheck_route_allows_bounded_worker_action():
     assert route["contract_evidence"][0]["prompt_contract_hash"] == (
         "sha256:prompt-contract"
     )
+
+
+def test_route_action_precheck_blocks_provider_unavailable_before_write():
+    contract = _contract(
+        service_routes=[
+            _service_route(
+                service_id="route.action_precheck",
+                mode="gate",
+                side_effect_class="gate",
+                route_id="service.route.action_precheck",
+                requirement_ids=["route_action_blocked"],
+            )
+        ],
+        event_routes=[
+            {
+                "route_id": "event.route_action.pre_mutation",
+                "event_kind": "route.action.requested",
+                "service_route_id": "service.route.action_precheck",
+                "enabled": True,
+            }
+        ],
+    )
+
+    result = route_event(
+        {
+            "event_id": "evt-route-action-provider-down",
+            "event_kind": "route.action.requested",
+            "payload": {
+                "caller_role": "implementation_worker",
+                "action": "apply_patch",
+                "route_context_hash": "sha256:route-context",
+                "prompt_contract_id": "rprompt-1",
+                "prompt_contract_hash": "sha256:prompt-contract",
+                "route_provider_error": "Transport closed",
+                "version_check": {
+                    "status": "passed",
+                    "dirty": False,
+                    "dirty_files": [],
+                },
+                "graph_status": {
+                    "current_state": {"graph_stale": {"is_stale": False}}
+                },
+            },
+        },
+        contract,
+    )
+
+    route = result["routes"][0]
+    gate = route["result"]["route_action_gate"]
+    assert result["decision"] == "block"
+    assert route["status"] == "route_action_policy_blocked"
+    assert gate["allowed"] is False
+    assert "blocked_route_context_unavailable" in gate["reason"]
 
 
 def test_route_action_precheck_blocks_observer_action_with_visible_identity():

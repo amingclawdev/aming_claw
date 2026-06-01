@@ -33,6 +33,7 @@ GATE_KINDS = (
     "workflow.merge_preview",
     "workflow.live_merge",
     "workflow.reconcile_policy",
+    "route.pre_mutation",
     "backlog.close",
 )
 
@@ -661,6 +662,85 @@ def _reconcile_policy_gate(
     }
 
 
+def _route_pre_mutation_gate(
+    contract_id: str,
+    stage: str,
+    subject: dict[str, Any],
+    actor: str,
+) -> dict[str, Any]:
+    from agent.governance.mf_subagent_contract import (
+        MfSubagentContractError,
+        validate_route_action_gate,
+    )
+
+    errors: list[str] = []
+    warnings: list[str] = []
+    route_action_gate: dict[str, Any] = {}
+    route_action_error = ""
+    try:
+        route_action_gate = validate_route_action_gate(subject)
+    except MfSubagentContractError as exc:
+        route_action_error = str(exc)
+        errors.append(_route_pre_mutation_error_code(route_action_error))
+    else:
+        if route_action_gate.get("precondition_waiver_used"):
+            warnings.append("route_precondition_waiver_used")
+
+    return {
+        "schema_version": PRECHECK_RESULT_SCHEMA_VERSION,
+        "actor": actor,
+        "gate_kind": "route.pre_mutation",
+        "stage": stage,
+        "errors": _dedupe(errors),
+        "warnings": _dedupe(warnings),
+        "route_action_gate": route_action_gate,
+        "route_action_error": route_action_error,
+        "action": _first_text(subject, "action", "requested_action", "tool_name"),
+        "caller_role": _first_text(subject, "caller_role", "role", "actor_role"),
+        "route_context_hash": _first_text(subject, "route_context_hash"),
+        "prompt_contract_id": _first_text(subject, "prompt_contract_id"),
+        "prompt_contract_hash": _first_text(subject, "prompt_contract_hash"),
+        "preflight_check_is_authorization": False,
+    }
+
+
+def _route_pre_mutation_error_code(message: str) -> str:
+    text = message.lower()
+    if "blocked_route_context_unavailable" in text:
+        return "blocked_route_context_unavailable"
+    if "route_context_hash" in text:
+        return "missing_route_context_hash"
+    if "prompt_contract_hash" in text:
+        return "missing_prompt_contract_hash"
+    if "prompt_contract_id" in text:
+        return "missing_prompt_contract_id"
+    if "visible_injection_manifest" in text:
+        return "missing_visible_injection_manifest"
+    if "caller_role" in text:
+        return "missing_caller_role"
+    if "allowed_actions" in text:
+        return "missing_or_invalid_allowed_actions"
+    if "blocked_actions explicitly block" in text:
+        return "blocked_action_requested"
+    if "blocked_actions" in text:
+        return "missing_blocked_actions"
+    if "required_lanes" in text:
+        return "missing_required_lanes"
+    if "required_evidence" in text:
+        return "missing_required_evidence"
+    if "bounded dispatch/startup evidence" in text:
+        return "missing_bounded_dispatch_startup_evidence"
+    if "bounded dispatch evidence" in text:
+        return "missing_bounded_dispatch_evidence"
+    if "must_not_implement" in text:
+        return "observer_direct_implementation_blocked"
+    if "version/workspace" in text:
+        return "missing_clean_version_workspace_evidence"
+    if "current graph" in text:
+        return "missing_current_graph_evidence"
+    return "route_action_gate_blocked"
+
+
 def _close_gate(
     contract_id: str,
     stage: str,
@@ -727,6 +807,7 @@ _GATE_REGISTRY: dict[str, _Gate] = {
     "workflow.merge_preview": _merge_preview_gate,
     "workflow.live_merge": _live_merge_gate,
     "workflow.reconcile_policy": _reconcile_policy_gate,
+    "route.pre_mutation": _route_pre_mutation_gate,
     "backlog.close": _close_gate,
 }
 

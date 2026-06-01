@@ -340,6 +340,63 @@ def _route_action_payload(**overrides: object) -> dict[str, object]:
     return payload
 
 
+def _high_risk_route_machine_fields() -> dict[str, object]:
+    return {
+        "priority": "P0",
+        "target_files": [
+            "agent/governance/mf_subagent_contract.py",
+            "agent/governance/precheck_service.py",
+            "agent/tests/test_mf_subagent_contract.py",
+            "docs/governance/manual-fix-sop.md",
+        ],
+        "visible_injection_manifest": {
+            "schema_version": "visible_injection_manifest.v1",
+            "allowed_injections": [
+                {
+                    "kind": "route_context",
+                    "id": "route-ctx-test",
+                    "sha256": "sha256:visible",
+                    "status": "passed",
+                }
+            ],
+        },
+        "allowed_actions": ["apply_patch"],
+        "route_alerts": [
+            {
+                "code": "observer_judger_must_not_implement",
+                "blocked_actions": ["observer_direct_implementation"],
+            }
+        ],
+        "required_lanes": [
+            {"id": "bounded_implementation_worker", "role": "mf_sub"},
+            {"id": "independent_verification_lane", "role": "qa"},
+        ],
+        "required_evidence": [
+            "route_context",
+            "route_action_precheck",
+            "bounded_implementation_worker_dispatch",
+            "mf_subagent_startup",
+        ],
+    }
+
+
+def _startup_evidence(**overrides: object) -> dict[str, object]:
+    evidence: dict[str, object] = {
+        "gate_kind": "mf_subagent.startup",
+        "status": "passed",
+        "role": MF_SUB_ROLE,
+        "bounded": True,
+        "route_context_hash": "sha256:route-context",
+        "prompt_contract_id": "rprompt-1",
+        "prompt_contract_hash": "sha256:prompt-contract",
+        "fence_token": "fence-1",
+        "same_as_expected_worker": True,
+        "fence_token_matches": True,
+    }
+    evidence.update(overrides)
+    return evidence
+
+
 def test_route_action_gate_rejects_observer_direct_implementation_action() -> None:
     with pytest.raises(MfSubagentContractError, match="observer_judger_must_not_implement"):
         validate_route_action_gate(_route_action_payload())
@@ -358,6 +415,227 @@ def test_route_action_gate_allows_bounded_worker_with_route_prompt_identity() ->
     assert evidence["prompt_contract_hash"] == "sha256:prompt-contract"
     assert evidence["version_workspace_gate"]["passed"] is True
     assert evidence["graph_current_gate"]["passed"] is True
+
+
+def test_route_action_gate_rejects_preflight_only_high_risk_implementation() -> None:
+    with pytest.raises(MfSubagentContractError, match="route_context_hash"):
+        validate_route_action_gate(
+            {
+                "caller_role": "implementation_worker",
+                "action": "apply_patch",
+                "priority": "P0",
+                "target_files": ["agent/governance/precheck_service.py"],
+                "preflight_check": {"ok": True, "status": "passed"},
+                "route_advisory_text": "Advisory route says this is probably OK.",
+                "version_check": {
+                    "status": "passed",
+                    "dirty": False,
+                    "dirty_files": [],
+                },
+                "graph_status": {
+                    "current_state": {"graph_stale": {"is_stale": False}}
+                },
+            }
+        )
+
+
+def test_route_action_gate_rejects_high_risk_without_machine_context_fields() -> None:
+    with pytest.raises(MfSubagentContractError, match="visible_injection_manifest"):
+        validate_route_action_gate(
+            _route_action_payload(
+                caller_role="implementation_worker",
+                priority="P0",
+                target_files=["agent/governance/precheck_service.py"],
+                route_alerts=[
+                    {
+                        "code": "observer_judger_must_not_implement",
+                        "blocked_actions": ["apply_patch"],
+                    }
+                ],
+            )
+        )
+
+
+def test_route_action_gate_blocks_high_risk_worker_without_dispatch_evidence() -> None:
+    with pytest.raises(MfSubagentContractError, match="bounded dispatch/startup evidence"):
+        validate_route_action_gate(
+            _route_action_payload(
+                caller_role="implementation_worker",
+                **_high_risk_route_machine_fields(),
+            )
+        )
+
+
+def test_route_action_gate_blocks_high_risk_worker_with_dispatch_only() -> None:
+    dispatch = validate_mf_subagent_dispatch_gate(
+        _dispatch_payload(),
+        target_worktree_path="/repo",
+    )
+
+    with pytest.raises(MfSubagentContractError, match="bounded dispatch/startup evidence"):
+        validate_route_action_gate(
+            _route_action_payload(
+                caller_role="implementation_worker",
+                bounded_dispatch_evidence=dispatch,
+                **_high_risk_route_machine_fields(),
+            )
+        )
+
+
+def test_route_action_gate_blocks_high_risk_worker_with_startup_only() -> None:
+    with pytest.raises(MfSubagentContractError, match="bounded dispatch/startup evidence"):
+        validate_route_action_gate(
+            _route_action_payload(
+                caller_role="implementation_worker",
+                bounded_startup_evidence=_startup_evidence(),
+                **_high_risk_route_machine_fields(),
+            )
+        )
+
+
+def test_route_action_gate_blocks_high_risk_worker_when_dispatch_lacks_fence() -> None:
+    dispatch = {
+        "schema_version": DISPATCH_GATE_SCHEMA_VERSION,
+        "allowed": True,
+        "role": MF_SUB_ROLE,
+        "bounded": True,
+        "route_context_hash": "sha256:route-context",
+        "prompt_contract_id": "rprompt-1",
+        "prompt_contract_hash": "sha256:prompt-contract",
+    }
+
+    with pytest.raises(MfSubagentContractError, match="bounded dispatch/startup evidence"):
+        validate_route_action_gate(
+            _route_action_payload(
+                caller_role="implementation_worker",
+                bounded_dispatch_evidence=dispatch,
+                bounded_startup_evidence=_startup_evidence(),
+                **_high_risk_route_machine_fields(),
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "startup_override",
+    [
+        {"prompt_contract_hash": ""},
+        {"fence_token": "", "fence_token_matches": False},
+    ],
+)
+def test_route_action_gate_blocks_high_risk_worker_when_startup_evidence_incomplete(
+    startup_override: dict[str, object],
+) -> None:
+    dispatch = validate_mf_subagent_dispatch_gate(
+        _dispatch_payload(),
+        target_worktree_path="/repo",
+    )
+
+    with pytest.raises(MfSubagentContractError, match="bounded dispatch/startup evidence"):
+        validate_route_action_gate(
+            _route_action_payload(
+                caller_role="implementation_worker",
+                bounded_dispatch_evidence=dispatch,
+                bounded_startup_evidence=_startup_evidence(**startup_override),
+                **_high_risk_route_machine_fields(),
+            )
+        )
+
+
+def test_route_action_gate_allows_high_risk_worker_with_bounded_dispatch_and_startup_evidence() -> None:
+    dispatch = validate_mf_subagent_dispatch_gate(
+        _dispatch_payload(),
+        target_worktree_path="/repo",
+    )
+
+    evidence = validate_route_action_gate(
+        _route_action_payload(
+            caller_role="implementation_worker",
+            mf_subagent_dispatch_gate=dispatch,
+            mf_subagent_startup_gate=_startup_evidence(),
+            **_high_risk_route_machine_fields(),
+        )
+    )
+
+    assert evidence["allowed"] is True
+    assert evidence["machine_context_required"] is True
+    assert "priority_p0" in evidence["machine_context_policy"]["reason_codes"]
+    assert evidence["route_machine_context"]["visible_injection_manifest_present"] is True
+    assert evidence["route_machine_context"]["allowed_actions"] == ["apply_patch"]
+    assert evidence["route_machine_context"]["required_evidence"]
+    assert evidence["bounded_dispatch_evidence_present"] is True
+    assert evidence["bounded_startup_evidence_present"] is True
+    assert evidence["bounded_worker_evidence_present"] is True
+    assert evidence["bounded_dispatch_evidence"]["fence_present"] is True
+
+
+def test_route_action_gate_waiver_does_not_satisfy_high_risk_dispatch_evidence() -> None:
+    with pytest.raises(MfSubagentContractError, match="bounded dispatch/startup evidence"):
+        validate_route_action_gate(
+            _route_action_payload(
+                caller_role="implementation_worker",
+                version_check={
+                    "status": "failed",
+                    "dirty": True,
+                    "dirty_files": ["agent/governance/mf_subagent_contract.py"],
+                },
+                graph_status={"current_state": {"graph_stale": {"is_stale": True}}},
+                route_action_waiver={
+                    "accepted": True,
+                    "route_context_hash": "sha256:route-context",
+                    "prompt_contract_id": "rprompt-1",
+                    "prompt_contract_hash": "sha256:prompt-contract",
+                },
+                **_high_risk_route_machine_fields(),
+            )
+        )
+
+
+def test_route_action_gate_blocks_worker_action_listed_in_blocked_actions() -> None:
+    with pytest.raises(MfSubagentContractError, match="blocked_actions"):
+        validate_route_action_gate(
+            _route_action_payload(
+                caller_role="implementation_worker",
+                blocked_actions=["apply_patch"],
+                **_high_risk_route_machine_fields(),
+            )
+        )
+
+
+def test_route_action_gate_blocks_provider_unavailable_for_implementation() -> None:
+    with pytest.raises(MfSubagentContractError, match="blocked_route_context_unavailable"):
+        validate_route_action_gate(
+            _route_action_payload(
+                caller_role="implementation_worker",
+                route_provider_error="Transport closed",
+            )
+        )
+
+
+def test_route_action_gate_blocks_nested_provider_runtime_stale_for_implementation() -> None:
+    with pytest.raises(MfSubagentContractError, match="blocked_route_context_unavailable"):
+        validate_route_action_gate(
+            _route_action_payload(
+                caller_role="implementation_worker",
+                provider_runtime_status={
+                    "stale": True,
+                    "loaded_source_hash": "sha256:route-source",
+                    "current_source_hash": "sha256:route-source",
+                },
+            )
+        )
+
+
+def test_route_action_gate_blocks_nested_provider_source_hash_mismatch() -> None:
+    with pytest.raises(MfSubagentContractError, match="blocked_route_context_unavailable"):
+        validate_route_action_gate(
+            _route_action_payload(
+                caller_role="implementation_worker",
+                provider_runtime_status={
+                    "loaded_source_hash": "sha256:old-route-source",
+                    "current_source_hash": "sha256:new-route-source",
+                },
+            )
+        )
 
 
 def test_route_action_gate_rejects_implementation_without_route_identity() -> None:
@@ -437,7 +715,22 @@ def test_route_action_gate_waiver_can_bypass_dirty_or_stale_preconditions() -> N
     assert evidence["graph_current_gate"]["passed"] is False
 
 
-def test_route_action_gate_accepts_observer_with_waiver_and_matching_dispatch() -> None:
+def test_route_action_gate_rejects_independent_reviewer_alias_direct_implementation() -> None:
+    with pytest.raises(MfSubagentContractError, match="must_not_implement"):
+        validate_route_action_gate(
+            _route_action_payload(
+                caller_role="independent_reviewer",
+                route_alerts=[
+                    {
+                        "code": "observer_independent_reviewer_must_not_implement",
+                        "blocked_actions": ["apply_patch"],
+                    }
+                ],
+            )
+        )
+
+
+def test_route_action_gate_rejects_observer_with_waiver_dispatch_and_startup() -> None:
     dispatch = validate_mf_subagent_dispatch_gate(
         _dispatch_payload(),
         target_worktree_path="/repo",
@@ -445,24 +738,53 @@ def test_route_action_gate_accepts_observer_with_waiver_and_matching_dispatch() 
 
     assert dispatch["allowed"] is True
 
-    evidence = validate_route_action_gate(
-        _route_action_payload(
-            route_action_waiver={
-                "accepted": True,
-                "route_context_hash": "sha256:route-context",
-                "prompt_contract_id": "rprompt-1",
-                "prompt_contract_hash": "sha256:prompt-contract",
-            },
-            bounded_dispatch_evidence=dispatch,
+    with pytest.raises(MfSubagentContractError, match="observer_judger_must_not_implement"):
+        validate_route_action_gate(
+            _route_action_payload(
+                route_action_waiver={
+                    "accepted": True,
+                    "route_context_hash": "sha256:route-context",
+                    "prompt_contract_id": "rprompt-1",
+                    "prompt_contract_hash": "sha256:prompt-contract",
+                },
+                bounded_dispatch_evidence=dispatch,
+                bounded_startup_evidence=_startup_evidence(),
+            )
         )
+
+
+def test_route_action_gate_rejects_independent_reviewer_alias_with_waiver_dispatch_and_startup() -> None:
+    dispatch = validate_mf_subagent_dispatch_gate(
+        _dispatch_payload(),
+        target_worktree_path="/repo",
     )
 
-    assert evidence["allowed"] is True
-    assert evidence["accepted_waiver_present"] is True
-    assert evidence["bounded_dispatch_evidence_present"] is True
+    with pytest.raises(
+        MfSubagentContractError,
+        match="observer_independent_reviewer_must_not_implement",
+    ):
+        validate_route_action_gate(
+            _route_action_payload(
+                caller_role="independent_reviewer",
+                route_alerts=[
+                    {
+                        "code": "observer_independent_reviewer_must_not_implement",
+                        "blocked_actions": ["apply_patch"],
+                    }
+                ],
+                route_action_waiver={
+                    "accepted": True,
+                    "route_context_hash": "sha256:route-context",
+                    "prompt_contract_id": "rprompt-1",
+                    "prompt_contract_hash": "sha256:prompt-contract",
+                },
+                bounded_dispatch_evidence=dispatch,
+                bounded_startup_evidence=_startup_evidence(),
+            )
+        )
 
 
-def test_route_action_gate_rejects_observer_when_dispatch_explicitly_failed() -> None:
+def test_route_action_gate_rejects_observer_direct_implementation_before_dispatch_result() -> None:
     failed_dispatch = {
         "schema_version": DISPATCH_GATE_SCHEMA_VERSION,
         "allowed": False,
@@ -473,7 +795,7 @@ def test_route_action_gate_rejects_observer_when_dispatch_explicitly_failed() ->
         "prompt_contract_hash": "sha256:prompt-contract",
     }
 
-    with pytest.raises(MfSubagentContractError, match="matching bounded dispatch"):
+    with pytest.raises(MfSubagentContractError, match="observer_judger_must_not_implement"):
         validate_route_action_gate(
             _route_action_payload(
                 route_action_waiver={

@@ -87,6 +87,16 @@ as the default operator path.
   `task_id`, `trace_id`, `phase`, or `event_kind`.
 - `mf_timeline_precheck`: run the same non-mutating MF close-gate check that
   `backlog_close` will enforce.
+
+Before local writes for P0, cross-module, `mf_parallel.v1`, or
+`observer_led_parallel_lanes` implementation, run the local precheck service
+gate `route.pre_mutation` or the route service gate `route.action_precheck`.
+The gate needs machine route identity (`route_context_hash`,
+`prompt_contract_id`, `prompt_contract_hash`), caller role, allowed/blocked
+actions, required lanes/evidence, and visible injection manifest evidence.
+`preflight_check` output or advisory text alone is not authorization.
+Provider unavailable, closed transport, or stale route evidence must block as
+`blocked_route_context_unavailable`.
 - `backlog_export`: export backlog rows as portable JSON for transfer or backup.
 - `backlog_import`: import portable backlog JSON with `skip`, `overwrite`, or
   `fail` conflict handling and optional dry-run.

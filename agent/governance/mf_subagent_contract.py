@@ -32,6 +32,13 @@ DISPATCH_DEFAULT = "non_blocking_after_gate"
 WORKTREE_POLICY_MODE = "isolated_worktree_required"
 OBSERVER_DIRECT_MUTATION_DEFAULT = "reject"
 ROUTE_OBSERVER_JUDGER_BLOCK_ALERT = "observer_judger_must_not_implement"
+ROUTE_OBSERVER_INDEPENDENT_REVIEWER_BLOCK_ALERT = (
+    "observer_independent_reviewer_must_not_implement"
+)
+ROUTE_DIRECT_IMPLEMENTATION_BLOCK_ALERTS = {
+    ROUTE_OBSERVER_JUDGER_BLOCK_ALERT,
+    ROUTE_OBSERVER_INDEPENDENT_REVIEWER_BLOCK_ALERT,
+}
 
 MF_SUB_ALLOWED_CAPABILITIES = (
     "modify_code",
@@ -124,7 +131,13 @@ _IMPLEMENTATION_ACTIONS = {
     "write_file",
     "write_files",
 }
-_OBSERVER_JUDGER_ROLES = {"observer", "judger"}
+_OBSERVER_JUDGER_ROLES = {
+    "observer",
+    "judger",
+    "reviewer",
+    "independent_reviewer",
+    "observer_independent_reviewer",
+}
 _WORKER_ROLES = {
     "implementation_worker",
     "mf_sub",
@@ -132,6 +145,39 @@ _WORKER_ROLES = {
     "subagent",
     "worker",
 }
+_HIGH_RISK_ROUTE_PRIORITIES = {"P0", "P1"}
+_PARALLEL_ROUTE_TOPOLOGIES = {
+    "mf_parallel",
+    "mf_parallel_v1",
+    "mf_parallel.v1",
+    "observer_led_parallel_lanes",
+    "parallel",
+    "parallel_lanes",
+}
+_HIGH_RISK_ROUTE_PATH_MARKERS = (
+    "agent/governance/",
+    "agent/mcp/",
+    "frontend/dashboard/",
+    "shared-volume/",
+    "docs/governance/",
+    "skills/aming-claw/",
+)
+_ROUTE_PROVIDER_STATUS_CONTAINER_KEYS = (
+    "provider_runtime_status",
+    "mcp_runtime_status",
+    "runtime_status",
+    "route_provider_runtime_status",
+    "route_context_runtime_status",
+    "route_precheck_runtime_status",
+    "route_provider_status",
+    "provider_status",
+    "route_context_status",
+)
+_ROUTE_PROVIDER_HASH_PAIRS = (
+    ("loaded_source_hash", "current_source_hash"),
+    ("loaded_provider_source_hash", "current_provider_source_hash"),
+    ("loaded_route_source_hash", "current_route_source_hash"),
+)
 _ROUTE_TOKEN_WAIVER_TYPES = {
     "manual_fix",
     "manual-fix",
@@ -381,6 +427,365 @@ def _route_caller_role(payload: Mapping[str, Any]) -> str:
     return ""
 
 
+def _route_machine_containers(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    containers: list[Mapping[str, Any]] = [payload]
+    for key in (
+        "route",
+        "route_context",
+        "route_prompt_bundle",
+        "bundle",
+        "prompt_contract",
+        "route_prompt_contract",
+        "worker_prompt_contract",
+        "verification_policy",
+        "hashes",
+    ):
+        nested = _nested_mapping(payload, key)
+        if nested:
+            containers.append(nested)
+            for child_key in (
+                "route",
+                "prompt_contract",
+                "route_prompt_contract",
+                "worker_prompt_contract",
+                "verification_policy",
+                "hashes",
+            ):
+                child = _nested_mapping(nested, child_key)
+                if child:
+                    containers.append(child)
+    return containers
+
+
+def _route_text_values(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, Mapping):
+        for key in (
+            "id",
+            "name",
+            "role",
+            "action",
+            "allowed_action",
+            "requirement_id",
+            "evidence_id",
+        ):
+            token = _string(value.get(key))
+            if token:
+                return [token]
+        return ["<mapping>"] if value else []
+    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        result: list[str] = []
+        for item in value:
+            result.extend(_route_text_values(item))
+        return result
+    token = _string(value)
+    return [token] if token else []
+
+
+def _route_collect_texts(
+    payload: Mapping[str, Any],
+    *field_names: str,
+) -> list[str]:
+    values: list[str] = []
+    for container in _route_machine_containers(payload):
+        for field_name in field_names:
+            values.extend(_route_text_values(container.get(field_name)))
+    return _dedupe_strings(values)
+
+
+def _route_alert_mappings(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    alerts: list[Mapping[str, Any]] = []
+    for container in _route_machine_containers(payload):
+        for key in ("route_alerts", "alerts"):
+            value = container.get(key)
+            if isinstance(value, Mapping):
+                alerts.append(value)
+            elif isinstance(value, Sequence) and not isinstance(
+                value, (str, bytes, bytearray)
+            ):
+                alerts.extend(item for item in value if isinstance(item, Mapping))
+    return alerts
+
+
+def _route_blocked_actions(payload: Mapping[str, Any]) -> list[str]:
+    values = _route_collect_texts(payload, "blocked_actions", "blocked_action")
+    for alert in _route_alert_mappings(payload):
+        values.extend(_route_text_values(alert.get("blocked_actions")))
+    return _dedupe_strings(values)
+
+
+def _route_hard_blocked_actions(
+    payload: Mapping[str, Any],
+    *,
+    caller_role: str,
+) -> list[str]:
+    values = _route_collect_texts(payload, "blocked_actions", "blocked_action")
+    for alert in _route_alert_mappings(payload):
+        alert_code = _string(alert.get("code"))
+        if (
+            caller_role in _OBSERVER_JUDGER_ROLES
+            and alert_code in ROUTE_DIRECT_IMPLEMENTATION_BLOCK_ALERTS
+        ):
+            continue
+        values.extend(_route_text_values(alert.get("blocked_actions")))
+    return _dedupe_strings(values)
+
+
+def _route_explicit_allowed_actions(payload: Mapping[str, Any]) -> list[str]:
+    return _route_collect_texts(payload, "allowed_actions", "allowed_action")
+
+
+def _route_required_lanes(payload: Mapping[str, Any]) -> list[str]:
+    return _route_collect_texts(payload, "required_lanes", "required_lane")
+
+
+def _route_required_evidence(payload: Mapping[str, Any]) -> list[str]:
+    return _route_collect_texts(
+        payload,
+        "required_evidence",
+        "required_evidence_ids",
+        "evidence_required",
+        "evidence_requirements",
+        "contract_evidence",
+    )
+
+
+def _route_visible_injection_manifest_present(payload: Mapping[str, Any]) -> bool:
+    for container in _route_machine_containers(payload):
+        if _string(container.get("visible_injection_manifest_hash")):
+            return True
+        hashes = _nested_mapping(container, "hashes")
+        if _string(hashes.get("visible_injection_manifest_hash")):
+            return True
+        manifest = container.get("visible_injection_manifest")
+        if isinstance(manifest, Mapping) and bool(manifest):
+            return True
+    return False
+
+
+def _route_priority(payload: Mapping[str, Any]) -> str:
+    for container in _route_machine_containers(payload):
+        for key in ("priority", "severity", "risk_priority"):
+            token = _string(container.get(key)).upper()
+            if token:
+                return token
+    return ""
+
+
+def _route_topology_values(payload: Mapping[str, Any]) -> list[str]:
+    values = _route_collect_texts(
+        payload,
+        "selected_topology",
+        "recommended_topology",
+        "topology",
+    )
+    return [_normalized_action(value) for value in values if _string(value)]
+
+
+def _route_file_values(payload: Mapping[str, Any]) -> list[str]:
+    return _route_collect_texts(
+        payload,
+        "target_files",
+        "test_files",
+        "changed_files",
+        "owned_files",
+        "write_scope",
+    )
+
+
+def _route_cross_module_change(files: Sequence[str]) -> bool:
+    normalized = [_string(path).replace("\\", "/") for path in files if _string(path)]
+    buckets = {"/".join(path.split("/")[:2]) for path in normalized}
+    return len(normalized) > 3 or len(buckets) > 1
+
+
+def _route_action_high_risk_policy(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    priority = _route_priority(payload)
+    topologies = _route_topology_values(payload)
+    files = _route_file_values(payload)
+    required_lanes = {
+        _normalized_action(item) for item in _route_required_lanes(payload) if item
+    }
+    required_evidence = {
+        _normalized_action(item) for item in _route_required_evidence(payload) if item
+    }
+    risk_class = _string(
+        payload.get("risk_class")
+        or payload.get("risk")
+        or _nested_mapping(payload, "route_context").get("risk_class")
+    ).lower()
+    reason_codes: list[str] = []
+    if priority in _HIGH_RISK_ROUTE_PRIORITIES:
+        reason_codes.append(f"priority_{priority.lower()}")
+    if any(topology in _PARALLEL_ROUTE_TOPOLOGIES for topology in topologies):
+        reason_codes.append("parallel_route_topology")
+    if required_lanes.intersection(
+        {
+            "bounded_implementation_worker",
+            "independent_verification_lane",
+            "observer_led_parallel_lanes",
+            "parallel_lanes",
+        }
+    ):
+        reason_codes.append("parallel_required_lanes")
+    if required_evidence.intersection(
+        {
+            "bounded_implementation_worker_dispatch",
+            "mf_subagent_dispatch",
+            "mf_subagent_startup",
+            "bounded_dispatch_evidence",
+        }
+    ):
+        reason_codes.append("bounded_worker_evidence_required")
+    if _route_cross_module_change(files):
+        reason_codes.append("cross_module_change")
+    if any(
+        any(marker in _string(path).replace("\\", "/") for marker in _HIGH_RISK_ROUTE_PATH_MARKERS)
+        for path in files
+    ):
+        reason_codes.append("high_risk_governance_surface")
+    if risk_class in {"high", "critical", "p0", "p1", "high_risk"}:
+        reason_codes.append("explicit_high_risk")
+    return {
+        "required": bool(reason_codes),
+        "priority": priority,
+        "topologies": topologies,
+        "file_count": len(files),
+        "reason_codes": _dedupe_strings(reason_codes),
+    }
+
+
+def _route_provider_unavailable_reason(payload: Mapping[str, Any]) -> str:
+    bool_reason_fields = {
+        "route_provider_unavailable": "route provider unavailable",
+        "route_context_unavailable": "route context unavailable",
+        "route_precheck_provider_unavailable": "route precheck provider unavailable",
+        "provider_unavailable": "route provider unavailable",
+        "mcp_unavailable": "route provider unavailable",
+        "runtime_unavailable": "route runtime unavailable",
+        "unavailable": "route provider unavailable",
+        "transport_closed": "route provider transport closed",
+        "transport_is_closed": "route provider transport closed",
+        "closed": "route provider transport closed",
+        "route_context_stale": "route context stale",
+        "route_evidence_stale": "route evidence stale",
+        "stale_route_evidence": "route evidence stale",
+        "stale": "route runtime stale",
+        "runtime_stale": "route runtime stale",
+        "provider_stale": "route provider stale",
+        "mcp_stale": "route MCP runtime stale",
+    }
+    status_fields = (
+        "status",
+        "state",
+        "runtime_state",
+        "transport_status",
+        "connection_status",
+        "availability",
+        "route_provider_status",
+        "provider_status",
+        "mcp_status",
+        "runtime_status",
+        "route_context_status",
+        "route_evidence_status",
+        "route_action_precheck_status",
+    )
+    error_fields = (
+        "route_provider_error",
+        "provider_error",
+        "route_context_error",
+        "route_precheck_error",
+        "error",
+        "last_error",
+        "message",
+    )
+    for prefix, container in _route_provider_status_containers(payload):
+        for field_name, reason in bool_reason_fields.items():
+            if _bool(container.get(field_name)):
+                return f"{prefix}.{field_name}=True" if prefix else reason
+        if _explicit_false(container.get("available")):
+            return f"{prefix}.available=False" if prefix else "route provider unavailable"
+        hash_mismatch = _route_provider_hash_mismatch(container)
+        if hash_mismatch:
+            return f"{prefix}.{hash_mismatch}" if prefix else hash_mismatch
+        for field_name in status_fields:
+            status = _normalized_action(container.get(field_name))
+            if status in {
+                "unavailable",
+                "provider_unavailable",
+                "route_provider_unavailable",
+                "mcp_unavailable",
+                "runtime_unavailable",
+                "transport_closed",
+                "transportclosed",
+                "connection_closed",
+                "closed",
+                "stale",
+                "runtime_stale",
+                "provider_stale",
+                "mcp_stale",
+                "stale_evidence",
+                "route_context_stale",
+                "route_evidence_stale",
+                "hash_mismatch",
+                "source_hash_mismatch",
+                "stale_hash_mismatch",
+            }:
+                name = f"{prefix}.{field_name}" if prefix else field_name
+                return f"{name}={_string(container.get(field_name))}"
+        for field_name in error_fields:
+            raw_text = _string(container.get(field_name))
+            text = raw_text.lower()
+            normalized = _normalized_action(raw_text)
+            if (
+                "transport closed" in text
+                or "transport_closed" in normalized
+                or "transportclosed" in normalized
+                or "closed transport" in text
+                or "connection closed" in text
+                or "provider unavailable" in text
+                or "route context unavailable" in text
+                or "stale route" in text
+                or "route evidence stale" in text
+                or "source hash mismatch" in text
+            ):
+                name = f"{prefix}.{field_name}" if prefix else field_name
+                return f"{name}: {raw_text}" if prefix else raw_text
+    return ""
+
+
+def _route_provider_status_containers(
+    payload: Mapping[str, Any],
+) -> list[tuple[str, Mapping[str, Any]]]:
+    containers: list[tuple[str, Mapping[str, Any]]] = [
+        ("", container) for container in _route_machine_containers(payload)
+    ]
+    seen = {id(container) for _, container in containers}
+    for parent_prefix, parent in list(containers):
+        for key in _ROUTE_PROVIDER_STATUS_CONTAINER_KEYS:
+            child = parent.get(key)
+            if not isinstance(child, Mapping) or id(child) in seen:
+                continue
+            prefix = f"{parent_prefix}.{key}" if parent_prefix else key
+            containers.append((prefix, child))
+            seen.add(id(child))
+    return containers
+
+
+def _route_provider_hash_mismatch(container: Mapping[str, Any]) -> str:
+    for loaded_key, current_key in _ROUTE_PROVIDER_HASH_PAIRS:
+        loaded = _string(container.get(loaded_key))
+        current = _string(container.get(current_key))
+        if loaded and current and loaded != current:
+            return f"{loaded_key}/{current_key}_mismatch"
+    return ""
+
+
 def _route_identity_containers(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     containers: list[Mapping[str, Any]] = []
     route = _nested_mapping(payload, "route")
@@ -452,6 +857,148 @@ def _dispatch_evidence_matches(
         and _string(evidence.get("prompt_contract_id")) == prompt_contract_id
         and _string(evidence.get("prompt_contract_hash")) == prompt_contract_hash
     )
+
+
+def _fence_evidence_present(evidence: Mapping[str, Any]) -> bool:
+    for key in (
+        "fence_token",
+        "worker_fence_token",
+        "route_fence_token",
+        "actual_fence_token",
+        "reported_fence_token",
+    ):
+        if _string(evidence.get(key)):
+            return True
+    for key in (
+        "fence_token_present",
+        "actual_fence_token_present",
+        "fence_token_matches",
+    ):
+        if _bool(evidence.get(key)):
+            return True
+    if _string(evidence.get("fence_token_hash")):
+        return True
+    fence = _nested_mapping(evidence, "fence")
+    if _string(fence.get("token") or fence.get("fence_token") or fence.get("hash")):
+        return True
+    return False
+
+
+def _bounded_dispatch_evidence_present(evidence: Mapping[str, Any]) -> bool:
+    if _explicit_false(evidence.get("bounded")):
+        return False
+    return (
+        _bool(evidence.get("bounded"))
+        or _string(evidence.get("schema_version")) == DISPATCH_GATE_SCHEMA_VERSION
+        or bool(
+            _string(evidence.get("worktree") or evidence.get("worktree_path"))
+            and _string(evidence.get("fence_token"))
+        )
+    )
+
+
+def _bounded_startup_evidence_present(evidence: Mapping[str, Any]) -> bool:
+    if _explicit_false(evidence.get("bounded")):
+        return False
+    gate_kind = _string(evidence.get("gate_kind") or evidence.get("kind")).lower()
+    return (
+        _bool(evidence.get("bounded"))
+        or gate_kind == "mf_subagent.startup"
+        or _bool(evidence.get("same_as_expected_worker"))
+        or _bool(evidence.get("fence_token_matches"))
+        or bool(
+            _string(evidence.get("worktree") or evidence.get("worktree_path"))
+            and _fence_evidence_present(evidence)
+        )
+    )
+
+
+def _startup_evidence_matches(
+    evidence: Mapping[str, Any],
+    *,
+    route_context_hash: str,
+    prompt_contract_id: str,
+    prompt_contract_hash: str,
+) -> bool:
+    status = _string(evidence.get("status") or evidence.get("decision")).lower()
+    if (
+        _explicit_false(evidence.get("allowed"))
+        or _explicit_false(evidence.get("ok"))
+        or status in _FAIL_STATUSES
+    ):
+        return False
+    gate_kind = _string(evidence.get("gate_kind") or evidence.get("kind")).lower()
+    allowed = (
+        _bool(evidence.get("allowed"))
+        or _bool(evidence.get("ok"))
+        or status in _PASS_STATUSES
+        or status in {"allow", "allowed"}
+        or gate_kind == "mf_subagent.startup"
+        or _bool(evidence.get("started"))
+        or _bool(evidence.get("startup_complete"))
+        or _bool(evidence.get("same_as_expected_worker"))
+    )
+    role = _string(
+        evidence.get("role") or evidence.get("worker_role") or evidence.get("caller_role")
+    ).lower()
+    worker_role_ok = not role or role in _WORKER_ROLES or role == MF_SUB_ROLE
+    return (
+        allowed
+        and worker_role_ok
+        and _string(evidence.get("route_context_hash")) == route_context_hash
+        and _string(evidence.get("prompt_contract_id")) == prompt_contract_id
+        and _string(evidence.get("prompt_contract_hash")) == prompt_contract_hash
+    )
+
+
+def _route_startup_evidence(payload: Mapping[str, Any]) -> dict[str, Any]:
+    return _mapping(
+        payload.get("bounded_startup_evidence")
+        or payload.get("startup_evidence")
+        or payload.get("mf_subagent_startup_gate"),
+        field_name="bounded_startup_evidence",
+    )
+
+
+def _bounded_worker_evidence_matches(
+    dispatch_evidence: Mapping[str, Any],
+    startup_evidence: Mapping[str, Any],
+    *,
+    route_context_hash: str,
+    prompt_contract_id: str,
+    prompt_contract_hash: str,
+) -> dict[str, Any]:
+    dispatch_matches = _dispatch_evidence_matches(
+        dispatch_evidence,
+        route_context_hash=route_context_hash,
+        prompt_contract_id=prompt_contract_id,
+        prompt_contract_hash=prompt_contract_hash,
+    )
+    startup_matches = _startup_evidence_matches(
+        startup_evidence,
+        route_context_hash=route_context_hash,
+        prompt_contract_id=prompt_contract_id,
+        prompt_contract_hash=prompt_contract_hash,
+    )
+    dispatch_fence = _fence_evidence_present(dispatch_evidence)
+    startup_fence = _fence_evidence_present(startup_evidence)
+    dispatch_bounded = _bounded_dispatch_evidence_present(dispatch_evidence)
+    startup_bounded = _bounded_startup_evidence_present(startup_evidence)
+    dispatch_present = dispatch_matches and dispatch_fence and dispatch_bounded
+    startup_present = startup_matches and startup_fence and startup_bounded
+    return {
+        "present": dispatch_present and startup_present,
+        "dispatch_present": dispatch_present,
+        "startup_present": startup_present,
+        "dispatch_matches": dispatch_matches,
+        "startup_matches": startup_matches,
+        "fence_present": dispatch_fence and startup_fence,
+        "bounded_present": dispatch_bounded and startup_bounded,
+        "dispatch_fence_present": dispatch_fence,
+        "startup_fence_present": startup_fence,
+        "dispatch_bounded_present": dispatch_bounded,
+        "startup_bounded_present": startup_bounded,
+    }
 
 
 def _first_mapping(payload: Mapping[str, Any], keys: Sequence[str]) -> dict[str, Any]:
@@ -564,7 +1111,28 @@ def validate_route_action_gate(
     prompt_contract_hash = _route_prompt_contract_hash(payload)
     route_alert_codes = _route_alert_codes(payload)
     implementation_action = action_name in _IMPLEMENTATION_ACTIONS
+    high_risk_policy = _route_action_high_risk_policy(payload)
+    provider_unavailable_reason = _route_provider_unavailable_reason(payload)
+    direct_implementation_block_alerts = sorted(
+        ROUTE_DIRECT_IMPLEMENTATION_BLOCK_ALERTS.intersection(route_alert_codes)
+    )
 
+    if implementation_action and provider_unavailable_reason:
+        raise MfSubagentContractError(
+            "blocked_route_context_unavailable: "
+            f"{provider_unavailable_reason}"
+        )
+    if (
+        caller_role in _OBSERVER_JUDGER_ROLES
+        and implementation_action
+        and direct_implementation_block_alerts
+    ):
+        alert_code = ",".join(direct_implementation_block_alerts)
+        raise MfSubagentContractError(
+            f"{alert_code} blocks {caller_role or 'unknown'} direct implementation "
+            f"action {action_name or 'unknown'}; route waiver, dispatch, or startup "
+            "evidence cannot authorize observer/reviewer direct implementation"
+        )
     if implementation_action and (
         not route_context_hash or not prompt_contract_id or not prompt_contract_hash
     ):
@@ -572,12 +1140,48 @@ def validate_route_action_gate(
             "implementation action requires route_context_hash, "
             "prompt_contract_id, and prompt_contract_hash"
         )
-
-    blocked_by_role_alert = (
-        caller_role in _OBSERVER_JUDGER_ROLES
-        and implementation_action
-        and ROUTE_OBSERVER_JUDGER_BLOCK_ALERT in route_alert_codes
+    machine_context = {
+        "visible_injection_manifest_present": _route_visible_injection_manifest_present(
+            payload
+        ),
+        "allowed_actions": _route_explicit_allowed_actions(payload),
+        "blocked_actions": _route_blocked_actions(payload),
+        "required_lanes": _route_required_lanes(payload),
+        "required_evidence": _route_required_evidence(payload),
+    }
+    if implementation_action and high_risk_policy["required"]:
+        missing_machine_fields: list[str] = []
+        if not caller_role:
+            missing_machine_fields.append("caller_role")
+        if not machine_context["visible_injection_manifest_present"]:
+            missing_machine_fields.append("visible_injection_manifest")
+        for field_name in (
+            "allowed_actions",
+            "blocked_actions",
+            "required_lanes",
+            "required_evidence",
+        ):
+            if not machine_context[field_name]:
+                missing_machine_fields.append(field_name)
+        if missing_machine_fields:
+            raise MfSubagentContractError(
+                "high-risk implementation action requires machine route "
+                "context fields: " + ", ".join(missing_machine_fields)
+            )
+        if not _route_action_allowed(action_name, machine_context["allowed_actions"]):
+            raise MfSubagentContractError(
+                f"route allowed_actions do not allow implementation action {action_name}"
+            )
+    hard_blocked_actions = _route_hard_blocked_actions(
+        payload,
+        caller_role=caller_role,
     )
+    if implementation_action and _route_action_allowed(action_name, hard_blocked_actions):
+        raise MfSubagentContractError(
+            "route blocked_actions explicitly block implementation action "
+            f"{action_name}"
+        )
+
     waiver = _mapping(
         payload.get("route_action_waiver")
         or payload.get("accepted_waiver")
@@ -590,25 +1194,32 @@ def validate_route_action_gate(
         or payload.get("mf_subagent_dispatch_gate"),
         field_name="bounded_dispatch_evidence",
     )
+    startup_evidence = _route_startup_evidence(payload)
     waiver_matches = _accepted_waiver_matches(
         waiver,
         route_context_hash=route_context_hash,
         prompt_contract_id=prompt_contract_id,
         prompt_contract_hash=prompt_contract_hash,
     )
-    dispatch_matches = _dispatch_evidence_matches(
+    bounded_worker_evidence = _bounded_worker_evidence_matches(
         dispatch_evidence,
+        startup_evidence,
         route_context_hash=route_context_hash,
         prompt_contract_id=prompt_contract_id,
         prompt_contract_hash=prompt_contract_hash,
     )
-    if blocked_by_role_alert and not (waiver_matches and dispatch_matches):
+    dispatch_matches = bool(bounded_worker_evidence["dispatch_present"])
+    startup_matches = bool(bounded_worker_evidence["startup_present"])
+    bounded_worker_matches = bool(bounded_worker_evidence["present"])
+    if (
+        implementation_action
+        and high_risk_policy["required"]
+        and not bounded_worker_matches
+    ):
         raise MfSubagentContractError(
-            "observer_judger_must_not_implement blocks "
-            f"{caller_role or 'unknown'} action {action_name or 'unknown'} "
-            "without accepted waiver and matching bounded dispatch evidence"
+            "high-risk implementation action requires matching bounded dispatch/startup "
+            "evidence before mutation"
         )
-
     version_workspace_gate = _version_workspace_gate(payload)
     graph_current_gate = _graph_current_gate(payload)
     precondition_waiver_used = False
@@ -636,8 +1247,14 @@ def validate_route_action_gate(
         "route_context_hash": route_context_hash,
         "prompt_contract_id": prompt_contract_id,
         "prompt_contract_hash": prompt_contract_hash,
+        "machine_context_required": bool(high_risk_policy["required"]),
+        "machine_context_policy": high_risk_policy,
+        "route_machine_context": machine_context,
         "accepted_waiver_present": waiver_matches,
         "bounded_dispatch_evidence_present": dispatch_matches,
+        "bounded_startup_evidence_present": startup_matches,
+        "bounded_worker_evidence_present": bounded_worker_matches,
+        "bounded_dispatch_evidence": bounded_worker_evidence,
         "version_workspace_gate": version_workspace_gate,
         "graph_current_gate": graph_current_gate,
         "precondition_waiver_used": precondition_waiver_used,
