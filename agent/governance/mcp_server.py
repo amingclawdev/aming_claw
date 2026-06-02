@@ -367,6 +367,10 @@ TOOLS: list[dict] = [
                     "type": "object",
                     "description": "Public-safe seed material for deterministic route context identity.",
                 },
+                "version_check": {
+                    "type": "object",
+                    "description": "Optional clean-workspace/version evidence for route action precheck preview.",
+                },
                 "actor": {"type": "string"},
             },
             "required": ["project_id"],

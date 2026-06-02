@@ -127,6 +127,7 @@ def test_mcp_stdio_observer_repair_run_plan_schema_is_read_only_entrypoint():
     assert "root_backlog_ids" in properties
     assert "blockers" in properties
     assert "include_timeline_precheck" in properties
+    assert "version_check" in properties
     assert "route_token" not in properties
     assert "route_waiver" not in properties
 

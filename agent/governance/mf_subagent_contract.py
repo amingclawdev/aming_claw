@@ -523,6 +523,8 @@ def _route_hard_blocked_actions(
 ) -> list[str]:
     values = _route_collect_texts(payload, "blocked_actions", "blocked_action")
     for alert in _route_alert_mappings(payload):
+        if not _route_alert_applies_to_role(alert, caller_role=caller_role):
+            continue
         alert_code = _string(alert.get("code"))
         if (
             caller_role in _OBSERVER_JUDGER_ROLES
@@ -531,6 +533,26 @@ def _route_hard_blocked_actions(
             continue
         values.extend(_route_text_values(alert.get("blocked_actions")))
     return _dedupe_strings(values)
+
+
+def _route_alert_applies_to_role(alert: Mapping[str, Any], *, caller_role: str) -> bool:
+    applies_to = {
+        _normalized_action(item)
+        for item in _route_text_values(alert.get("applies_to"))
+    }
+    if not applies_to:
+        return True
+    role = _normalized_action(caller_role)
+    if not role:
+        return True
+    aliases = {role}
+    if role in {"implementation_worker", "implementation", "worker", "mf_sub"}:
+        aliases.update({"implementation_worker", "implementation", "worker", "mf_sub"})
+    if role in {"qa", "reviewer", "independent_reviewer", "verification"}:
+        aliases.update({"qa", "reviewer", "independent_reviewer", "verification"})
+    if role in {"observer", "judger", "judge"}:
+        aliases.update({"observer", "judger", "judge"})
+    return bool(aliases.intersection(applies_to))
 
 
 def _route_explicit_allowed_actions(payload: Mapping[str, Any]) -> list[str]:

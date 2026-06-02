@@ -429,6 +429,25 @@ def test_route_action_gate_allows_bounded_worker_with_route_prompt_identity() ->
     assert evidence["graph_current_gate"]["passed"] is True
 
 
+def test_route_action_gate_does_not_apply_observer_only_blocked_actions_to_worker() -> None:
+    evidence = validate_route_action_gate(
+        _route_action_payload(
+            caller_role="implementation_worker",
+            route_alerts=[
+                {
+                    "code": "observer_judger_must_not_implement",
+                    "applies_to": ["observer", "judger"],
+                    "blocked_actions": ["apply_patch"],
+                }
+            ],
+        )
+    )
+
+    assert evidence["allowed"] is True
+    assert evidence["caller_role"] == "implementation_worker"
+    assert evidence["action"] == "apply_patch"
+
+
 def test_route_action_gate_rejects_preflight_only_high_risk_implementation() -> None:
     with pytest.raises(MfSubagentContractError, match="route_context_hash"):
         validate_route_action_gate(

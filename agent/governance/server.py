@@ -1445,6 +1445,7 @@ def handle_observer_repair_run_plan(ctx: RequestContext):
             blockers=blockers,
             graph_status=body.get("graph_status") if isinstance(body.get("graph_status"), dict) else {},
             operations_queue=body.get("operations_queue") if isinstance(body.get("operations_queue"), dict) else {},
+            version_check=body.get("version_check") if isinstance(body.get("version_check"), dict) else {},
             timeline_prechecks=timeline_prechecks,
             route_context_seed=body.get("route_context_seed")
             if isinstance(body.get("route_context_seed"), dict)

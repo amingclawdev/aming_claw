@@ -15,6 +15,11 @@ from typing import Any
 
 SCHEMA_VERSION = "observer_repair_run_plan.v1"
 ROUTE_CONTEXT_SCHEMA_VERSION = "observer_repair_route_context.v1"
+ROUTE_SERVICE_PREVIEW_SCHEMA_VERSION = "observer_repair_route_service_preview.v1"
+ROUTE_WORKFLOW_TEMPLATE_ID = "mf_workflow_runtime.v1"
+ROUTE_PROMPT_EVENT_KIND = "route.prompt_context.requested"
+ROUTE_ACTION_EVENT_KIND = "route.action.requested"
+ROUTE_SERVICE_STAGE = "dispatch"
 
 CHECKPOINTS = [
     "diagnosed",
@@ -185,6 +190,35 @@ def _parse_json_list(value: Any) -> list[Any]:
     except (TypeError, ValueError, json.JSONDecodeError):
         return []
     return parsed if isinstance(parsed, list) else []
+
+
+def _string_list_field(value: Any) -> list[str]:
+    if isinstance(value, str):
+        parsed = _parse_json_list(value)
+        if parsed:
+            return [str(item).strip() for item in parsed if str(item).strip()]
+        return [
+            item.strip()
+            for item in value.replace("\r", "\n").replace(",", "\n").split("\n")
+            if item.strip()
+        ]
+    return [str(item).strip() for item in _list(value) if str(item).strip()]
+
+
+def _aggregate_row_list(rows: Sequence[Mapping[str, Any]], key: str) -> list[str]:
+    values: list[str] = []
+    for row in rows:
+        values.extend(_string_list_field(row.get(key)))
+    return sorted(set(values))
+
+
+def _highest_priority(rows: Sequence[Mapping[str, Any]]) -> str:
+    rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3, "P4": 4}
+    priorities = [_string(row.get("priority")).upper() for row in rows]
+    priorities = [item for item in priorities if item]
+    if not priorities:
+        return ""
+    return sorted(priorities, key=lambda item: rank.get(item, 99))[0]
 
 
 def _row_text(row: Mapping[str, Any]) -> str:
@@ -377,6 +411,300 @@ def _build_checkpoints(route_context: Mapping[str, Any], lanes: Sequence[Mapping
     ]
 
 
+def _route_service_summary(result: Mapping[str, Any]) -> dict[str, Any]:
+    routes = _list(result.get("routes"))
+    first = _object(routes[0]) if routes else {}
+    return {
+        "decision": _string(result.get("decision")),
+        "status": _string(result.get("status")),
+        "route_count": int(result.get("route_count") or len(routes)),
+        "route_id": _string(first.get("route_id")),
+        "service_id": _string(first.get("service_id")),
+        "route_status": _string(first.get("status")),
+        "route_decision": _string(first.get("decision")),
+        "reason": _string(first.get("reason")),
+        "evidence": _object(first.get("evidence")),
+        "contract_evidence": _list(first.get("contract_evidence")),
+    }
+
+
+def _first_route_result(result: Mapping[str, Any]) -> dict[str, Any]:
+    routes = _list(result.get("routes"))
+    return _object(routes[0]) if routes else {}
+
+
+def _service_route_identity(route: Mapping[str, Any], bundle: Mapping[str, Any]) -> dict[str, str]:
+    evidence = _object(route.get("evidence"))
+    prompt_contract = _object(bundle.get("prompt_contract"))
+    return {
+        "route_context_hash": _string(
+            bundle.get("route_context_hash") or evidence.get("route_context_hash")
+        ),
+        "prompt_contract_id": _string(
+            prompt_contract.get("prompt_contract_id")
+            or evidence.get("prompt_contract_id")
+        ),
+        "prompt_contract_hash": _string(
+            bundle.get("prompt_contract_hash") or evidence.get("prompt_contract_hash")
+        ),
+        "visible_injection_manifest_hash": _string(evidence.get("visible_injection_manifest_hash")),
+    }
+
+
+def _route_prompt_payload(
+    *,
+    project_id: str,
+    root_backlog_ids: Sequence[str],
+    backlog_rows: Sequence[Mapping[str, Any]],
+    classified_rows: Sequence[Mapping[str, Any]],
+    route_context: Mapping[str, Any],
+    repair_run_id: str,
+) -> dict[str, Any]:
+    target_files = _aggregate_row_list(backlog_rows, "target_files")
+    test_files = _aggregate_row_list(backlog_rows, "test_files")
+    acceptance_criteria = _aggregate_row_list(backlog_rows, "acceptance_criteria")
+    priority = _highest_priority(backlog_rows)
+    titles = [
+        _string(row.get("title") or row.get("bug_id"))
+        for row in backlog_rows
+        if _string(row.get("title") or row.get("bug_id"))
+    ]
+    blocker_ids = sorted(
+        {
+            str(blocker)
+            for row in classified_rows
+            for blocker in _list(row.get("blocker_ids"))
+            if str(blocker)
+        }
+    )
+    summary = "; ".join(titles[:3]) or f"Observer repair run for {project_id}"
+    if len(titles) > 3:
+        summary += f"; +{len(titles) - 3} more"
+    prompt_contract_id = _string(route_context.get("prompt_contract_id"))
+    evidence_required = [
+        "route_context",
+        "route_action_precheck",
+        "bounded_implementation_worker_dispatch",
+        "mf_subagent_startup",
+        "independent_verification",
+        "implementation",
+        "verification",
+        "close_ready",
+    ]
+    return {
+        "intent": "observer_repair_run",
+        "project_id": project_id,
+        "backlog_id": root_backlog_ids[0] if len(root_backlog_ids) == 1 else "",
+        "root_backlog_ids": sorted(root_backlog_ids),
+        "priority": priority,
+        "risk_class": "high_risk" if priority in {"P0", "P1"} else "small_deterministic",
+        "route_id": _string(route_context.get("route_id")),
+        "stage": ROUTE_SERVICE_STAGE,
+        "caller_role": "observer",
+        "selected_topology": "observer_led_parallel_lanes",
+        "recommended_topology": "mf_parallel.v1",
+        "content": {
+            "kind": "observer_repair_summary",
+            "summary": summary,
+        },
+        "prompt_contract": {
+            "prompt_contract_id": prompt_contract_id,
+            "prompt_kind": "observer_repair_run",
+            "target_files": target_files,
+            "test_files": test_files,
+            "acceptance_criteria": acceptance_criteria,
+            "evidence_required": evidence_required,
+        },
+        "visible_injection_manifest": {
+            "schema_version": "visible_injection_manifest.v1",
+            "policy": "route_owned_visible_refs_only",
+            "allowed_injections": [
+                {
+                    "kind": "observer_repair_plan",
+                    "id": repair_run_id,
+                    "source_ref": f"observer_repair_run:{repair_run_id}",
+                    "sha256": _string(route_context.get("route_context_hash")),
+                    "status": "generated",
+                }
+            ],
+        },
+        "route_alerts": [
+            "implementation_prompt_must_live_in_route",
+            "external_injection_requires_visible_route_ref",
+        ],
+        "blocker_ids": blocker_ids,
+    }
+
+
+def _route_action_precheck_payload(
+    *,
+    action: str,
+    caller_role: str,
+    bundle: Mapping[str, Any],
+    route_identity: Mapping[str, Any],
+    graph_status: Mapping[str, Any],
+    version_check: Mapping[str, Any],
+) -> dict[str, Any]:
+    prompt_contract = _object(bundle.get("prompt_contract"))
+    verification_policy = _object(bundle.get("verification_policy"))
+    required_evidence = [
+        *_string_list_field(prompt_contract.get("evidence_required")),
+        *_string_list_field(verification_policy.get("required_evidence_ids")),
+    ]
+    return {
+        "caller_role": caller_role,
+        "action": action,
+        "route_prompt_bundle": dict(bundle),
+        "route_context_hash": _string(route_identity.get("route_context_hash")),
+        "prompt_contract_id": _string(route_identity.get("prompt_contract_id")),
+        "prompt_contract_hash": _string(route_identity.get("prompt_contract_hash")),
+        "visible_injection_manifest_hash": _string(
+            route_identity.get("visible_injection_manifest_hash")
+        ),
+        "visible_injection_manifest": _object(bundle.get("visible_injection_manifest")),
+        "route_alerts": _list(bundle.get("alerts")),
+        "selected_topology": _string(bundle.get("selected_topology")),
+        "recommended_topology": _string(bundle.get("recommended_topology")),
+        "required_lanes": _list(bundle.get("required_lanes")),
+        "required_evidence": sorted(set(required_evidence)),
+        "allowed_actions": [action],
+        "target_files": _string_list_field(prompt_contract.get("target_files")),
+        "test_files": _string_list_field(prompt_contract.get("test_files")),
+        "version_check": dict(version_check) if isinstance(version_check, Mapping) else {},
+        "graph_status": dict(graph_status) if isinstance(graph_status, Mapping) else {},
+    }
+
+
+def _build_route_service_preview(
+    *,
+    project_id: str,
+    root_backlog_ids: Sequence[str],
+    backlog_rows: Sequence[Mapping[str, Any]],
+    classified_rows: Sequence[Mapping[str, Any]],
+    lanes: Sequence[Mapping[str, Any]],
+    route_context: Mapping[str, Any],
+    graph_status: Mapping[str, Any],
+    version_check: Mapping[str, Any],
+    repair_run_id: str,
+) -> dict[str, Any]:
+    try:
+        from .contract_template_registry import get_contract_template
+        from .service_router import route_event
+
+        contract = get_contract_template(ROUTE_WORKFLOW_TEMPLATE_ID)
+        prompt_payload = _route_prompt_payload(
+            project_id=project_id,
+            root_backlog_ids=root_backlog_ids,
+            backlog_rows=backlog_rows,
+            classified_rows=classified_rows,
+            route_context=route_context,
+            repair_run_id=repair_run_id,
+        )
+        prompt_event = {
+            "event_id": f"{repair_run_id}:route_prompt_context",
+            "event_kind": ROUTE_PROMPT_EVENT_KIND,
+            "stage": ROUTE_SERVICE_STAGE,
+            "project_id": project_id,
+            "backlog_id": root_backlog_ids[0] if len(root_backlog_ids) == 1 else "",
+            "payload": prompt_payload,
+        }
+        prompt_result = route_event(prompt_event, contract)
+        prompt_route = _first_route_result(prompt_result)
+        prompt_route_result = _object(prompt_route.get("result"))
+        bundle = _object(
+            prompt_route_result.get("route_prompt_bundle")
+            or prompt_route_result.get("bundle")
+        )
+        route_identity = _service_route_identity(prompt_route, bundle)
+        action_prechecks: list[dict[str, Any]] = []
+        if bundle and route_identity.get("route_context_hash"):
+            precheck_specs = [
+                {
+                    "precheck_id": "observer_dispatch_bounded_worker",
+                    "lane_id": "subsystem_evidence",
+                    "caller_role": "observer",
+                    "action": "dispatch_bounded_worker",
+                },
+                {
+                    "precheck_id": "implementation_worker_apply_patch",
+                    "lane_id": "subsystem_evidence",
+                    "caller_role": "implementation_worker",
+                    "action": "apply_patch",
+                },
+                {
+                    "precheck_id": "independent_verification_lane",
+                    "lane_id": "independent_verification",
+                    "caller_role": "qa",
+                    "action": "run_independent_verification",
+                },
+                {
+                    "precheck_id": "observer_close_gate_precheck",
+                    "lane_id": "close_gate",
+                    "caller_role": "observer",
+                    "action": "run_close_gate_precheck",
+                },
+            ]
+            active_lane_ids = {str(lane.get("lane_id")) for lane in lanes}
+            for spec in precheck_specs:
+                if spec["lane_id"] not in active_lane_ids and spec["lane_id"] != "subsystem_evidence":
+                    continue
+                payload = _route_action_precheck_payload(
+                    action=spec["action"],
+                    caller_role=spec["caller_role"],
+                    bundle=bundle,
+                    route_identity=route_identity,
+                    graph_status=graph_status,
+                    version_check=version_check,
+                )
+                action_event = {
+                    "event_id": f"{repair_run_id}:{spec['precheck_id']}",
+                    "event_kind": ROUTE_ACTION_EVENT_KIND,
+                    "stage": ROUTE_SERVICE_STAGE,
+                    "project_id": project_id,
+                    "backlog_id": root_backlog_ids[0] if len(root_backlog_ids) == 1 else "",
+                    "payload": payload,
+                }
+                action_result = route_event(action_event, contract)
+                action_prechecks.append(
+                    {
+                        **spec,
+                        "result": _route_service_summary(action_result),
+                        "route_action_gate": _object(
+                            _object(_first_route_result(action_result).get("result")).get(
+                                "route_action_gate"
+                            )
+                        ),
+                    }
+                )
+        return {
+            "schema_version": ROUTE_SERVICE_PREVIEW_SCHEMA_VERSION,
+            "available": True,
+            "template_id": ROUTE_WORKFLOW_TEMPLATE_ID,
+            "stage": ROUTE_SERVICE_STAGE,
+            "prompt_context_event": {
+                "event_kind": ROUTE_PROMPT_EVENT_KIND,
+                "stage": ROUTE_SERVICE_STAGE,
+                "event_id": prompt_event["event_id"],
+            },
+            "prompt_context_result": _route_service_summary(prompt_result),
+            "prompt_bundle": bundle,
+            "service_generated_route_identity": route_identity,
+            "action_prechecks": action_prechecks,
+            "counts_as_close_evidence": False,
+            "authorizes_protected_write": False,
+        }
+    except Exception as exc:
+        return {
+            "schema_version": ROUTE_SERVICE_PREVIEW_SCHEMA_VERSION,
+            "available": False,
+            "template_id": ROUTE_WORKFLOW_TEMPLATE_ID,
+            "error": type(exc).__name__,
+            "message": str(exc),
+            "counts_as_close_evidence": False,
+            "authorizes_protected_write": False,
+        }
+
+
 def build_repair_run_plan(
     *,
     project_id: str,
@@ -385,6 +713,7 @@ def build_repair_run_plan(
     blockers: Sequence[Any] = (),
     graph_status: Mapping[str, Any] | None = None,
     operations_queue: Mapping[str, Any] | None = None,
+    version_check: Mapping[str, Any] | None = None,
     timeline_prechecks: Sequence[Mapping[str, Any]] = (),
     route_context_seed: Mapping[str, Any] | None = None,
     actor: str = "observer",
@@ -426,6 +755,17 @@ def build_repair_run_plan(
     lanes = _build_lanes(classified_rows)
     dag = _build_dependency_dag(classified_rows, rows_by_id)
     repair_run_id = f"repair-{_stable_hash({'project_id': project, 'roots': roots, 'route': route_context})}"
+    route_service_preview = _build_route_service_preview(
+        project_id=project,
+        root_backlog_ids=roots,
+        backlog_rows=normalized_rows,
+        classified_rows=classified_rows,
+        lanes=lanes,
+        route_context=route_context,
+        graph_status=graph_status or {},
+        version_check=version_check or {},
+        repair_run_id=repair_run_id,
+    )
     recovery_actions = sorted(
         {
             action
@@ -461,6 +801,7 @@ def build_repair_run_plan(
         "actor": actor,
         "root_backlog_ids": roots,
         "route_context": route_context,
+        "route_service_preview": route_service_preview,
         "backlog_dependency_dag": dag,
         "lane_dispatches": lanes,
         "checkpoints": _build_checkpoints(route_context, lanes),

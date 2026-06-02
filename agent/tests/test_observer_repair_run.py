@@ -111,3 +111,35 @@ def test_repair_run_classifies_gate_failures_into_next_legal_actions():
     assert "supersede_or_reset_stale_route_identity_before_retry" in plan["next_legal_actions"]
     assert plan["checkpoints"][0]["checkpoint_id"] == "diagnosed"
     assert plan["checkpoints"][0]["status"] == "passed"
+
+
+def test_repair_run_includes_service_generated_route_preview():
+    plan = observer_repair_run.build_repair_run_plan(
+        project_id="aming-claw",
+        root_backlog_ids=[row["bug_id"] for row in _rows()],
+        backlog_rows=_rows(),
+        graph_status={"current_state": {"graph_stale": {"is_stale": False}}},
+        version_check={"ok": True, "status": "passed", "dirty": False, "dirty_files": []},
+    )
+
+    preview = plan["route_service_preview"]
+    bundle = preview["prompt_bundle"]
+    identity = preview["service_generated_route_identity"]
+    prechecks = {item["precheck_id"]: item for item in preview["action_prechecks"]}
+    bundle_json = json.dumps(bundle, sort_keys=True)
+
+    assert preview["available"] is True
+    assert preview["template_id"] == "mf_workflow_runtime.v1"
+    assert preview["counts_as_close_evidence"] is False
+    assert preview["authorizes_protected_write"] is False
+    assert identity["route_context_hash"] == bundle["route_context_hash"]
+    assert identity["prompt_contract_hash"] == bundle["prompt_contract_hash"]
+    assert identity["prompt_contract_id"] == bundle["prompt_contract"]["prompt_contract_id"]
+    assert identity["route_context_hash"].startswith("sha256:")
+    assert identity["route_context_hash"] != plan["route_context"]["route_context_hash"]
+    assert "raw_prompt" not in bundle_json
+    assert prechecks["observer_dispatch_bounded_worker"]["result"]["decision"] == "allow"
+    assert prechecks["implementation_worker_apply_patch"]["result"]["decision"] == "block"
+    assert "bounded dispatch/startup evidence" in (
+        prechecks["implementation_worker_apply_patch"]["route_action_gate"]["reason"]
+    )
