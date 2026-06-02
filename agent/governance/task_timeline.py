@@ -1733,6 +1733,15 @@ def _event_lane_text(event: dict[str, Any]) -> str:
     return _normalize_token(" ".join(str(field or "") for field in fields))
 
 
+def _event_stage_text(event: dict[str, Any]) -> str:
+    return _normalize_token(
+        " ".join(
+            str(event.get(key) or "")
+            for key in ("event_type", "phase", "event_kind", "decision")
+        )
+    )
+
+
 def _event_has_subagent_identity(event: dict[str, Any]) -> bool:
     text = _event_lane_text(event)
     if any(
@@ -1786,13 +1795,17 @@ def _is_subagent_dispatch_event(event: dict[str, Any]) -> bool:
 def _is_subagent_review_ready_event(event: dict[str, Any]) -> bool:
     if not _event_passed(event) or not _event_has_subagent_identity(event):
         return False
-    text = _event_lane_text(event)
-    if any(marker in text for marker in ("review_ready", "waiting_merge", "handoff")):
+    if _is_subagent_dispatch_event(event):
+        return False
+    text = _event_stage_text(event)
+    if any(marker in text for marker in ("handoff", "review_ready", "waiting_merge")):
         return True
     if any(_truthy(value) for value in _event_field_values(event, {"review_ready"})):
         return True
     for value in _event_field_values(event, {"stop_state", "worker_status", "state"}):
-        if _normalize_token(value) in {"review_ready", "waiting_merge"}:
+        if _normalize_token(value) in {"review_ready", "waiting_merge"} and any(
+            marker in text for marker in ("handoff", "review", "waiting_merge")
+        ):
             return True
     return False
 

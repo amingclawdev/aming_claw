@@ -1771,6 +1771,57 @@ class TestTaskTimeline(unittest.TestCase):
         )
         self.assertFalse(blocked["checks"]["has_lane_ownership"])
 
+    def test_mf_close_gate_dispatch_expectation_does_not_count_as_review_ready(self):
+        from agent.governance import task_timeline
+
+        contract = {
+            "route_id": "route-lane-required",
+            "route_context_hash": "sha256:lane-required",
+            "required_lanes": [
+                {"id": "bounded_implementation_subagent", "role": "implementation_worker"},
+            ],
+        }
+        events = [
+            {
+                "event_type": "mf_subagent.dispatch",
+                "phase": "bounded_subagent_dispatch",
+                "actor": "codex-observer",
+                "status": "accepted",
+                "payload": {
+                    "required_dispatch_key": "bounded_subagent_dispatch",
+                    "bounded_implementation_subagent_id": "subagent-1",
+                    "worker_role": "mf_sub",
+                    "review_ready": True,
+                    "stop_state": "review_ready",
+                },
+            },
+            {
+                "event_kind": "implementation",
+                "phase": "implementation",
+                "actor": "bounded-subagent-1",
+                "status": "passed",
+                "payload": {
+                    "subagent_id": "subagent-1",
+                    "worker_role": "mf_sub",
+                    "changed_files": ["agent/governance/task_timeline.py"],
+                },
+            },
+            {"event_kind": "verification", "phase": "verification", "status": "passed"},
+            {"event_kind": "close_ready", "phase": "close", "status": "accepted"},
+        ]
+
+        blocked = task_timeline.mf_close_gate_verification(events, contract=contract)
+
+        self.assertFalse(blocked["passed"], blocked)
+        self.assertEqual(
+            blocked["lane_ownership_gate"]["present_lane_ownership_ids"],
+            ["bounded_implementation_subagent.dispatch"],
+        )
+        self.assertEqual(
+            blocked["lane_ownership_gate"]["missing_lane_ownership_ids"],
+            ["bounded_implementation_subagent.review_ready"],
+        )
+
     def test_mf_close_gate_accepts_subagent_dispatch_and_review_ready(self):
         from agent.governance import task_timeline
 
