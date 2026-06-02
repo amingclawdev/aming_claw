@@ -24,8 +24,36 @@ logger = logging.getLogger(__name__)
 
 from i18n import t
 from utils import tasks_root
-from workspace import resolve_active_workspace
-from task_accept import finalize_codex_task, finalize_pipeline_task
+try:
+    from workspace import resolve_active_workspace
+except ImportError:  # pragma: no cover - legacy runtime fallback
+    def resolve_active_workspace() -> Path:
+        return Path(os.getenv("CODEX_WORKSPACE", os.getcwd())).resolve()
+try:
+    from task_accept import finalize_codex_task, finalize_pipeline_task
+except ImportError:  # pragma: no cover - legacy runtime fallback
+    def finalize_codex_task(task: Dict, processing: Path, run: Dict, status: str, error: Optional[str] = None) -> Dict:
+        return {"task": task, "processing": str(processing), "run": run, "status": status, "error": error}
+
+    def finalize_pipeline_task(task: Dict, processing: Path, run: Dict, status: str, error: Optional[str] = None) -> Dict:
+        return {"task": task, "processing": str(processing), "run": run, "status": status, "error": error}
+
+try:
+    from ai_invocation import (
+        AIInvocationRequest,
+        RoutePromptContract,
+        invoke_ai,
+        BACKEND_OPENAI_API,
+        BACKEND_ANTHROPIC_API,
+    )
+except ImportError:  # pragma: no cover - package import path
+    from agent.ai_invocation import (
+        AIInvocationRequest,
+        RoutePromptContract,
+        invoke_ai,
+        BACKEND_OPENAI_API,
+        BACKEND_ANTHROPIC_API,
+    )
 
 
 # ── Workspace & safety ────────────────────────────────────────────────────────
@@ -870,89 +898,50 @@ def run_via_api(
     model_override: str = "",
     provider_override: str = "",
 ) -> Dict:
-    """Call Anthropic or OpenAI chat API directly (no CLI required).
-    Provider is determined from the stored model_provider config.
-    Returns a run-dict compatible with finalize_codex_task.
-    """
-    import requests as _req
-    from config import get_claude_model, get_model_provider
+    """Call Anthropic or OpenAI API through the shared invocation contract."""
+    try:
+        from config import get_claude_model, get_model_provider
+    except ImportError:
+        def get_claude_model() -> str:
+            return ""
+
+        def get_model_provider() -> str:
+            return ""
 
     model = (model_override or get_claude_model()).strip()
     provider = (provider_override or get_model_provider()).strip().lower()
     prompt = prompt_override if prompt_override is not None else build_claude_prompt(task)
-    t0 = time.perf_counter()
-
-    try:
-        if provider == "openai":
-            api_key = os.getenv("OPENAI_API_KEY", "").strip()
-            if not api_key:
-                raise RuntimeError("OPENAI_API_KEY not set")
-            resp = _req.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": "Bearer " + api_key,
-                         "Content-Type": "application/json"},
-                json={"model": model,
-                      "messages": [{"role": "user", "content": prompt}],
-                      "max_tokens": 4096},
-                timeout=120,
-            )
-            if resp.status_code >= 400:
-                _raise_api_error("OpenAI", resp)
-            content = resp.json()["choices"][0]["message"]["content"]
-        else:
-            # Default: Anthropic Messages API
-            api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
-            if not api_key:
-                raise RuntimeError("ANTHROPIC_API_KEY not set")
-            payload = {
-                "model": model or "claude-sonnet-4-6",
-                "max_tokens": 8192,
-                "messages": [{"role": "user", "content": prompt}],
-            }
-            resp = _req.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={"x-api-key": api_key,
-                         "anthropic-version": "2023-06-01",
-                         "Content-Type": "application/json"},
-                json=payload,
-                timeout=120,
-            )
-            if resp.status_code >= 400:
-                _raise_api_error("Anthropic", resp)
-            content = resp.json()["content"][0]["text"]
-
-        elapsed_ms = int((time.perf_counter() - t0) * 1000)
-        workspace = resolve_workspace()
-        return {
-            "stdout": content,
-            "stderr": "",
-            "last_message": content,
-            "returncode": 0,
-            "elapsed_ms": elapsed_ms,
-            "cmd": ["api", provider, model],
-            "timeout_retries": 0,
-            "workspace": str(workspace),
-            "git_changed_files": get_git_changed_files(workspace),
-            "attempt_tag": "api",
-            "noop_reason": None,
-            "attempt_count": 1,
-        }
-    except Exception as exc:
-        elapsed_ms = int((time.perf_counter() - t0) * 1000)
-        return {
-            "stdout": "",
-            "stderr": str(exc),
-            "last_message": "",
-            "returncode": 1,
-            "elapsed_ms": elapsed_ms,
-            "cmd": ["api", provider, model],
-            "timeout_retries": 0,
-            "workspace": "",
-            "git_changed_files": None,
-            "attempt_tag": "api",
-            "noop_reason": None,
-            "attempt_count": 1,
-        }
+    provider = provider if provider in {"openai", "anthropic"} else "anthropic"
+    backend_mode = BACKEND_OPENAI_API if provider == "openai" else BACKEND_ANTHROPIC_API
+    workspace = resolve_workspace()
+    request = AIInvocationRequest(
+        role=str(task.get("role") or task.get("type") or "task"),
+        provider=provider,
+        model=model,
+        backend_mode=backend_mode,
+        cwd=str(workspace),
+        prompt=prompt,
+        timeout_sec=120,
+        auth_mode="api_key_env",
+        route=RoutePromptContract.from_mapping(task),
+    )
+    result = invoke_ai(request)
+    completed = result.status == "completed" and result.returncode == 0
+    return {
+        "stdout": result.output_text if completed else "",
+        "stderr": "" if completed else result.error,
+        "last_message": result.output_text if completed else "",
+        "returncode": 0 if completed else 1,
+        "elapsed_ms": result.elapsed_ms,
+        "cmd": result.command or ["api", provider, model],
+        "timeout_retries": 0,
+        "workspace": str(workspace) if completed else "",
+        "git_changed_files": get_git_changed_files(workspace) if completed else None,
+        "attempt_tag": "api",
+        "noop_reason": None,
+        "attempt_count": 1,
+        "ai_invocation": result.to_evidence(),
+    }
 
 
 # ── Process functions ─────────────────────────────────────────────────────────

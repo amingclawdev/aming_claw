@@ -26,6 +26,188 @@ except ImportError:
 pytestmark = pytest.mark.skipif(not HAS_CLICK, reason="click not installed")
 
 
+def test_observer_run_dry_run_emits_route_bound_invocation():
+    runner = CliRunner()
+
+    result = runner.invoke(
+        main,
+        [
+            "observer",
+            "run",
+            "--project-id",
+            "aming-claw",
+            "--backlog-id",
+            "AC-TEST",
+            "--route-context-hash",
+            "sha256:route",
+            "--prompt-contract-id",
+            "rprompt-test",
+            "--json-output",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["status"] == "planned"
+    assert payload["execute"] is False
+    evidence = payload["invocation"]
+    assert evidence["schema_version"] == "ai_invocation_result.v1"
+    assert evidence["backend_mode"] == "codex_cli"
+    assert evidence["calls_models"] is False
+    assert evidence["route_prompt_contract"]["route_context_hash"] == "sha256:route"
+    assert evidence["route_prompt_contract"]["prompt_contract_id"] == "rprompt-test"
+    assert evidence["route_alert_ack"]["status"] == "acknowledged"
+    assert evidence["raw_output_stored"] is False
+
+
+def test_observer_run_rejects_missing_route_identity():
+    runner = CliRunner()
+
+    result = runner.invoke(
+        main,
+        [
+            "observer",
+            "run",
+            "--project-id",
+            "aming-claw",
+            "--backlog-id",
+            "AC-TEST",
+            "--route-context-hash",
+            "",
+            "--prompt-contract-id",
+            "rprompt-test",
+            "--json-output",
+        ],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["ok"] is False
+    assert "route_context_hash" in payload["missing"]
+    assert payload["execute"] is False
+
+
+def test_observer_run_execute_codex_requires_one_hop_dispatch_gate():
+    runner = CliRunner()
+
+    result = runner.invoke(
+        main,
+        [
+            "observer",
+            "run",
+            "--project-id",
+            "aming-claw",
+            "--backlog-id",
+            "AC-TEST",
+            "--route-context-hash",
+            "sha256:route",
+            "--prompt-contract-id",
+            "rprompt-test",
+            "--backend-mode",
+            "codex_cli",
+            "--execute",
+            "--json-output",
+        ],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["ok"] is False
+    assert payload["status"] == "rejected"
+    assert payload["execute"] is True
+    gate = payload["one_hop_execution_gate"]
+    assert gate["required"] is True
+    assert gate["allowed"] is False
+    assert "dispatch_gate" in gate["missing"]
+    assert "invocation" not in payload
+
+
+def test_observer_run_execute_fixture_does_not_require_one_hop_dispatch_gate():
+    runner = CliRunner()
+
+    result = runner.invoke(
+        main,
+        [
+            "observer",
+            "run",
+            "--project-id",
+            "aming-claw",
+            "--backlog-id",
+            "AC-TEST",
+            "--route-context-hash",
+            "sha256:route",
+            "--prompt-contract-id",
+            "rprompt-test",
+            "--provider",
+            "fixture",
+            "--backend-mode",
+            "fixture",
+            "--execute",
+            "--json-output",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["ok"] is True
+    assert payload["status"] == "completed"
+    assert payload["one_hop_execution_gate"]["required"] is False
+    assert payload["invocation"]["calls_models"] is False
+
+
+def test_observer_run_execute_rejects_incomplete_dispatch_gate(tmp_path):
+    gate_file = tmp_path / "dispatch-gate.json"
+    gate_file.write_text(
+        json.dumps(
+            {
+                "route_context_hash": "sha256:route",
+                "prompt_contract_id": "rprompt-test",
+                "owned_files": ["agent/observer_runtime.py"],
+                "dirty_scope_check": {"dirty_scope_exact_match": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    runner = CliRunner()
+
+    result = runner.invoke(
+        main,
+        [
+            "observer",
+            "run",
+            "--project-id",
+            "aming-claw",
+            "--backlog-id",
+            "AC-TEST",
+            "--route-context-hash",
+            "sha256:route",
+            "--prompt-contract-id",
+            "rprompt-test",
+            "--backend-mode",
+            "codex_cli",
+            "--dispatch-gate-file",
+            str(gate_file),
+            "--execute",
+            "--json-output",
+        ],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    gate = payload["one_hop_execution_gate"]
+    assert gate["allowed"] is False
+    for field in (
+        "branch",
+        "worktree",
+        "base_commit",
+        "target_head_commit",
+        "merge_queue_id",
+        "fence_token",
+    ):
+        assert field in gate["error"]
+
+
 def _git(args: list[str], cwd):
     proc = subprocess.run(
         ["git", *args],

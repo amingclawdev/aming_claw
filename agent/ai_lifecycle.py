@@ -27,6 +27,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+try:
+    from ai_invocation import AIInvocationRequest, RoutePromptContract, build_codex_exec_command
+except ImportError:  # pragma: no cover - package import path
+    from agent.ai_invocation import AIInvocationRequest, RoutePromptContract, build_codex_exec_command
+
 log = logging.getLogger(__name__)
 
 
@@ -212,25 +217,7 @@ class AILifecycleManager:
 
     @staticmethod
     def _build_codex_command(model: str, cwd: str) -> list[str]:
-        codex_bin = os.getenv("CODEX_BIN", "").strip()
-        if not codex_bin:
-            codex_bin = "codex.cmd" if os.name == "nt" else "codex"
-        dangerous = os.getenv("CODEX_DANGEROUS", "1").strip().lower() not in {"0", "false", "no"}
-        cmd = [
-            codex_bin,
-            "exec",
-            "--skip-git-repo-check",
-            "-C",
-            cwd,
-            "-o",
-        ]
-        if dangerous:
-            cmd.insert(2, "--dangerously-bypass-approvals-and-sandbox")
-        else:
-            cmd[2:2] = ["--sandbox", "workspace-write"]
-        if model:
-            cmd[2:2] = ["--model", model]
-        return cmd
+        return build_codex_exec_command(model=model, cwd=cwd, output_path="")
 
     @staticmethod
     def _compose_codex_prompt(system_prompt: str, prompt: str) -> str:
@@ -309,9 +296,25 @@ class AILifecycleManager:
             _al_log(f"ERROR prompt_file write failed: {e}")
 
         provider = _provider if _provider in ("anthropic", "openai") else "anthropic"
+        invocation_request = AIInvocationRequest(
+            role=role,
+            provider=provider,
+            model=_model,
+            backend_mode="codex_cli" if provider == "openai" else "claude_cli",
+            cwd=cwd,
+            prompt=prompt,
+            system_prompt=system_prompt,
+            timeout_sec=timeout_sec,
+            output_path=output_last,
+            auth_mode="cli_auth",
+            route=RoutePromptContract.from_mapping(context or {}),
+        )
+        try:
+            _al_log("invocation_contract: " + json.dumps(invocation_request.to_evidence(), sort_keys=True))
+        except Exception:
+            pass
         if provider == "openai":
-            cmd = self._build_codex_command(_model, cwd)
-            cmd.append(output_last)
+            cmd = build_codex_exec_command(model=_model, cwd=cwd, output_path=output_last)
             composed_prompt = self._compose_codex_prompt(system_prompt, prompt)
             stdin_prompt = composed_prompt
         else:

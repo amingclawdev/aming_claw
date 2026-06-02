@@ -12,6 +12,7 @@ Usage:
     aming-claw open            - open the dashboard URL
     aming-claw launcher        - write a local launcher HTML artifact
     aming-claw run-executor    - start executor worker
+    aming-claw observer run    - build or execute route-bound observer invocation
     aming-claw mf precommit-check - run MF pre-commit guards
     aming-claw mf dispatch-gate - validate MF subagent dispatch evidence
 """
@@ -501,6 +502,95 @@ def plugin_doctor(plugin_root, governance_url, codex_config, codex_home, python_
     else:
         click.echo(format_doctor_result(result))
     if not result.ok:
+        raise click.exceptions.Exit(1)
+
+
+@main.group()
+def observer():
+    """Observer runtime launcher."""
+    pass
+
+
+@observer.command("run")
+@click.option("--project-id", required=True, help="Governance project id.")
+@click.option("--backlog-id", required=True, help="Backlog id the observer will supervise.")
+@click.option("--route-context-hash", required=True, help="Route context hash for this observer run.")
+@click.option("--prompt-contract-id", required=True, help="Prompt contract id for this observer run.")
+@click.option("--prompt-contract-hash", default="", help="Optional prompt contract hash.")
+@click.option("--route-token-ref", default="", help="Optional route token id/ref.")
+@click.option("--provider", default="openai", help="Provider name, e.g. openai or anthropic.")
+@click.option("--model", default="", help="Optional provider model override.")
+@click.option("--backend-mode", default="codex_cli", help="Invocation backend, e.g. codex_cli, claude_cli, openai_api, anthropic_api.")
+@click.option("--workspace", default="", help="Observer workspace. Defaults to current working directory.")
+@click.option("--prompt-file", default=None, type=click.Path(exists=True, dir_okay=False, readable=True), help="Optional observer prompt file.")
+@click.option(
+    "--dispatch-gate-file",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, readable=True),
+    help="MF subagent dispatch gate evidence JSON required for live code-mutating backends.",
+)
+@click.option("--main-worktree", default="", help="Target/main worktree path blocked by one-hop dispatch policy.")
+@click.option("--execute", is_flag=True, help="Actually invoke the configured provider. Default is dry-run evidence only.")
+@click.option("--json-output", is_flag=True, help="Print machine-readable JSON.")
+def observer_run(
+    project_id,
+    backlog_id,
+    route_context_hash,
+    prompt_contract_id,
+    prompt_contract_hash,
+    route_token_ref,
+    provider,
+    model,
+    backend_mode,
+    workspace,
+    prompt_file,
+    dispatch_gate_file,
+    main_worktree,
+    execute,
+    json_output,
+):
+    """Build or execute a route-bound observer invocation."""
+    from agent.observer_runtime import ObserverRunRequest, run_observer
+    from agent.ai_invocation import RoutePromptContract
+
+    prompt = Path(prompt_file).read_text(encoding="utf-8") if prompt_file else ""
+    dispatch_gate = {}
+    if dispatch_gate_file:
+        try:
+            parsed_gate = json.loads(Path(dispatch_gate_file).read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise click.ClickException(f"invalid dispatch gate file: {exc}") from exc
+        if not isinstance(parsed_gate, dict):
+            raise click.ClickException("dispatch gate file must contain a JSON object")
+        dispatch_gate = parsed_gate
+    request = ObserverRunRequest(
+        project_id=project_id,
+        backlog_id=backlog_id,
+        route=RoutePromptContract(
+            route_context_hash=route_context_hash,
+            prompt_contract_id=prompt_contract_id,
+            prompt_contract_hash=prompt_contract_hash,
+            route_token_ref=route_token_ref,
+        ),
+        provider=provider,
+        model=model,
+        backend_mode=backend_mode,
+        workspace=workspace or os.getcwd(),
+        prompt=prompt,
+        dispatch_gate=dispatch_gate,
+        main_worktree=main_worktree or os.getcwd(),
+    )
+    result = run_observer(request, execute=execute)
+    if json_output:
+        click.echo(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        click.echo(f"observer run: {result.get('status')} project={project_id} backlog={backlog_id}")
+        invocation = result.get("invocation") or result.get("invocation_request") or {}
+        click.echo(f"backend: {invocation.get('backend_mode', backend_mode)} execute={execute}")
+        click.echo(f"route: {route_context_hash}")
+        if not result.get("ok"):
+            click.echo("missing: " + ", ".join(result.get("missing") or []), err=True)
+    if not result.get("ok"):
         raise click.exceptions.Exit(1)
 
 
