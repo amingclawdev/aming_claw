@@ -16964,6 +16964,58 @@ def _route_waiver_identity_mismatch(
     return mismatched
 
 
+def _timeline_event_supplies_independent_verification_lane(body: dict, event: dict) -> bool:
+    markers = {
+        _route_gate_marker(event.get("event_type")),
+        _route_gate_marker(event.get("event_kind")),
+        _route_gate_marker(event.get("phase")),
+    }
+    if markers.intersection(
+        {
+            "independent_verification_lane",
+            "independent_verification",
+            "qa_verification",
+            "independent_qa",
+        }
+    ):
+        return True
+    return _route_gate_deep_marker_present(
+        {
+            "payload": body.get("payload") if isinstance(body, dict) else {},
+            "verification": body.get("verification") if isinstance(body, dict) else {},
+            "artifact_refs": body.get("artifact_refs") if isinstance(body, dict) else {},
+        },
+        {
+            "independent_verification_lane",
+            "independent_verification",
+            "qa_verification",
+            "independent_qa",
+        },
+    )
+
+
+def _route_gate_marker(value: Any) -> str:
+    return re.sub(r"[\s.\-]+", "_", str(value or "").strip().lower())
+
+
+def _route_gate_deep_marker_present(value: Any, markers: set[str]) -> bool:
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            if _route_gate_marker(key) in markers:
+                return True
+            if isinstance(child, str) and _route_gate_marker(child) in markers:
+                return True
+            if _route_gate_deep_marker_present(child, markers):
+                return True
+    elif isinstance(value, list):
+        for child in value:
+            if _route_gate_deep_marker_present(child, markers):
+                return True
+    elif isinstance(value, str):
+        return _route_gate_marker(value) in markers
+    return False
+
+
 def _timeline_route_waiver_block_for_high_risk(
     conn,
     project_id: str,
@@ -17023,6 +17075,17 @@ def _timeline_route_waiver_block_for_high_risk(
         _route_waiver_payload(body),
     )
     if route_context_gate.get("passed") and not identity_mismatch:
+        return {}
+    missing_requirement_ids = [
+        str(item)
+        for item in route_context_gate.get("missing_requirement_ids", [])
+        if str(item)
+    ]
+    if (
+        not identity_mismatch
+        and set(missing_requirement_ids) == {"independent_verification_lane"}
+        and _timeline_event_supplies_independent_verification_lane(body, event)
+    ):
         return {}
 
     reason = (
