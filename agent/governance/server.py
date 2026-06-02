@@ -1389,71 +1389,194 @@ def _observer_repair_id_list(value: Any) -> list[str]:
     return sorted({str(item or "").strip() for item in raw if str(item or "").strip()})
 
 
+def _build_observer_repair_run_plan_from_body(
+    conn,
+    project_id: str,
+    body: Mapping[str, Any],
+) -> dict[str, Any]:
+    root_backlog_ids = _observer_repair_id_list(
+        body.get("root_backlog_ids") or body.get("backlog_ids") or body.get("bug_ids")
+    )
+    backlog_rows: list[dict[str, Any]] = []
+    missing_backlog_ids: list[str] = []
+    if root_backlog_ids:
+        placeholders = ",".join("?" for _ in root_backlog_ids)
+        rows = conn.execute(
+            f"SELECT * FROM backlog_bugs WHERE bug_id IN ({placeholders})",
+            root_backlog_ids,
+        ).fetchall()
+        by_id = {str(row["bug_id"]): dict(row) for row in rows}
+        backlog_rows = [by_id[bug_id] for bug_id in root_backlog_ids if bug_id in by_id]
+        missing_backlog_ids = [bug_id for bug_id in root_backlog_ids if bug_id not in by_id]
+
+    timeline_prechecks: list[dict[str, Any]] = []
+    if body.get("include_timeline_precheck"):
+        from . import task_timeline
+
+        for row in backlog_rows:
+            bug_id = str(row.get("bug_id") or "")
+            events = task_timeline.list_events(conn, project_id, backlog_id=bug_id, limit=1000)
+            if _mf_close_timeline_applicability(row)["is_mf"]:
+                contract = backlog_runtime.parse_json_object(
+                    _row_get(row, "chain_trigger_json", "{}")
+                )
+                contract = _mf_close_contract_with_route_context(contract, row, {})
+                verification = task_timeline.mf_close_gate_verification(events, contract=contract)
+            else:
+                verification = {"passed": True, "missing_event_kinds": []}
+            timeline_prechecks.append(
+                {
+                    "project_id": project_id,
+                    "bug_id": bug_id,
+                    "can_close": bool(verification.get("passed")),
+                    "timeline_gate": verification,
+                }
+            )
+
+    blockers = list(body.get("blockers") or [])
+    blockers.extend(f"missing backlog row: {bug_id}" for bug_id in missing_backlog_ids)
+    from . import observer_repair_run
+
+    plan = observer_repair_run.build_repair_run_plan(
+        project_id=project_id,
+        root_backlog_ids=root_backlog_ids,
+        backlog_rows=backlog_rows,
+        blockers=blockers,
+        graph_status=body.get("graph_status") if isinstance(body.get("graph_status"), dict) else {},
+        operations_queue=body.get("operations_queue")
+        if isinstance(body.get("operations_queue"), dict)
+        else {},
+        version_check=body.get("version_check") if isinstance(body.get("version_check"), dict) else {},
+        timeline_prechecks=timeline_prechecks,
+        route_context_seed=body.get("route_context_seed")
+        if isinstance(body.get("route_context_seed"), dict)
+        else {},
+        actor=str(body.get("actor") or "observer"),
+    )
+    plan["missing_backlog_ids"] = missing_backlog_ids
+    return plan
+
+
 @route("POST", "/api/projects/{project_id}/observer-repair-run/plan")
 def handle_observer_repair_run_plan(ctx: RequestContext):
     """Build a read-only, replayable observer repair-run plan."""
 
     project_id = ctx.get_project_id()
     body = ctx.body if isinstance(ctx.body, dict) else {}
-    root_backlog_ids = _observer_repair_id_list(
-        body.get("root_backlog_ids") or body.get("backlog_ids") or body.get("bug_ids")
-    )
     conn = get_connection(project_id)
     try:
-        backlog_rows: list[dict[str, Any]] = []
-        missing_backlog_ids: list[str] = []
-        if root_backlog_ids:
-            placeholders = ",".join("?" for _ in root_backlog_ids)
-            rows = conn.execute(
-                f"SELECT * FROM backlog_bugs WHERE bug_id IN ({placeholders})",
-                root_backlog_ids,
-            ).fetchall()
-            by_id = {str(row["bug_id"]): dict(row) for row in rows}
-            backlog_rows = [by_id[bug_id] for bug_id in root_backlog_ids if bug_id in by_id]
-            missing_backlog_ids = [bug_id for bug_id in root_backlog_ids if bug_id not in by_id]
+        return _build_observer_repair_run_plan_from_body(conn, project_id, body)
+    finally:
+        conn.close()
 
-        timeline_prechecks: list[dict[str, Any]] = []
-        if body.get("include_timeline_precheck"):
-            from . import task_timeline
 
-            for row in backlog_rows:
-                bug_id = str(row.get("bug_id") or "")
-                events = task_timeline.list_events(conn, project_id, backlog_id=bug_id, limit=1000)
-                if _mf_close_timeline_applicability(row)["is_mf"]:
-                    contract = backlog_runtime.parse_json_object(_row_get(row, "chain_trigger_json", "{}"))
-                    contract = _mf_close_contract_with_route_context(contract, row, {})
-                    verification = task_timeline.mf_close_gate_verification(events, contract=contract)
-                else:
-                    verification = {"passed": True, "missing_event_kinds": []}
-                timeline_prechecks.append(
-                    {
-                        "project_id": project_id,
-                        "bug_id": bug_id,
-                        "can_close": bool(verification.get("passed")),
-                        "timeline_gate": verification,
-                    }
-                )
+@route("POST", "/api/projects/{project_id}/observer-repair-run/route-evidence")
+def handle_observer_repair_run_route_evidence(ctx: RequestContext):
+    """Dry-run or record route-service source events for an observer repair plan."""
 
-        blockers = list(body.get("blockers") or [])
-        blockers.extend(f"missing backlog row: {bug_id}" for bug_id in missing_backlog_ids)
-        from . import observer_repair_run
+    project_id = ctx.get_project_id()
+    body = ctx.body if isinstance(ctx.body, dict) else {}
+    actor = str(body.get("actor") or "observer")
+    record = _query_bool(body, "record", False)
+    action_precheck_id = str(
+        body.get("action_precheck_id") or body.get("precheck_id") or ""
+    ).strip()
+    conn = get_connection(project_id)
+    try:
+        from . import observer_repair_run, task_timeline
 
-        plan = observer_repair_run.build_repair_run_plan(
-            project_id=project_id,
-            root_backlog_ids=root_backlog_ids,
-            backlog_rows=backlog_rows,
-            blockers=blockers,
-            graph_status=body.get("graph_status") if isinstance(body.get("graph_status"), dict) else {},
-            operations_queue=body.get("operations_queue") if isinstance(body.get("operations_queue"), dict) else {},
-            version_check=body.get("version_check") if isinstance(body.get("version_check"), dict) else {},
-            timeline_prechecks=timeline_prechecks,
-            route_context_seed=body.get("route_context_seed")
-            if isinstance(body.get("route_context_seed"), dict)
-            else {},
-            actor=str(body.get("actor") or "observer"),
+        plan = _build_observer_repair_run_plan_from_body(conn, project_id, body)
+        materialization = observer_repair_run.build_route_service_materialization(
+            plan,
+            action_precheck_id=action_precheck_id,
+            actor=actor,
         )
-        plan["missing_backlog_ids"] = missing_backlog_ids
-        return plan
+        materialization["record"] = record
+        materialization["mode"] = "record" if record else "dry_run"
+        if not record:
+            if body.get("include_plan"):
+                materialization["plan"] = plan
+            return materialization
+        if not materialization.get("recordable"):
+            raise GovernanceError(
+                "observer_repair_route_evidence_not_recordable",
+                "route evidence can be recorded only for one existing root backlog id with source events",
+                422,
+                materialization,
+            )
+
+        recorded_sources: list[dict[str, Any]] = []
+        recorded_service_events: list[dict[str, Any]] = []
+        reused_source_event_ids: list[int] = []
+        for event in materialization.get("source_events") or []:
+            if not isinstance(event, Mapping):
+                continue
+            backlog_id = str(event.get("backlog_id") or materialization.get("backlog_id") or "")
+            event_type = str(event.get("event_type") or "")
+            correlation_id = str(event.get("source_event_id") or "")
+            existing = [
+                item
+                for item in task_timeline.list_events(
+                    conn,
+                    project_id,
+                    backlog_id=backlog_id,
+                    correlation_id=correlation_id,
+                    limit=20,
+                )
+                if str(item.get("event_type") or "") == event_type
+            ]
+            if existing:
+                recorded = existing[0]
+                reused_source_event_ids.append(int(recorded.get("id") or 0))
+            else:
+                recorded = task_timeline.record_event(
+                    conn,
+                    project_id=project_id,
+                    backlog_id=backlog_id,
+                    event_type=event_type,
+                    phase=str(event.get("phase") or ""),
+                    event_kind=str(event.get("event_kind") or ""),
+                    actor=str(event.get("actor") or actor),
+                    status=str(event.get("status") or "requested"),
+                    payload=dict(event.get("payload") or {}),
+                    verification=dict(event.get("verification") or {}),
+                    artifact_refs=dict(event.get("artifact_refs") or {}),
+                    correlation_id=correlation_id,
+                )
+            service_events = task_timeline.list_events(
+                conn,
+                project_id,
+                backlog_id=str(recorded.get("backlog_id") or ""),
+                parent_event_id=int(recorded.get("id") or 0),
+                event_kind="service_route",
+                limit=50,
+            )
+            if not service_events:
+                from . import service_router
+
+                service_router.route_timeline_event(conn, recorded, record=True)
+                service_events = task_timeline.list_events(
+                    conn,
+                    project_id,
+                    backlog_id=str(recorded.get("backlog_id") or ""),
+                    parent_event_id=int(recorded.get("id") or 0),
+                    event_kind="service_route",
+                    limit=50,
+                )
+            recorded_sources.append(recorded)
+            recorded_service_events.extend(service_events)
+        conn.commit()
+        materialization["recorded"] = True
+        materialization["reused_source_event_ids"] = reused_source_event_ids
+        materialization["recorded_source_events"] = recorded_sources
+        materialization["recorded_service_events"] = recorded_service_events
+        materialization["recorded_source_event_ids"] = [
+            int(event.get("id") or 0) for event in recorded_sources
+        ]
+        materialization["recorded_service_event_ids"] = [
+            int(event.get("id") or 0) for event in recorded_service_events
+        ]
+        return materialization
     finally:
         conn.close()
 

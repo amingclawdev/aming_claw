@@ -16,10 +16,13 @@ from typing import Any
 SCHEMA_VERSION = "observer_repair_run_plan.v1"
 ROUTE_CONTEXT_SCHEMA_VERSION = "observer_repair_route_context.v1"
 ROUTE_SERVICE_PREVIEW_SCHEMA_VERSION = "observer_repair_route_service_preview.v1"
+ROUTE_SERVICE_MATERIALIZATION_SCHEMA_VERSION = "observer_repair_route_service_materialization.v1"
+ROUTE_SERVICE_SOURCE_EVENT_SCHEMA_VERSION = "observer_repair_route_service_source_event.v1"
 ROUTE_WORKFLOW_TEMPLATE_ID = "mf_workflow_runtime.v1"
 ROUTE_PROMPT_EVENT_KIND = "route.prompt_context.requested"
 ROUTE_ACTION_EVENT_KIND = "route.action.requested"
 ROUTE_SERVICE_STAGE = "dispatch"
+DEFAULT_ROUTE_ACTION_PRECHECK_ID = "observer_dispatch_bounded_worker"
 
 CHECKPOINTS = [
     "diagnosed",
@@ -492,6 +495,9 @@ def _route_prompt_payload(
         "close_ready",
     ]
     return {
+        "schema_version": "observer_repair_route_prompt_request.v1",
+        "template_id": ROUTE_WORKFLOW_TEMPLATE_ID,
+        "contract_instance_id": repair_run_id,
         "intent": "observer_repair_run",
         "project_id": project_id,
         "backlog_id": root_backlog_ids[0] if len(root_backlog_ids) == 1 else "",
@@ -552,6 +558,9 @@ def _route_action_precheck_payload(
         *_string_list_field(verification_policy.get("required_evidence_ids")),
     ]
     return {
+        "schema_version": "observer_repair_route_action_request.v1",
+        "template_id": ROUTE_WORKFLOW_TEMPLATE_ID,
+        "stage": ROUTE_SERVICE_STAGE,
         "caller_role": caller_role,
         "action": action,
         "route_prompt_bundle": dict(bundle),
@@ -575,6 +584,56 @@ def _route_action_precheck_payload(
     }
 
 
+def _route_service_source_event(
+    *,
+    source_event_id: str,
+    event_type: str,
+    event_kind: str,
+    project_id: str,
+    backlog_id: str,
+    actor: str,
+    payload: Mapping[str, Any],
+    route_identity: Mapping[str, Any],
+    repair_run_id: str,
+    service_id: str,
+    precheck_id: str = "",
+) -> dict[str, Any]:
+    return {
+        "schema_version": ROUTE_SERVICE_SOURCE_EVENT_SCHEMA_VERSION,
+        "source_event_id": source_event_id,
+        "event_type": event_type,
+        "project_id": project_id,
+        "backlog_id": backlog_id,
+        "stage": ROUTE_SERVICE_STAGE,
+        "phase": ROUTE_SERVICE_STAGE,
+        "event_kind": event_kind,
+        "actor": actor,
+        "status": "requested",
+        "payload": dict(payload),
+        "verification": {
+            "schema_version": ROUTE_SERVICE_SOURCE_EVENT_SCHEMA_VERSION,
+            "route_service": service_id,
+            "route_context_hash": _string(route_identity.get("route_context_hash")),
+            "prompt_contract_id": _string(route_identity.get("prompt_contract_id")),
+            "prompt_contract_hash": _string(route_identity.get("prompt_contract_hash")),
+            "visible_injection_manifest_hash": _string(
+                route_identity.get("visible_injection_manifest_hash")
+            ),
+            "counts_as_close_evidence": False,
+            "source_event_only": True,
+        },
+        "artifact_refs": {
+            "observer_repair_run_id": repair_run_id,
+            "source_event_id": source_event_id,
+            "service_id": service_id,
+            "precheck_id": precheck_id,
+            "route_context_hash": _string(route_identity.get("route_context_hash")),
+            "prompt_contract_id": _string(route_identity.get("prompt_contract_id")),
+            "prompt_contract_hash": _string(route_identity.get("prompt_contract_hash")),
+        },
+    }
+
+
 def _build_route_service_preview(
     *,
     project_id: str,
@@ -586,6 +645,7 @@ def _build_route_service_preview(
     graph_status: Mapping[str, Any],
     version_check: Mapping[str, Any],
     repair_run_id: str,
+    actor: str,
 ) -> dict[str, Any]:
     try:
         from .contract_template_registry import get_contract_template
@@ -616,6 +676,18 @@ def _build_route_service_preview(
             or prompt_route_result.get("bundle")
         )
         route_identity = _service_route_identity(prompt_route, bundle)
+        prompt_source_event = _route_service_source_event(
+            source_event_id=prompt_event["event_id"],
+            event_type=ROUTE_PROMPT_EVENT_KIND,
+            event_kind="route_context",
+            project_id=project_id,
+            backlog_id=root_backlog_ids[0] if len(root_backlog_ids) == 1 else "",
+            actor=actor,
+            payload=prompt_payload,
+            route_identity=route_identity,
+            repair_run_id=repair_run_id,
+            service_id="route.prompt_alert_bundle",
+        )
         action_prechecks: list[dict[str, Any]] = []
         if bundle and route_identity.get("route_context_hash"):
             precheck_specs = [
@@ -674,6 +746,21 @@ def _build_route_service_preview(
                                 "route_action_gate"
                             )
                         ),
+                        "source_event": _route_service_source_event(
+                            source_event_id=action_event["event_id"],
+                            event_type=ROUTE_ACTION_EVENT_KIND,
+                            event_kind="route_action_precheck",
+                            project_id=project_id,
+                            backlog_id=root_backlog_ids[0]
+                            if len(root_backlog_ids) == 1
+                            else "",
+                            actor=actor,
+                            payload=payload,
+                            route_identity=route_identity,
+                            repair_run_id=repair_run_id,
+                            service_id="route.action_precheck",
+                            precheck_id=spec["precheck_id"],
+                        ),
                     }
                 )
         return {
@@ -685,6 +772,7 @@ def _build_route_service_preview(
                 "event_kind": ROUTE_PROMPT_EVENT_KIND,
                 "stage": ROUTE_SERVICE_STAGE,
                 "event_id": prompt_event["event_id"],
+                "source_event": prompt_source_event,
             },
             "prompt_context_result": _route_service_summary(prompt_result),
             "prompt_bundle": bundle,
@@ -765,6 +853,7 @@ def build_repair_run_plan(
         graph_status=graph_status or {},
         version_check=version_check or {},
         repair_run_id=repair_run_id,
+        actor=actor,
     )
     recovery_actions = sorted(
         {
@@ -823,3 +912,70 @@ def build_repair_run_plan(
         },
         "next_legal_actions": recovery_actions or ["inspect_evidence_and_file_bounded_followup"],
     }
+
+
+def build_route_service_materialization(
+    plan: Mapping[str, Any],
+    *,
+    action_precheck_id: str = DEFAULT_ROUTE_ACTION_PRECHECK_ID,
+    actor: str = "",
+) -> dict[str, Any]:
+    """Select replayable route-service source events from a repair-run plan."""
+
+    preview = _object(plan.get("route_service_preview"))
+    root_backlog_ids = [str(item) for item in _list(plan.get("root_backlog_ids")) if str(item)]
+    selected_action = _string(action_precheck_id) or DEFAULT_ROUTE_ACTION_PRECHECK_ID
+    source_events: list[dict[str, Any]] = []
+    missing: list[str] = []
+
+    prompt_event = _object(_object(preview.get("prompt_context_event")).get("source_event"))
+    if prompt_event:
+        source_events.append(_materialization_event(prompt_event, actor=actor))
+    else:
+        missing.append("route.prompt_alert_bundle")
+
+    prechecks = [_object(item) for item in _list(preview.get("action_prechecks"))]
+    precheck = next(
+        (item for item in prechecks if _string(item.get("precheck_id")) == selected_action),
+        {},
+    )
+    action_source_event = _object(precheck.get("source_event"))
+    if action_source_event:
+        source_events.append(_materialization_event(action_source_event, actor=actor))
+    else:
+        missing.append(f"route.action_precheck:{selected_action}")
+
+    recordable = bool(preview.get("available")) and len(root_backlog_ids) == 1 and not missing
+    return {
+        "ok": bool(preview.get("available")) and not missing,
+        "schema_version": ROUTE_SERVICE_MATERIALIZATION_SCHEMA_VERSION,
+        "repair_run_id": _string(plan.get("repair_run_id")),
+        "project_id": _string(plan.get("project_id")),
+        "root_backlog_ids": root_backlog_ids,
+        "backlog_id": root_backlog_ids[0] if len(root_backlog_ids) == 1 else "",
+        "action_precheck_id": selected_action,
+        "recordable": recordable,
+        "source_events": source_events,
+        "missing_source_events": missing,
+        "route_service_preview_available": bool(preview.get("available")),
+        "service_generated_route_identity": _object(
+            preview.get("service_generated_route_identity")
+        ),
+        "counts_as_close_evidence": False,
+        "authorizes_protected_write": False,
+    }
+
+
+def _materialization_event(
+    source_event: Mapping[str, Any],
+    *,
+    actor: str = "",
+) -> dict[str, Any]:
+    event = _jsonable(source_event)
+    if isinstance(event, Mapping):
+        event = dict(event)
+    else:
+        event = {}
+    if actor:
+        event["actor"] = actor
+    return event

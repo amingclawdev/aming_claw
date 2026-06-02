@@ -126,6 +126,8 @@ def test_repair_run_includes_service_generated_route_preview():
     bundle = preview["prompt_bundle"]
     identity = preview["service_generated_route_identity"]
     prechecks = {item["precheck_id"]: item for item in preview["action_prechecks"]}
+    prompt_source = preview["prompt_context_event"]["source_event"]
+    dispatch_source = prechecks["observer_dispatch_bounded_worker"]["source_event"]
     bundle_json = json.dumps(bundle, sort_keys=True)
 
     assert preview["available"] is True
@@ -138,8 +140,25 @@ def test_repair_run_includes_service_generated_route_preview():
     assert identity["route_context_hash"].startswith("sha256:")
     assert identity["route_context_hash"] != plan["route_context"]["route_context_hash"]
     assert "raw_prompt" not in bundle_json
+    assert prompt_source["event_type"] == "route.prompt_context.requested"
+    assert prompt_source["event_kind"] == "route_context"
+    assert prompt_source["payload"]["template_id"] == "mf_workflow_runtime.v1"
+    assert prompt_source["status"] == "requested"
+    assert prompt_source["verification"]["counts_as_close_evidence"] is False
+    assert dispatch_source["event_type"] == "route.action.requested"
+    assert dispatch_source["event_kind"] == "route_action_precheck"
+    assert dispatch_source["payload"]["template_id"] == "mf_workflow_runtime.v1"
+    assert dispatch_source["verification"]["counts_as_close_evidence"] is False
     assert prechecks["observer_dispatch_bounded_worker"]["result"]["decision"] == "allow"
     assert prechecks["implementation_worker_apply_patch"]["result"]["decision"] == "block"
     assert "bounded dispatch/startup evidence" in (
         prechecks["implementation_worker_apply_patch"]["route_action_gate"]["reason"]
     )
+
+    materialization = observer_repair_run.build_route_service_materialization(plan)
+    assert materialization["recordable"] is False
+    assert [event["event_type"] for event in materialization["source_events"]] == [
+        "route.prompt_context.requested",
+        "route.action.requested",
+    ]
+    assert materialization["counts_as_close_evidence"] is False

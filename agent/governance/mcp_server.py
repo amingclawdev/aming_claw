@@ -376,6 +376,57 @@ TOOLS: list[dict] = [
             "required": ["project_id"],
         },
     },
+    {
+        "name": "observer_repair_run_route_evidence",
+        "description": "Dry-run or record replayable route-service evidence for an observer repair-run plan. Defaults to dry-run and does not fabricate worker, QA, implementation, verification, or close_ready evidence.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "root_backlog_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Root backlog ids to diagnose and attach route-service evidence to.",
+                },
+                "backlog_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Alias for root_backlog_ids.",
+                },
+                "blockers": {
+                    "type": "array",
+                    "items": {},
+                    "description": "Optional blocker messages or structured failures to classify.",
+                },
+                "include_timeline_precheck": {
+                    "type": "boolean",
+                    "description": "When true, include read-only MF timeline precheck summaries while building the plan.",
+                },
+                "route_context_seed": {
+                    "type": "object",
+                    "description": "Public-safe seed material for deterministic route context identity.",
+                },
+                "version_check": {
+                    "type": "object",
+                    "description": "Optional clean-workspace/version evidence for route action precheck.",
+                },
+                "action_precheck_id": {
+                    "type": "string",
+                    "description": "Route action precheck to record; defaults to observer_dispatch_bounded_worker.",
+                },
+                "record": {
+                    "type": "boolean",
+                    "description": "When true, append route-service source events to the timeline. Defaults to false.",
+                },
+                "include_plan": {
+                    "type": "boolean",
+                    "description": "Include the full repair-run plan in dry-run output.",
+                },
+                "actor": {"type": "string"},
+            },
+            "required": ["project_id"],
+        },
+    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -491,6 +542,15 @@ def _dispatch_tool(name: str, args: dict) -> Any:
             if key != "project_id" and value is not None
         }
         return _http("POST", f"/api/projects/{pid}/observer-repair-run/plan", body)
+
+    if name == "observer_repair_run_route_evidence":
+        pid = args["project_id"]
+        body = {
+            key: value
+            for key, value in args.items()
+            if key != "project_id" and value is not None
+        }
+        return _http("POST", f"/api/projects/{pid}/observer-repair-run/route-evidence", body)
 
     raise ValueError(f"Unknown tool: {name!r}")
 

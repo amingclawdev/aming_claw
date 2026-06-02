@@ -864,6 +864,7 @@ def _route_event_markers(event: dict[str, Any]) -> set[str]:
             "dispatch_evidence",
             "startup_evidence",
             "contract_evidence",
+            "route_evidence",
         ):
             nested = container.get(nested_key)
             if isinstance(nested, dict):
@@ -902,6 +903,9 @@ def _route_event_categories(event: dict[str, Any]) -> set[str]:
             "pre_mutation",
             "route.action",
             "route.action.pre_mutation",
+            "route.action.requested",
+            "route_action_allowed",
+            "route_action_requested",
         }
     ):
         categories.add("route_action_precheck")

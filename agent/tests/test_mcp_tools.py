@@ -102,6 +102,8 @@ def test_active_mcp_exposes_backlog_and_graph_governance_tools():
         "task_timeline_append",
         "task_timeline_list",
         "mf_timeline_precheck",
+        "observer_repair_run_plan",
+        "observer_repair_run_route_evidence",
         "backlog_export",
         "backlog_import",
         "graph_status",
@@ -124,6 +126,34 @@ def test_active_mcp_exposes_backlog_and_graph_governance_tools():
         "observer_command_complete",
         "observer_command_fail",
     }.issubset(names)
+
+
+def test_mcp_observer_repair_run_route_evidence_routes_to_governance_api():
+    recorder = _Recorder()
+    dispatcher = _dispatcher(recorder)
+
+    result = dispatcher.dispatch(
+        "observer_repair_run_route_evidence",
+        {
+            "project_id": "aming-claw",
+            "root_backlog_ids": ["AC-ROUTE-FLOW-SESSION-GUIDANCE-20260602"],
+            "record": False,
+            "actor": "observer-test",
+        },
+    )
+
+    assert result["path"] == "/api/projects/aming-claw/observer-repair-run/route-evidence"
+    assert recorder.calls == [
+        (
+            "POST",
+            "/api/projects/aming-claw/observer-repair-run/route-evidence",
+            {
+                "root_backlog_ids": ["AC-ROUTE-FLOW-SESSION-GUIDANCE-20260602"],
+                "record": False,
+                "actor": "observer-test",
+            },
+        )
+    ]
 
 
 def test_mcp_backlog_tools_route_to_governance_api():

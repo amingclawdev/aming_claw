@@ -739,6 +739,121 @@ class TestTaskTimeline(unittest.TestCase):
             )
         )
 
+    def test_observer_repair_route_evidence_records_service_route_gate_inputs(self):
+        from agent.governance import server, task_timeline
+
+        bug_id = "BUG-OBSERVER-ROUTE-EVIDENCE"
+        contract = {
+            "template_id": "mf_parallel.v1",
+            "contract_instance_id": bug_id,
+        }
+        self.conn.execute(
+            """INSERT INTO backlog_bugs
+               (bug_id, title, status, priority, target_files, test_files,
+                acceptance_criteria, chain_trigger_json, mf_type, bypass_policy_json,
+                created_at, updated_at)
+               VALUES (?, ?, 'MF_IN_PROGRESS', 'P0', ?, ?, ?, ?, 'chain_rescue', ?,
+                       '2026-06-02T00:00:00Z', '2026-06-02T00:00:00Z')""",
+            (
+                bug_id,
+                "Observer repair route evidence",
+                json.dumps(["agent/governance/observer_repair_run.py"]),
+                json.dumps(["agent/tests/test_observer_repair_run.py"]),
+                json.dumps(["record route service evidence only"]),
+                json.dumps(contract),
+                json.dumps({"mf_type": "chain_rescue"}),
+            ),
+        )
+        self.conn.commit()
+
+        dry_run = server.handle_observer_repair_run_route_evidence(
+            _ctx(
+                method="POST",
+                body={
+                    "root_backlog_ids": [bug_id],
+                    "actor": "observer-test",
+                    "version_check": {"ok": True, "dirty": False, "dirty_files": []},
+                },
+            )
+        )
+
+        self.assertFalse(dry_run["record"])
+        self.assertTrue(dry_run["recordable"])
+        self.assertEqual(
+            [event["event_type"] for event in dry_run["source_events"]],
+            ["route.prompt_context.requested", "route.action.requested"],
+        )
+
+        result = server.handle_observer_repair_run_route_evidence(
+            _ctx(
+                method="POST",
+                body={
+                    "root_backlog_ids": [bug_id],
+                    "actor": "observer-test",
+                    "record": True,
+                    "version_check": {"ok": True, "dirty": False, "dirty_files": []},
+                },
+            )
+        )
+
+        self.assertTrue(result["recorded"])
+        self.assertEqual(len(result["recorded_source_event_ids"]), 2)
+        self.assertEqual(
+            {event["payload"]["service_id"] for event in result["recorded_service_events"]},
+            {"route.prompt_alert_bundle", "route.action_precheck"},
+        )
+        self.assertEqual(
+            {event["event_type"] for event in result["recorded_service_events"]},
+            {"service.route.completed"},
+        )
+
+        replay = server.handle_observer_repair_run_route_evidence(
+            _ctx(
+                method="POST",
+                body={
+                    "root_backlog_ids": [bug_id],
+                    "actor": "observer-test",
+                    "record": True,
+                    "version_check": {"ok": True, "dirty": False, "dirty_files": []},
+                },
+            )
+        )
+
+        self.assertEqual(
+            replay["reused_source_event_ids"],
+            result["recorded_source_event_ids"],
+        )
+        self.assertEqual(
+            replay["recorded_source_event_ids"],
+            result["recorded_source_event_ids"],
+        )
+
+        events = task_timeline.list_events(self.conn, "proj", backlog_id=bug_id, limit=100)
+        route_gate = task_timeline.mf_route_context_gate_verification(
+            events,
+            contract=contract,
+        )
+
+        self.assertEqual(
+            route_gate["present_requirement_ids"],
+            ["route_context", "route_action_precheck"],
+        )
+        self.assertEqual(
+            route_gate["missing_requirement_ids"],
+            [
+                "bounded_implementation_worker_dispatch",
+                "mf_subagent_startup",
+                "independent_verification_lane",
+            ],
+        )
+
+        close_gate = task_timeline.mf_close_gate_verification(events, contract=contract)
+        self.assertFalse(close_gate["passed"], close_gate)
+        self.assertEqual(
+            close_gate["missing_event_kinds"],
+            ["close_ready", "implementation", "verification"],
+        )
+
     def test_ai_validated_timeline_route_persists_contract_evidence(self):
         from agent.governance import task_timeline
 

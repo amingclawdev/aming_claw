@@ -131,6 +131,16 @@ def test_mcp_stdio_observer_repair_run_plan_schema_is_read_only_entrypoint():
     assert "route_token" not in properties
     assert "route_waiver" not in properties
 
+    route_schema = tools["observer_repair_run_route_evidence"]["inputSchema"]
+    route_properties = route_schema["properties"]
+    assert route_schema["required"] == ["project_id"]
+    assert "root_backlog_ids" in route_properties
+    assert "record" in route_properties
+    assert "action_precheck_id" in route_properties
+    assert "version_check" in route_properties
+    assert "route_token" not in route_properties
+    assert "route_waiver" not in route_properties
+
 
 def test_mcp_backlog_close_forwards_route_gate_payloads():
     calls = []
@@ -340,6 +350,44 @@ def test_mcp_observer_repair_run_plan_dispatches_to_read_only_endpoint():
                 "root_backlog_ids": ["AC-ROUTE-FLOW-SESSION-GUIDANCE-20260602"],
                 "blockers": ["route_token_required"],
                 "include_timeline_precheck": True,
+                "actor": "observer-test",
+            },
+        )
+    ]
+
+
+def test_mcp_observer_repair_run_route_evidence_dispatches_to_endpoint():
+    calls = []
+
+    def fake_api(method: str, path: str, data: dict | None = None):
+        calls.append((method, path, data))
+        return {"ok": True, "mode": "dry_run"}
+
+    dispatcher = ToolDispatcher(
+        api_fn=fake_api,
+        worker_pool=None,
+        manager_api_fn=fake_api,
+        workspace=str(ROOT),
+    )
+
+    result = dispatcher.dispatch(
+        "observer_repair_run_route_evidence",
+        {
+            "project_id": "aming-claw",
+            "root_backlog_ids": ["AC-ROUTE-FLOW-SESSION-GUIDANCE-20260602"],
+            "record": False,
+            "actor": "observer-test",
+        },
+    )
+
+    assert result == {"ok": True, "mode": "dry_run"}
+    assert calls == [
+        (
+            "POST",
+            "/api/projects/aming-claw/observer-repair-run/route-evidence",
+            {
+                "root_backlog_ids": ["AC-ROUTE-FLOW-SESSION-GUIDANCE-20260602"],
+                "record": False,
                 "actor": "observer-test",
             },
         )
