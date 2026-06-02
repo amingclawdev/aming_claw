@@ -1144,6 +1144,26 @@ def test_p1_governance_route_work_requires_independent_verification_before_merge
     assert "missing_bounded_implementation_worker_dispatch_evidence" in (
         blocked_without_route_context["evidence"]["errors"]
     )
+    groups = blocked_without_route_context["evidence"]["missing_evidence_groups"][
+        "groups"
+    ]
+    assert groups["route_service"]["missing"] == [
+        "route_context",
+        "route_action_precheck",
+    ]
+    assert groups["bounded_worker"]["missing"] == [
+        "bounded_implementation_worker_dispatch",
+        "mf_subagent_startup",
+    ]
+    reminder = blocked_without_route_context["evidence"]["route_context_reminder"]
+    assert reminder["blocked"] is True
+    assert reminder["contract_template_id"] == "mf_workflow_runtime.v1"
+    assert reminder["allowed_stages"] == [
+        "dispatch",
+        "startup_gate",
+        "implementation_wait",
+        "handoff_gate",
+    ]
 
     close_subject["timeline_evidence"].extend(route_context_consumption_events())
     allowed_close = run_precheck(

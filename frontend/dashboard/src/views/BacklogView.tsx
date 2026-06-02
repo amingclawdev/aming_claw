@@ -26,6 +26,12 @@ const CLOSED_STATUSES = new Set(["FIXED", "CLOSED", "DONE", "RESOLVED", "CANCELL
 const BACKLOG_URL_PARAM = "backlog";
 const BACKLOG_DETAIL_TIMELINE_LIMIT = 250;
 const CONTENT_SYS_DEMO_VISUALIZATION_SCHEMA = "content_sys.demo_visualization_evidence.v1";
+const ROUTE_GUIDANCE_TEMPLATE_ID = "mf_workflow_runtime.v1";
+const ROUTE_GUIDANCE_ALLOWED_STAGES = ["dispatch", "startup_gate", "implementation_wait", "handoff_gate"];
+const ROUTE_SERVICE_REQUIREMENTS = ["route_context", "route_action_precheck"];
+const ROUTE_WORKER_REQUIREMENTS = ["bounded_implementation_worker_dispatch", "mf_subagent_startup"];
+const ROUTE_QA_REQUIREMENTS = ["independent_verification_lane"];
+const ROUTE_IDENTITY_REQUIREMENTS = ["route_identity_mismatch", "same_route_identity", "route_identity_cleanup"];
 
 export const BACKLOG_PARALLEL_TIMELINE_FIXTURE_EVENTS: TaskTimelineEvent[] = [
   {
@@ -942,6 +948,7 @@ function TimelinePanel({ timeline, backlogId }: { timeline: TimelineState; backl
       {!timeline.loading && !timeline.error && gate && !gateState.noGate ? (
         <GateSummary gate={gate} response={timeline.gate} />
       ) : null}
+      {!timeline.loading && !timeline.error && gate ? <RouteContextGuidancePanel gate={gate} /> : null}
       {!timeline.loading && !timeline.error && implementationSteps.length > 0 ? (
         <ImplementationStepGrid steps={implementationSteps} observerEventCount={observerEvents.length} />
       ) : null}
@@ -1176,7 +1183,12 @@ function BacklogDetailModal({
 
 function BacklogDetailSummary({ bug, gate }: { bug: BacklogBug; gate?: MfCloseTimelineGate }) {
   const contract = gate?.contract_gate;
-  const missing = stableUnique([...(gate?.missing_event_kinds ?? []), ...(contract?.missing_requirement_ids ?? [])]);
+  const routeGate = gate?.route_context_gate;
+  const missing = stableUnique([
+    ...(gate?.missing_event_kinds ?? []),
+    ...(contract?.missing_requirement_ids ?? []),
+    ...(routeGate?.missing_requirement_ids ?? []),
+  ]);
   const related = relatedIdsFromBug(bug, []);
   return (
     <div className="backlog-modal-summary">
@@ -1184,6 +1196,7 @@ function BacklogDetailSummary({ bug, gate }: { bug: BacklogBug; gate?: MfCloseTi
       <SummaryItem label="Status" value={normalizeStatus(bug.status)} tone={statusClass(bug.status)} />
       <SummaryItem label="Commit" value={bug.commit ? shortCommit(bug.commit) : "none"} mono />
       <SummaryItem label="Contract" value={contract?.status || (bug.contract_summary?.has_contract ? "declared" : "not declared")} tone={contract?.passed ? "status-complete" : contract ? "status-failed" : "status-unknown"} />
+      <SummaryItem label="Route context" value={routeGate?.status || (routeGate?.required ? "required" : "not required")} tone={routeGate?.passed ? "status-complete" : routeGate?.required ? "status-failed" : "status-unknown"} />
       <SummaryItem label="Close gate" value={gate?.status || (gate ? (gate.passed ? "passed" : "blocked") : "not loaded")} tone={gate?.passed ? "status-complete" : gate ? "status-failed" : "status-unknown"} />
       <SummaryItem label="Missing" value={missing.length ? String(missing.length) : "none"} tone={missing.length ? "status-failed" : "status-complete"} />
       <DetailList label="Target files" values={listFrom(bug.target_files)} />
@@ -1698,6 +1711,7 @@ function ContractGatePanel({
           </span>
         </div>
         {gateState.noGate ? <NoGateNotice reason={gateState.reason} /> : gate ? <GateSummary gate={gate} response={response} /> : null}
+        {gate ? <RouteContextGuidancePanel gate={gate} /> : null}
       </div>
 
       <div className="backlog-modal-section">
@@ -1992,6 +2006,11 @@ function GateSummary({
   const contractMissing = contract?.missing_requirement_ids ?? [];
   const contractLabel = contract?.template_id || contract?.contract_instance_id || "no contract";
   const hasContract = contractRequired.length > 0 || Boolean(contract?.template_id || contract?.contract_instance_id);
+  const routeGate = gate.route_context_gate;
+  const routeRequired = routeGate?.required_requirement_ids ?? [];
+  const routePresent = routeGate?.present_requirement_ids ?? [];
+  const routeMissing = routeGate?.missing_requirement_ids ?? [];
+  const routeTopology = firstText(asRecord(routeGate?.topology_policy).selected_topology, asRecord(routeGate?.topology_policy).recommended_topology) || "not selected";
   return (
     <div className="backlog-gate-grid">
       <div className={`backlog-gate-card ${gate.passed ? "pass" : "fail"}`}>
@@ -2024,8 +2043,253 @@ function GateSummary({
         <TokenList label="present" values={contractPresent} empty="none" tone="green" />
         <TokenList label="missing" values={contractMissing} empty="none" tone={contractMissing.length ? "red" : "green"} />
       </div>
+      {routeGate ? (
+        <div className={`backlog-gate-card ${routeGate.passed ? "pass" : routeGate.required ? "fail" : "neutral"}`}>
+          <div className="backlog-gate-title">
+            <span>Route context</span>
+            <span className={`status-badge ${routeGate.passed ? "status-complete" : routeGate.required ? "status-failed" : "status-unknown"}`}>
+              {routeGate.status || (routeGate.required ? "required" : "not required")}
+            </span>
+          </div>
+          <div className="backlog-gate-facts">
+            <span className="mono">{ROUTE_GUIDANCE_TEMPLATE_ID}</span>
+            <span>{routeTopology}</span>
+            <span>missing {routeMissing.length}</span>
+          </div>
+          <TokenList label="required" values={routeRequired} empty="none" />
+          <TokenList label="present" values={routePresent} empty="none" tone="green" />
+          <TokenList label="missing" values={routeMissing} empty="none" tone={routeMissing.length ? "red" : "green"} />
+        </div>
+      ) : null}
     </div>
   );
+}
+
+interface RouteGuidanceAction {
+  id: string;
+  command: string;
+  label: string;
+  detail: string;
+}
+
+interface RouteGuidanceGroup {
+  id: string;
+  label: string;
+  values: string[];
+}
+
+interface RouteContextGuidance {
+  status: string;
+  templateId: string;
+  allowedStages: string[];
+  topology: string;
+  priority: string;
+  actions: RouteGuidanceAction[];
+  groups: RouteGuidanceGroup[];
+  identityMismatch: boolean;
+  ignoredRouteEventCount: number;
+}
+
+function RouteContextGuidancePanel({ gate }: { gate?: MfCloseTimelineGate }) {
+  const guidance = buildRouteContextGuidance(gate);
+  if (!guidance) return null;
+  return (
+    <div className="backlog-route-guidance-panel" role="note" aria-label="Route context workflow guidance">
+      <div className="backlog-route-guidance-head">
+        <span>Route workflow reminder</span>
+        <span className="status-badge status-failed">{guidance.status}</span>
+      </div>
+      <div className="backlog-route-guidance-meta">
+        <span className="mono">{guidance.templateId}</span>
+        <span>stages {guidance.allowedStages.join(", ")}</span>
+        <span>{guidance.topology}</span>
+        {guidance.priority ? <span>{guidance.priority}</span> : null}
+      </div>
+      <div className="backlog-route-guidance-actions">
+        {guidance.actions.map((action, index) => (
+          <div key={action.id}>
+            <span className="mono">{index + 1}</span>
+            <strong>{action.command}</strong>
+            <p>{action.label}. {action.detail}</p>
+          </div>
+        ))}
+      </div>
+      <div className="backlog-route-guidance-groups">
+        {guidance.groups.map((group) => (
+          <TokenList key={group.id} label={group.label} values={group.values} empty="none" tone={group.values.length ? "red" : "green"} />
+        ))}
+      </div>
+      {guidance.identityMismatch ? (
+        <div className="backlog-route-guidance-warning">
+          Route identity mismatch detected. Supersede stale hand-written route evidence or start a fresh service-generated route attempt before retrying close.
+        </div>
+      ) : null}
+      {guidance.ignoredRouteEventCount > 0 ? (
+        <div className="backlog-route-guidance-warning">
+          {guidance.ignoredRouteEventCount} route event{guidance.ignoredRouteEventCount === 1 ? "" : "s"} ignored by the gate; inspect raw timeline payloads before close.
+        </div>
+      ) : null}
+      <div className="backlog-route-guidance-boundary">
+        Service-generated route identity is required. Hand-written alert text and Judgment Brain decisions are supporting context only, not an Aming Claw route token.
+      </div>
+    </div>
+  );
+}
+
+function buildRouteContextGuidance(gate?: MfCloseTimelineGate): RouteContextGuidance | null {
+  const routeGate = gate?.route_context_gate;
+  if (!routeGate) return null;
+  const reminder = gate?.route_context_reminder;
+  const routeMissing = routeGate.missing_requirement_ids ?? [];
+  const routePresent = routeGate.present_requirement_ids ?? [];
+  const closeMissing = gate?.missing_event_kinds ?? [];
+  const checks = routeGate.checks ?? {};
+  const hasRouteConsumption = checks.has_route_context_consumption;
+  const sameRouteIdentity = routeGate.same_route_identity !== false && checks.same_route_identity !== false;
+  const identityMissing = missingForRouteGroup(routeMissing, ROUTE_IDENTITY_REQUIREMENTS);
+  const identityMismatch = !sameRouteIdentity || identityMissing.length > 0;
+  const shouldShow =
+    routeGate.required === true &&
+    (routeGate.passed !== true || gate?.passed !== true || routeMissing.length > 0 || closeMissing.length > 0 || hasRouteConsumption === false || identityMismatch);
+  if (!shouldShow) return null;
+  const topology = asRecord(routeGate.topology_policy);
+  const allowedStages = reminder?.allowed_stages?.length ? reminder.allowed_stages : ROUTE_GUIDANCE_ALLOWED_STAGES;
+  const groups = routeGuidanceGroupsFromBackend(gate) || routeGuidanceGroups(closeMissing, routeMissing, identityMismatch);
+  return {
+    status: reminder?.status || routeGate.status || "blocked",
+    templateId: reminder?.contract_template_id || ROUTE_GUIDANCE_TEMPLATE_ID,
+    allowedStages,
+    topology: firstText(reminder?.selected_topology, reminder?.recommended_topology, topology.selected_topology, topology.recommended_topology) || "route topology pending",
+    priority: firstText(reminder?.priority, topology.priority),
+    actions: routeGuidanceActionsFromBackend(reminder?.next_actions) || routeGuidanceActions(routeMissing, routePresent, closeMissing, allowedStages),
+    groups,
+    identityMismatch,
+    ignoredRouteEventCount: routeGate.ignored_route_events?.length ?? 0,
+  };
+}
+
+function routeGuidanceGroupsFromBackend(gate?: MfCloseTimelineGate): RouteGuidanceGroup[] | null {
+  const reminderGroups = asRecord(gate?.route_context_reminder?.missing_evidence_groups);
+  const gateGroups = asRecord(gate?.missing_evidence_groups?.groups);
+  const source = Object.keys(reminderGroups).length > 0 ? reminderGroups : gateGroups;
+  if (Object.keys(source).length === 0) return null;
+  const order = ["timeline", "route_service", "bounded_worker", "independent_verification", "route_identity", "other_route"];
+  const labels: Record<string, string> = {
+    timeline: "timeline",
+    route_service: "route service",
+    bounded_worker: "worker",
+    independent_verification: "QA",
+    route_identity: "identity",
+    other_route: "other route",
+  };
+  const seen = new Set<string>();
+  const ids = [...order, ...Object.keys(source).filter((id) => !order.includes(id))];
+  const groups: RouteGuidanceGroup[] = [];
+  for (const id of ids) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const group = asRecord(source[id]);
+    if (Object.keys(group).length === 0) continue;
+    const values = stableUnique(listUnknown(group.missing).map(String).filter(Boolean));
+    if (id === "other_route" && values.length === 0) continue;
+    groups.push({
+      id,
+      label: firstText(group.label) || labels[id] || id.replace(/_/g, " "),
+      values,
+    });
+  }
+  return groups.length ? groups : null;
+}
+
+function routeGuidanceGroups(closeMissing: string[], routeMissing: string[], identityMismatch: boolean): RouteGuidanceGroup[] {
+  const knownRouteIds = stableUnique([
+    ...ROUTE_SERVICE_REQUIREMENTS,
+    ...ROUTE_WORKER_REQUIREMENTS,
+    ...ROUTE_QA_REQUIREMENTS,
+    ...ROUTE_IDENTITY_REQUIREMENTS,
+  ]);
+  const identityValues = missingForRouteGroup(routeMissing, ROUTE_IDENTITY_REQUIREMENTS);
+  if (identityMismatch && !identityValues.includes("route_identity_mismatch")) identityValues.push("route_identity_mismatch");
+  return [
+    { id: "timeline", label: "timeline", values: stableUnique(closeMissing) },
+    { id: "route-service", label: "route service", values: missingForRouteGroup(routeMissing, ROUTE_SERVICE_REQUIREMENTS) },
+    { id: "worker", label: "worker", values: missingForRouteGroup(routeMissing, ROUTE_WORKER_REQUIREMENTS) },
+    { id: "qa", label: "QA", values: missingForRouteGroup(routeMissing, ROUTE_QA_REQUIREMENTS) },
+    { id: "identity", label: "identity", values: stableUnique(identityValues) },
+    { id: "other", label: "other route", values: routeMissing.filter((id) => !knownRouteIds.includes(id)) },
+  ].filter((group) => group.id !== "other" || group.values.length > 0);
+}
+
+function missingForRouteGroup(missing: string[], group: string[]): string[] {
+  return stableUnique(missing.filter((id) => group.includes(id)));
+}
+
+function routeGuidanceActionsFromBackend(actions: Record<string, unknown>[] | undefined): RouteGuidanceAction[] | null {
+  if (!actions?.length) return null;
+  const normalized = actions
+    .map((action, index) => {
+      const record = asRecord(action);
+      const command = firstText(record.command);
+      const id = firstText(record.id) || command || `route-action-${index + 1}`;
+      if (!command && !firstText(record.detail, record.label, record.title)) return null;
+      return {
+        id,
+        command: command || id,
+        label: firstText(record.label, record.title) || titleizeLane(id),
+        detail: firstText(record.detail, record.next_action, record.reason),
+      };
+    })
+    .filter((action): action is RouteGuidanceAction => Boolean(action));
+  return normalized.length ? normalized : null;
+}
+
+function routeGuidanceActions(routeMissing: string[], routePresent: string[], closeMissing: string[], allowedStages = ROUTE_GUIDANCE_ALLOWED_STAGES): RouteGuidanceAction[] {
+  const needsRouteContext = routeMissing.includes("route_context") || !routePresent.includes("route_context");
+  const needsActionPrecheck = routeMissing.includes("route_action_precheck") || !routePresent.includes("route_action_precheck");
+  const needsWorkerDispatch = routeMissing.includes("bounded_implementation_worker_dispatch");
+  const needsWorkerStartup = routeMissing.includes("mf_subagent_startup");
+  const needsIndependentVerification = routeMissing.includes("independent_verification_lane");
+  const needsImplementation = closeMissing.includes("implementation");
+  const needsVerification = closeMissing.includes("verification");
+  const needsCloseReady = closeMissing.includes("close_ready");
+  return [
+    {
+      id: "route-prompt-alert-bundle",
+      command: "route.prompt_alert_bundle",
+      label: needsRouteContext ? "Request the service route bundle" : "Route bundle recorded",
+      detail: "Use service output for route_context and route identity before governed mutation.",
+    },
+    {
+      id: "route-action-precheck",
+      command: "route.action_precheck",
+      label: needsActionPrecheck ? "Run the route action precheck" : "Route action precheck recorded",
+      detail: `Stage must be one of ${allowedStages.join(", ")}.`,
+    },
+    {
+      id: "bounded-worker-dispatch",
+      command: "dispatch bounded worker",
+      label: needsWorkerDispatch ? "Record bounded implementation worker dispatch" : "Worker dispatch recorded",
+      detail: "Observer or judge does not count as implementation worker evidence.",
+    },
+    {
+      id: "worker-startup",
+      command: "start worker",
+      label: needsWorkerStartup ? "Record mf_subagent startup evidence" : "Worker startup recorded",
+      detail: "The worker must run inside the assigned fence and target files.",
+    },
+    {
+      id: "independent-verification",
+      command: "run independent verification",
+      label: needsIndependentVerification || needsVerification ? "Record independent QA verification" : "Independent verification recorded",
+      detail: "Verification must be separate from observer coordination and worker implementation.",
+    },
+    {
+      id: "retry-close",
+      command: "retry close",
+      label: needsImplementation || needsVerification || needsCloseReady ? "Append implementation, verification, then close_ready before close" : "Close evidence ready",
+      detail: "Run the close precheck again after the evidence groups pass.",
+    },
+  ];
 }
 
 function TokenList({

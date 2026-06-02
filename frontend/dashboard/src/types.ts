@@ -725,6 +725,9 @@ export interface MfCloseTimelineGate {
   event_count?: number;
   ignored_required_events?: Record<string, unknown>[];
   contract_gate?: MfContractGate;
+  route_context_gate?: MfRouteContextGate;
+  missing_evidence_groups?: MfMissingEvidenceGroups;
+  route_context_reminder?: MfRouteContextReminder;
   checks?: Record<string, boolean | number | string>;
 }
 
@@ -740,6 +743,50 @@ export interface MfContractGate {
   missing_requirement_ids?: string[];
   evidence_events?: Record<string, unknown>[];
   checks?: Record<string, boolean | number | string>;
+}
+
+export interface MfRouteContextGate {
+  schema_version?: string;
+  passed?: boolean;
+  status?: string;
+  required?: boolean;
+  required_requirement_ids?: string[];
+  present_requirement_ids?: string[];
+  missing_requirement_ids?: string[];
+  topology_policy?: Record<string, unknown>;
+  route_identity?: Record<string, unknown>;
+  same_route_identity?: boolean;
+  evidence_events?: Record<string, unknown>;
+  ignored_route_events?: Record<string, unknown>[];
+  checks?: Record<string, boolean | number | string>;
+}
+
+export interface MfMissingEvidenceGroups {
+  schema_version?: string;
+  groups?: Record<string, MfMissingEvidenceGroup>;
+}
+
+export interface MfMissingEvidenceGroup {
+  label?: string;
+  missing?: string[];
+  next_action?: string;
+  next_actions?: string[];
+}
+
+export interface MfRouteContextReminder {
+  schema_version?: string;
+  required?: boolean;
+  blocked?: boolean;
+  status?: string;
+  contract_template_id?: string;
+  allowed_stages?: string[];
+  selected_topology?: string;
+  recommended_topology?: string;
+  priority?: string;
+  next_actions?: Record<string, unknown>[];
+  missing_evidence_groups?: Record<string, MfMissingEvidenceGroup>;
+  identity_recovery?: Record<string, unknown>;
+  boundary?: Record<string, unknown>;
 }
 
 export interface TaskTimelineEvent {

@@ -1317,6 +1317,30 @@ class TestTaskTimeline(unittest.TestCase):
                 "independent_verification_lane",
             ],
         )
+        missing_groups = blocked["missing_evidence_groups"]["groups"]
+        self.assertEqual(missing_groups["timeline"]["missing"], [])
+        self.assertEqual(
+            missing_groups["route_service"]["missing"],
+            ["route_context", "route_action_precheck"],
+        )
+        self.assertEqual(
+            missing_groups["bounded_worker"]["missing"],
+            ["bounded_implementation_worker_dispatch", "mf_subagent_startup"],
+        )
+        self.assertEqual(
+            missing_groups["independent_verification"]["missing"],
+            ["independent_verification_lane"],
+        )
+        reminder = blocked["route_context_reminder"]
+        self.assertTrue(reminder["blocked"])
+        self.assertEqual(reminder["contract_template_id"], "mf_workflow_runtime.v1")
+        self.assertEqual(
+            reminder["allowed_stages"],
+            ["dispatch", "startup_gate", "implementation_wait", "handoff_gate"],
+        )
+        self.assertIn("route.prompt_alert_bundle", [
+            action["command"] for action in reminder["next_actions"]
+        ])
 
         advisory_only = task_timeline.mf_close_gate_verification(
             [
@@ -1464,6 +1488,10 @@ class TestTaskTimeline(unittest.TestCase):
         self.assertIn(
             "route_identity_mismatch",
             mismatch["route_context_gate"]["missing_requirement_ids"],
+        )
+        self.assertEqual(
+            mismatch["missing_evidence_groups"]["groups"]["route_identity"]["missing"],
+            ["route_identity_mismatch"],
         )
 
         ready = task_timeline.mf_close_gate_verification(

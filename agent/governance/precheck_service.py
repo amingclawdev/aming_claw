@@ -747,6 +747,8 @@ def _close_gate(
     subject: dict[str, Any],
     actor: str,
 ) -> dict[str, Any]:
+    from . import task_timeline
+
     errors: list[str] = []
     warnings: list[str] = []
     errors.extend(_contract_errors(subject, contract_id, stage, "backlog.close"))
@@ -757,6 +759,19 @@ def _close_gate(
     independent_verification_required = _independent_verification_required(topology_policy)
     independent_verification_present = _independent_verification_present(subject)
     route_context_gate = _route_context_consumption_gate(subject)
+    close_missing_event_kinds = [
+        kind
+        for kind in ("implementation", "verification", "close_ready")
+        if not _has_timeline_kind(subject.get("timeline_evidence"), {kind})
+    ]
+    missing_evidence_groups = task_timeline.mf_close_missing_evidence_groups(
+        close_missing_event_kinds,
+        route_context_gate,
+    )
+    route_context_reminder = task_timeline.mf_route_context_reminder(
+        route_context_gate,
+        missing_evidence_groups,
+    )
 
     if not _text(subject.get("merge_commit")):
         errors.append("missing_merge_commit")
@@ -784,8 +799,10 @@ def _close_gate(
         "warnings": _dedupe(warnings),
         "merge_commit": _text(subject.get("merge_commit")),
         "missing_required_evidence": missing_evidence,
+        "missing_evidence_groups": missing_evidence_groups,
         "topology_policy": topology_policy,
         "route_context_gate": route_context_gate,
+        "route_context_reminder": route_context_reminder,
         "route_context_consumption_required": bool(route_context_gate.get("required")),
         "independent_verification_required": independent_verification_required,
         "independent_verification_evidence_present": independent_verification_present,
@@ -1161,6 +1178,9 @@ def _route_context_missing_error(requirement_id: str) -> str:
             "missing_bounded_implementation_worker_dispatch_evidence"
         ),
         "mf_subagent_startup": "missing_mf_subagent_startup_evidence",
+        "independent_verification_lane": (
+            "missing_independent_verification_lane_evidence"
+        ),
         "route_identity_mismatch": "route_context_identity_mismatch",
     }.get(requirement_id, f"missing_{requirement_id}_evidence")
 

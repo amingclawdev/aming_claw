@@ -107,6 +107,15 @@ MF_CLOSE_PASS_STATUSES = {
 MF_CONTRACT_SCHEMA_VERSION = "mf_contract_gate.v1"
 
 MF_ROUTE_CONTEXT_GATE_SCHEMA_VERSION = "mf_route_context_consumption_gate.v1"
+MF_CLOSE_MISSING_GROUPS_SCHEMA_VERSION = "mf_close_missing_evidence_groups.v1"
+MF_ROUTE_CONTEXT_REMINDER_SCHEMA_VERSION = "mf_route_context_reminder.v1"
+MF_ROUTE_GUIDANCE_TEMPLATE_ID = "mf_workflow_runtime.v1"
+MF_ROUTE_GUIDANCE_ALLOWED_STAGES = (
+    "dispatch",
+    "startup_gate",
+    "implementation_wait",
+    "handoff_gate",
+)
 MF_ROUTE_IDENTITY_FIELDS = (
     "route_context_hash",
     "prompt_contract_id",
@@ -125,6 +134,19 @@ MF_ROUTE_CONTEXT_PASS_STATUSES = {
     "allowed",
     "approved",
 }
+MF_ROUTE_SERVICE_REQUIREMENTS = (
+    "route_context",
+    "route_action_precheck",
+)
+MF_ROUTE_WORKER_REQUIREMENTS = (
+    "bounded_implementation_worker_dispatch",
+    "mf_subagent_startup",
+)
+MF_ROUTE_IDENTITY_REQUIREMENTS = (
+    "route_identity_mismatch",
+    "same_route_identity",
+    "route_identity_cleanup",
+)
 
 
 def is_protected_close_evidence(event: dict[str, Any] | None) -> bool:
@@ -1050,6 +1072,148 @@ def mf_route_context_gate_verification(
     }
 
 
+def _ordered_subset(values: list[str], allowed: tuple[str, ...] | set[str]) -> list[str]:
+    allowed_set = set(allowed)
+    return [value for value in values if value in allowed_set]
+
+
+def mf_close_missing_evidence_groups(
+    missing_event_kinds: list[str] | None,
+    route_context_gate: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Group close-gate gaps into the operator action buckets shown in reminders."""
+
+    close_missing = list(missing_event_kinds or [])
+    route_gate = _mapping(route_context_gate)
+    route_missing = [
+        str(item)
+        for item in _list(route_gate.get("missing_requirement_ids"))
+        if str(item)
+    ]
+    identity_missing = _ordered_subset(route_missing, MF_ROUTE_IDENTITY_REQUIREMENTS)
+    if (
+        route_gate.get("same_route_identity") is False
+        or _mapping(route_gate.get("checks")).get("same_route_identity") is False
+    ) and "route_identity_mismatch" not in identity_missing:
+        identity_missing.append("route_identity_mismatch")
+
+    known_route = {
+        *MF_ROUTE_SERVICE_REQUIREMENTS,
+        *MF_ROUTE_WORKER_REQUIREMENTS,
+        MF_ROUTE_CONTEXT_INDEPENDENT_VERIFICATION_ID,
+        *MF_ROUTE_IDENTITY_REQUIREMENTS,
+    }
+    other_route = [item for item in route_missing if item not in known_route]
+    groups = {
+        "timeline": {
+            "label": "implementation / verification / close_ready",
+            "missing": close_missing,
+            "next_action": "append passing implementation, verification, then close_ready timeline evidence",
+        },
+        "route_service": {
+            "label": "route service evidence",
+            "missing": _ordered_subset(route_missing, MF_ROUTE_SERVICE_REQUIREMENTS),
+            "next_actions": ["route.prompt_alert_bundle", "route.action_precheck"],
+        },
+        "bounded_worker": {
+            "label": "bounded worker dispatch/startup",
+            "missing": _ordered_subset(route_missing, MF_ROUTE_WORKER_REQUIREMENTS),
+            "next_action": "dispatch and start a bounded mf_sub implementation worker",
+        },
+        "independent_verification": {
+            "label": "independent verification lane",
+            "missing": _ordered_subset(
+                route_missing,
+                {MF_ROUTE_CONTEXT_INDEPENDENT_VERIFICATION_ID},
+            ),
+            "next_action": "run independent QA verification before retrying close",
+        },
+        "route_identity": {
+            "label": "route identity",
+            "missing": identity_missing,
+            "next_action": "supersede stale hand-written route evidence or start a fresh service-generated route attempt",
+        },
+    }
+    if other_route:
+        groups["other_route"] = {
+            "label": "other route evidence",
+            "missing": other_route,
+            "next_action": "inspect route_context_gate.missing_requirement_ids",
+        }
+    return {
+        "schema_version": MF_CLOSE_MISSING_GROUPS_SCHEMA_VERSION,
+        "groups": groups,
+    }
+
+
+def mf_route_context_reminder(
+    route_context_gate: dict[str, Any] | None,
+    missing_evidence_groups: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Build the public-safe route workflow reminder consumed by MCP and dashboard."""
+
+    route_gate = _mapping(route_context_gate)
+    groups = _mapping(missing_evidence_groups).get("groups")
+    topology_policy = _mapping(route_gate.get("topology_policy"))
+    required = bool(route_gate.get("required"))
+    passed = bool(route_gate.get("passed"))
+    return {
+        "schema_version": MF_ROUTE_CONTEXT_REMINDER_SCHEMA_VERSION,
+        "required": required,
+        "blocked": required and not passed,
+        "status": str(route_gate.get("status") or ("passed" if passed else "blocked")),
+        "contract_template_id": MF_ROUTE_GUIDANCE_TEMPLATE_ID,
+        "allowed_stages": list(MF_ROUTE_GUIDANCE_ALLOWED_STAGES),
+        "selected_topology": str(topology_policy.get("selected_topology") or ""),
+        "recommended_topology": str(topology_policy.get("recommended_topology") or ""),
+        "priority": str(topology_policy.get("priority") or ""),
+        "next_actions": [
+            {
+                "id": "request_route_prompt_alert_bundle",
+                "command": "route.prompt_alert_bundle",
+                "detail": "request the service-generated route context bundle",
+            },
+            {
+                "id": "run_route_action_precheck",
+                "command": "route.action_precheck",
+                "detail": "run the local action gate with an allowed stage before mutation",
+            },
+            {
+                "id": "dispatch_bounded_worker",
+                "command": "dispatch bounded implementation worker",
+                "detail": "observer or judge coordination does not count as implementation worker evidence",
+            },
+            {
+                "id": "start_worker",
+                "command": "start worker",
+                "detail": "record mf_subagent startup with matching route identity",
+            },
+            {
+                "id": "run_independent_verification",
+                "command": "run independent verification",
+                "detail": "record QA verification separate from observer and implementation worker",
+            },
+            {
+                "id": "retry_close",
+                "command": "retry close",
+                "detail": "retry only after implementation, verification, and close_ready evidence are present",
+            },
+        ],
+        "missing_evidence_groups": groups if isinstance(groups, dict) else {},
+        "identity_recovery": {
+            "stale_or_mismatched_route_evidence": "supersede or start a fresh service-generated route attempt",
+            "hand_written_route_text_counts_as_route_token": False,
+        },
+        "boundary": {
+            "service_generated_route_identity_required": True,
+            "supporting_context_not_route_token": [
+                "judgment_brain",
+                "hand_written_alert_text",
+            ],
+        },
+    }
+
+
 def _normalize_requirement(item: Any, *, default_required: bool = True) -> dict[str, Any] | None:
     if isinstance(item, str):
         req_id = item.strip()
@@ -1247,6 +1411,14 @@ def mf_close_gate_verification(
     missing = sorted(MF_CLOSE_REQUIRED_EVENT_KINDS - present)
     contract_gate = mf_contract_gate_verification(rows, contract)
     route_context_gate = mf_route_context_gate_verification(rows, contract)
+    missing_evidence_groups = mf_close_missing_evidence_groups(
+        missing,
+        route_context_gate,
+    )
+    route_context_reminder = mf_route_context_reminder(
+        route_context_gate,
+        missing_evidence_groups,
+    )
     passed = (
         not missing
         and bool(contract_gate.get("passed"))
@@ -1263,6 +1435,8 @@ def mf_close_gate_verification(
         "ignored_required_events": ignored,
         "contract_gate": contract_gate,
         "route_context_gate": route_context_gate,
+        "missing_evidence_groups": missing_evidence_groups,
+        "route_context_reminder": route_context_reminder,
         "checks": {
             "has_implementation": "implementation" in present,
             "has_verification": "verification" in present,

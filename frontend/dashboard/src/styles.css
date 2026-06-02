@@ -3051,6 +3051,110 @@ a:hover { text-decoration: underline; }
   border-color: #fecaca;
 }
 
+.backlog-route-guidance-panel {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 10px;
+  border: 1px solid #fed7aa;
+  border-radius: 6px;
+  background: #fff7ed;
+}
+
+.backlog-route-guidance-head,
+.backlog-route-guidance-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.backlog-route-guidance-head {
+  justify-content: space-between;
+  color: var(--ink-800);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.backlog-route-guidance-meta {
+  color: var(--ink-500);
+  font-size: 10.5px;
+}
+
+.backlog-route-guidance-meta span {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.backlog-route-guidance-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 7px;
+}
+
+.backlog-route-guidance-actions div {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 2px 7px;
+  min-width: 0;
+  padding: 7px;
+  border: 1px solid #fed7aa;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.backlog-route-guidance-actions span {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #ffedd5;
+  color: #9a3412;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.backlog-route-guidance-actions strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--ink-900);
+  font-size: 11px;
+}
+
+.backlog-route-guidance-actions p {
+  grid-column: 2;
+  margin: 0;
+  color: var(--ink-600);
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+
+.backlog-route-guidance-groups {
+  display: grid;
+  gap: 4px;
+}
+
+.backlog-route-guidance-warning,
+.backlog-route-guidance-boundary {
+  padding: 7px 8px;
+  border-radius: 6px;
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.backlog-route-guidance-warning {
+  border: 1px solid #fecaca;
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+.backlog-route-guidance-boundary {
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  color: var(--ink-600);
+}
+
 .backlog-lane-card {
   background: var(--ink-50);
 }
